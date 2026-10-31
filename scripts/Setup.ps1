@@ -147,6 +147,12 @@ function Select-Manifest([string]$RpxPath) {
     if (-not $line) { return $null }
     return ([string]$line).Trim()
 }
+# Setup builds a base game (title id 00050000-...) with the base profiles. An update image
+# (0005000E-...) also has a manifest, but it is installed afterwards by Install-Update.ps1.
+function Test-UpdateManifest([string]$ManifestPath) {
+    $titleLine = Get-Content -LiteralPath $ManifestPath | Where-Object { $_ -match '^\s*title_id\s*=' } | Select-Object -First 1
+    return [bool]($titleLine -match '=\s*0x0005000E')
+}
 function Complete-GeneratedModule([string]$Directory) {
     foreach ($name in @('Gambit.h', 'Gambit_data.cpp', 'Gambit_register.cpp')) {
         if (-not (Test-Path -LiteralPath (Join-Path $Directory $name) -PathType Leaf)) { return $false }
@@ -460,7 +466,8 @@ if ($missing.Count) {
         }
         Good 'Done! All required tools and workloads have been installed.'
         Good 'Please close this window and run Setup.bat again so Windows picks up the new programs.'
-        exit 0
+        # Non-zero so Setup.bat does not continue to the update installer in this stale session.
+        exit 3
     }
     Fail 'Install the programs listed above (see README), then run Setup.bat again.'
 }
@@ -529,8 +536,9 @@ if (-not $GameDump) {
     $candidateDumps += @((Join-Path $Root 'dump'), (Join-Path $Root 'game-dump'))
     foreach ($candidate in $candidateDumps) {
         $candidateRpx = Join-Path $candidate 'code\Gambit.rpx'
-        if ((Test-Path -LiteralPath $candidateRpx -PathType Leaf) -and
-            (Select-Manifest $candidateRpx 2>$null)) {
+        if (-not (Test-Path -LiteralPath $candidateRpx -PathType Leaf)) { continue }
+        $candidateManifest = Select-Manifest $candidateRpx 2>$null
+        if ($candidateManifest -and -not (Test-UpdateManifest $candidateManifest)) {
             $GameDump = $candidate
             Good "Automatically detected valid game dump: $GameDump"
             break
@@ -563,6 +571,9 @@ $rpxHash = File-Sha256 $rpx
 $SelectedManifest = Select-Manifest $rpx
 if (-not $SelectedManifest) {
     Fail "Unsupported game version. None of the manifests in $ManifestDir describes your code\Gambit.rpx (SHA-256 $rpxHash). Add a manifest for this image, or use a supported dump."
+}
+if (Test-UpdateManifest $SelectedManifest) {
+    Fail "This folder is the game update ($SelectedManifest), not the base game. Select the base game dump here; the update installer asks for the update next."
 }
 Good "Matched manifest: $SelectedManifest"
 
@@ -771,6 +782,18 @@ Good 'Wii U folders ready. No existing game or Mii saves were imported.'
 Good 'A new installation starts fresh; progress already in this output folder is kept on updates.'
 $script:StageTimings['8. Game Folder Packaging'] = [math]::Round($script:StepSw.Elapsed.TotalSeconds, 2)
 
+# Hand the selected dump and output folder to the 288 installer that Setup.bat
+# starts next, so a new user is not asked for the same folder twice.
+$stateDir = Join-Path $ProjectRoot 'build'
+Ensure-Folder $stateDir
+# Record real paths: the build drive letter (subst) is removed when setup ends.
+$savedDump = $GameDump
+if ($Root -ne $ProjectRoot -and $savedDump.StartsWith($Root, [StringComparison]::OrdinalIgnoreCase)) {
+    $savedDump = Join-Path $ProjectRoot $savedDump.Substring($Root.Length)
+}
+Set-Content -LiteralPath (Join-Path $stateDir 'setup-base-dump.txt') -Value $savedDump -Encoding utf8
+Set-Content -LiteralPath (Join-Path $stateDir 'setup-output.txt') -Value $Output -Encoding utf8
+
 # ---------------------------------------------------------------------------
 Write-Host ''
 Write-Host '============================================================' -ForegroundColor Green
@@ -797,3 +820,4 @@ foreach ($entry in $script:StageTimings.GetEnumerator()) {
 }
 Write-Host '------------------------------------------------------------' -ForegroundColor DarkCyan
 Remove-BuildDrive
+exit 0

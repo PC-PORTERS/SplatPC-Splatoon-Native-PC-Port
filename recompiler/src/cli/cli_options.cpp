@@ -28,6 +28,7 @@ void print_usage(const char* prog) {
            "  -c <cfg>    Config file path\n"
            "  -v          Verbose output\n"
            "  --no-color  Disable coloured output\n"
+           "  --discover-referenced-entries  Prove all address-taken entry boundaries\n"
            "  --emit-ppc-image  Emit relocated executable image for hybrid prototype\n"
            "  --emit-coverage   Emit RBREW_COVERAGE_* probes (needs RBREW_ENABLE_COVERAGE=ON)\n"
            "  --analyzer-entries F  Additional analyzer starts merged with [entries] corroborate\n"
@@ -125,6 +126,8 @@ std::optional<CliOptions> parse(int argc, char** argv) {
             opts.hooks_file = argv[++i];
         } else if (arg == "--hints-file" && i + 1 < argc) {
             opts.hints_file = argv[++i];
+        } else if (arg == "--discover-referenced-entries") {
+            opts.discover_referenced_entries = true;
         } else if (arg == "--emit-ppc-image") {
             opts.emit_ppc_image = true;
         } else if (arg == "--emit-coverage") {

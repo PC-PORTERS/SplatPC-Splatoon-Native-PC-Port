@@ -1949,7 +1949,7 @@ void FunctionDiscovery::scan_address_taken_tail_callbacks() {
 
 void FunctionDiscovery::scan_corroborated_entries() {
     using ppc::Mnemonic;
-    if (m_cfg.analyzer_entries.empty()) return;
+    if (m_cfg.analyzer_entries.empty() && !m_cfg.discover_referenced_entries) return;
     // Independent evidence 1: something references the address (relocation
     // target or code-address word in allocated data).
     std::set<uint32_t> referenced;
@@ -1999,8 +1999,11 @@ void FunctionDiscovery::scan_corroborated_entries() {
             if (*entry != addr && (source > addr || *entry < addr) && boundary(*entry)) return true;
         return false;
     };
-    for (uint32_t addr : m_cfg.analyzer_entries) {
-        if (m_candidates.contains(addr) || addr < 4 || !is_valid_code_addr(addr)) continue;
+    auto corroboration_candidates = m_cfg.analyzer_entries;
+    if (m_cfg.discover_referenced_entries)
+        corroboration_candidates.insert(referenced.begin(), referenced.end());
+    for (uint32_t addr : corroboration_candidates) {
+        if (m_candidates.contains(addr) || addr<4 || !is_valid_code_addr(addr)) continue;
         // Independent evidence 1: a reference, or only cross-function tail
         // branches (any local or conditional branch makes it an interior label).
         const auto sources = incoming.find(addr);
