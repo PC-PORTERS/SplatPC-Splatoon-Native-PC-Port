@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <cstring>
 
+#if RBREW_GAME_REVISION == 288
 namespace {
 constexpr uint32_t kBroadcast = RBREW_GAME_BROADCAST_DISPATCH;
 constexpr uint32_t kSetCurrent = RBREW_GAME_BROADCAST_SET_CURRENT; // called with (obj, -1) before and after the walk
@@ -134,8 +135,9 @@ done:
 } // namespace
 
 void broadcast_guard_install() {
-#if RBREW_GAME_REVISION == 288
     if (const char* v = std::getenv("RBREW_BROADCAST_GUARD"); v && std::strcmp(v, "0") == 0) return;
     if (!rbrew_set_guest_hook(kBroadcast, broadcast)) RBREW_LOG_WARN("broadcast", "could not register the hook\n");
-#endif
 }
+#else
+void broadcast_guard_install() {}
+#endif
