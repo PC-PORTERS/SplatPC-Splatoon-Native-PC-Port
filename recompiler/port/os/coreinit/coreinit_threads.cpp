@@ -461,24 +461,27 @@ static void OSDriver_Register(CPUState* cpu) {
 // LR, SP, r3 and the saved-LR chain of every guest thread. PPC frames start
 // with the back chain at [sp] and the caller saves LR at [back chain + 4].
 // Read-only; values written by a running thread may be a little stale.
-static void dump_guest_stack(FILE* out, const char* name, uint32_t id, const CPUState* cpu) {
-    std::fprintf(out, "[stack] %s %08X lr=%08X sp=%08X r3=%08X r4=%08X r30=%08X r31=%08X chain:", name, id, cpu->lr,
-                 cpu->r[1], cpu->r[3], cpu->r[4], cpu->r[30], cpu->r[31]);
+static void dump_guest_stack(const char* name, uint32_t id, const CPUState* cpu) {
+    std::string line;
+    char item[96];
+    std::snprintf(item, sizeof item, "%s %08X lr=%08X sp=%08X r3=%08X r4=%08X r30=%08X r31=%08X chain:", name, id,
+                  cpu->lr, cpu->r[1], cpu->r[3], cpu->r[4], cpu->r[30], cpu->r[31]);
+    line = item;
     uint32_t sp = cpu->r[1];
     for (int depth = 0; depth < 16 && sp && rbrew_memory_accessible(cpu->mem, sp, 4); ++depth) {
         const uint32_t back = rbrew_read32(cpu->mem, sp);
         if (back <= sp || !rbrew_memory_accessible(cpu->mem, back + 4, 4)) break;
-        std::fprintf(out, " %08X", rbrew_read32(cpu->mem, back + 4));
+        std::snprintf(item, sizeof item, " %08X", rbrew_read32(cpu->mem, back + 4));
+        line += item;
         sp = back;
     }
-    std::fprintf(out, "\n");
+    RBREW_LOG_INFO("stack", "%s\n", line.c_str());
 }
-void rbrew_dump_guest_stacks(FILE* out, const CPUState* main_cpu) {
-    if (main_cpu) dump_guest_stack(out, "main", 0, main_cpu);
+void rbrew_dump_guest_stacks(const CPUState* main_cpu) {
+    if (main_cpu) dump_guest_stack("main", 0, main_cpu);
     std::lock_guard<std::mutex> lock(s_threads_mutex);
     for (const auto& [address, thread] : s_threads)
-        if (thread && thread->started && !thread->finished) dump_guest_stack(out, "thread", address, &thread->cpu);
-    std::fflush(out);
+        if (thread && thread->started && !thread->finished) dump_guest_stack("thread", address, &thread->cpu);
 }
 
 #include "coreinit_addrs.h"

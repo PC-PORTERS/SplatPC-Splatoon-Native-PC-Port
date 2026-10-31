@@ -1039,7 +1039,7 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
         }
     }
 #if RBREW_GAME_REVISION == 288
-    const uint32_t timing_owner = rbrew_read32(MEM, 0x101E7BDCu);
+    const uint32_t timing_owner = rbrew_read32(MEM, RBREW_GAME_RENDER_MANAGER);
     if (timing_owner && rbrew_memory_accessible(MEM, timing_owner + 0x304, 4))
         timing_flags = rbrew_read32(MEM, timing_owner + 0x304);
 #endif
