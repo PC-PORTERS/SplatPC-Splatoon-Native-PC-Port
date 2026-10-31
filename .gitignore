@@ -35,6 +35,8 @@ save/
 /recompiler/port/os/snd_core/snd_core_addrs.h
 /recompiler/port/os/stubs/stubs_addrs.h
 /recompiler/port/os/vpad/vpad_addrs.h
+/recompiler/port/runtime/game_revision.h
+/recompiler/port/runtime/game_branch_tables.h
 
 # Tools
 __pycache__/
@@ -64,3 +66,9 @@ __pycache__/
 !/scripts/install-hooks.sh
 !/scripts/git-hooks/
 !/scripts/git-hooks/*
+
+# v288 update tooling (tracked on purpose)
+!/scripts/Build-Update.ps1
+!/scripts/Install-Update.ps1
+!/scripts/tests/
+!/scripts/tests/**

@@ -2757,8 +2757,14 @@ VkPipeline get_pipeline(const PipelineRequest& r) {
         }
         s_last_pipeline_lookup.remember(key.view(), entry);
     }
+#if RBREW_GAME_REVISION == 288
+    // A demand draw must never be dropped while its pipeline compiles: one-time
+    // targets such as pre-painted ink would lose their stamp for the whole session.
+    return await_compile(*entry);
+#else
     if (still_compiling(*entry)) return VK_NULL_HANDLE;
     return await_compile(*entry);
+#endif
 }
 
 // Thread-safe for non-xfb requests: Vulkan objects only (the boot warm-up
@@ -4974,6 +4980,15 @@ bool issue_draw(uint8_t* mem, uint32_t prim, uint32_t count, uint32_t first_vert
                    recurring_target(S.framebuffer);
     Program* prog = resolve_active_program(mem);
     bool drawn = false;
+#if RBREW_GAME_REVISION == 288
+    if (prog && !prog->compiled.ready()) {
+        if (s_compile_queue) s_compile_queue->promote(prog->compiled.pending);
+        (void)await_compile(prog->compiled);
+    }
+    const uint64_t before = C.draws;
+    drawn = issue_draw_program(prog, mem, prim, count, first_vertex, indices, xfb, hook);
+    if (s_async_draw && prog && C.draws == before && !drawn) ++s_async_skips;
+#else
     if (prog && s_async_draw && !prog->compiled.ready()) {
         if (s_compile_queue) s_compile_queue->promote(prog->compiled.pending);
         ++s_async_skips;
@@ -4982,6 +4997,7 @@ bool issue_draw(uint8_t* mem, uint32_t prim, uint32_t count, uint32_t first_vert
         drawn = issue_draw_program(prog, mem, prim, count, first_vertex, indices, xfb, hook);
         if (s_async_draw && prog && C.draws == before && !drawn) ++s_async_skips;
     }
+#endif
     s_async_draw = false;
     // Long scene lists (the plaza: ~4800 draws in one display list) were
     // submitted only at their end, so the GPU started when the render thread

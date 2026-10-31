@@ -363,11 +363,11 @@ static void MEMGetAllocatableSizeForFrmHeapEx(CPUState* cpu) {
 // ---------------------------------------------------------------------------
 
 // Dimport guest addresses (computed from lis r12,0x02D1 + lwz r12,OFF(r12))
-static constexpr uint32_t DIMPORT_MEMAllocFromDefaultHeap = 0x02D0B8F8u;
-static constexpr uint32_t DIMPORT_MEMAllocFromDefaultHeapEx = 0x02D0B900u;
-static constexpr uint32_t DIMPORT_MEMFreeToDefaultHeap = 0x02D0B908u;
+static constexpr uint32_t DIMPORT_MEMAllocFromDefaultHeap   = RBREW_GAME_HEAP_ALLOC_SLOT;
+static constexpr uint32_t DIMPORT_MEMAllocFromDefaultHeapEx = RBREW_GAME_HEAP_ALLOC_EX_SLOT;
+static constexpr uint32_t DIMPORT_MEMFreeToDefaultHeap      = RBREW_GAME_HEAP_FREE_SLOT;
 // 0x02D0B948 = __gh_FOPEN_MAX  (uint16, data — not a function pointer)
-static constexpr uint32_t DIMPORT_GH_FOPEN_MAX = 0x02D0B948u;
+static constexpr uint32_t DIMPORT_GH_FOPEN_MAX              = RBREW_GAME_FOPEN_MAX_SLOT;
 
 static void MEMAllocFromDefaultHeap(CPUState* cpu) {
     RET = guest_alloc(ARG0, 4);

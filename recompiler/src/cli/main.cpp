@@ -326,6 +326,7 @@ int main(int argc, char** argv) {
 
     // Function discovery
     analysis::FunctionDiscovery::Config disc_cfg;
+    disc_cfg.discover_referenced_entries = opts->discover_referenced_entries;
     AuditInventory audit;
     if (opts->command == cli::Command::Audit) disc_cfg.frame_audit = [&](const auto& finding) { audit.frame(finding); };
     if (opts->command == cli::Command::Audit) disc_cfg.thunk_audit = [&](const auto& finding) { audit.thunk(finding); };

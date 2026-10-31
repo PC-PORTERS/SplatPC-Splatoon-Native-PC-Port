@@ -2042,3 +2042,19 @@ hash = 0xA359D087A60635C1
 # The instruction is PowerPC assembly (cmpwi, li, stw, b, ...).
 # Branch targets are absolute guest addresses.
 hash = Undefined
+
+[globals]
+# Guest addresses the port code needs by name (not covered by a hash).
+# rbrew_game_address() and the RBREW_GAME_* constants are generated from this section.
+allocator            = 0x101D2554
+sda                  = 0x10256C80
+ctors                = 0x101BFA54
+ctors_done           = 0x101CC020
+tls_handle           = 0x101C98F0
+plt_begin            = 0x02D00000
+plt_end              = 0x02D10000
+heap_alloc_slot      = 0x02D0B8F8
+heap_alloc_ex_slot   = 0x02D0B900
+heap_free_slot       = 0x02D0B908
+fopen_max_slot       = 0x02D0B948
+blank_stub = 0x02D051A0

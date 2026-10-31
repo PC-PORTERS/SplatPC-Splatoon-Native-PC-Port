@@ -136,6 +136,38 @@ cmake --build build/game --target Gambit
 
 For incremental rebuilds just run **`./build.sh`** — it reuses the configured build trees and CMake re-runs itself when any `CMakeLists.txt` or `*.cmake` file changed.
 
+## Update to 288
+
+Once the base game has been built with Setup, the revision 288 update is installed by a separate
+installer. Setup records the base dump and output folders in `build\setup-base-dump.txt` and
+`build\setup-output.txt`, and refuses an update dump as the base game. `Setup.bat` starts this
+installer automatically after a successful base install and asks for the update dump; `scripts\Install-Update.ps1` can also be run on its own.
+
+You need Visual Studio 2022 (or 2026) C++ tools, Python, the base v16 and update 288 dumps (folders `code`,
+`content`, `meta`), and about 10 GB free.
+
+1. Have the update dump for revision 288 ready (folders `code`, `content`, `meta`).
+2. Run:
+   ```bat
+   powershell -ExecutionPolicy Bypass -File scripts\Install-Update.ps1
+   ```
+3. Select the update dump when asked. The installer checks the SHA-256 of `code\Gambit.rpx`
+   and the `title_version` in `meta\meta.xml` (must be 288), then builds the update into
+   the game folder next to the base game (`Game\` by default, or Setup's `-Output` folder). The
+   update's content files are copied into its `content` folder. The import addresses come from
+   `Manifest\Gambit_v288.manifest`.
+4. Start the update with `Splatoon-v288.exe` in that folder. An existing `Splatoon PC Port`
+   desktop shortcut is pointed at it.
+
+The installer first reuses the base dump folder recorded by Setup. If that folder is gone, it
+looks in `Downloads`, `dump\` and `game-dump\`, then asks for the folder that contains
+`code\Gambit.rpx`.
+
+Validation only (no build): add `-ValidateOnly`.
+
+If something fails, report the step, your GPU and the exact error text; do not attach game
+content, dumps, saves or generated files.
+
 ## Controls
 
 **Esc** (or the touchpad button of a PlayStation controller) opens the port's settings menu (ImGui): render resolution (applies at the next start), the graphics preset, plaza 60 FPS on/off, frame rate, G-Sync / FreeSync, fullscreen, performance overlay, controller gyro on/off, gyro sensitivity, inverted gyro up/down, mouse sensitivity, volume and quit. Two pages show and rebind every GamePad input for keyboard & mouse and for the controller: select a row, press Enter/Cross, then the new key or button (a key already in use swaps with the old one; Delete/Square clears; "Reset to defaults" restores the layout below). The game keeps running but gets no input while the menu is open. Choices are saved in `settings.ini` next to the game executable (`Splatoon.exe` / `Splatoon`); an environment variable that is set (for example `RBREW_PLAZA_60FPS`, `RBREW_GYRO`, `RBREW_RENDER_RESOLUTION`) still wins over the file.
