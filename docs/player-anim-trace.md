@@ -8,7 +8,7 @@ Normal weapon-holding idle (`WaitHold_Nrml`) is slot 57.
 
 ## Working implementation: direct handles v4
 
-`recompiler/port/os/game/player_anim.cpp` remembers each primary controller
+`recompiler/port/hooks/player_anim.cpp` remembers each primary controller
 when the motion constructor (`0x026227C8`) registers slot 57. After the
 constructor finishes, it resolves both idle names in the model's resident
 BFRES skeletal dictionaries, following the resource chain used by
@@ -86,7 +86,7 @@ constructor/controller calls, resolved handle checks, motion-slot changes,
 and look-around start, completion and interruption events. Preparation logs
 are flushed immediately for live inspection.
 
-`profiles/agmp-v16.hooks` lists the wrapped guest entry addresses. Setup
-passes it to the recompiler's `--hooks` option and includes its hash in the
-regeneration stamp. Wrappers call the original body whenever no hook is
-registered; tracing is enabled only when `RBREW_ANIM_LOG` names a file.
+The manifest's `[hooks]` section lists the wrapped guest entry addresses. Setup
+passes the manifest to the recompiler and includes its hash in the regeneration
+stamp. Wrappers call the original body whenever no hook is registered; tracing
+is enabled only when `RBREW_ANIM_LOG` names a file.

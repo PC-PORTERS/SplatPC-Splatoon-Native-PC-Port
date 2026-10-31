@@ -1,6 +1,7 @@
 #include "os/gx2/gx2_render.h"
 #include "os/gx2/vk/gx2_render_vk_state.h"
 #include "os/gx2/vk/gx2_vk_shader.h"
+#include "rebrewu/logger.hpp"
 #define SDL_MAIN_HANDLED
 #include <SDL2/SDL.h>
 #include <cmath>
@@ -318,7 +319,7 @@ int main(int argc, char**) {
             check_resolution(display);
         return 0;
     } catch (const std::exception& error) {
-        std::fprintf(stderr, "FAIL: %s\n", error.what());
+        RBREW_LOG_ERROR("test", "FAIL: %s", error.what());
         return 1;
     }
 }

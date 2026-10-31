@@ -115,11 +115,10 @@ jobs:
           cmake -S recompiler -B build/rebrewu -G Ninja -DCMAKE_BUILD_TYPE=Release
           cmake --build build/rebrewu --target rebrewu
 
-      - name: Verify RebrewU recompiler CLI and profiles
+      - name: Verify RebrewU recompiler CLI and manifest
         run: |
           ./build/rebrewu/bin/rebrewu 2>&1 | grep "Usage:"
-          test -s profiles/agmp-v16.entries
-          test -s profiles/agmp-v16.hooks
+          ./build/rebrewu/bin/rebrewu manifest verify --manifest Manifest/Gambit_v16.manifest
           # Confirm rebrewu safely handles invalid / empty binaries
           ! ./build/rebrewu/bin/rebrewu inspect /dev/null
 

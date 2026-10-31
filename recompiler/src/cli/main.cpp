@@ -7,6 +7,7 @@
 #include "../core/relocation/reloc_processor.hpp"
 #include "../analysis/function_discovery.hpp"
 #include "../core/manifest/manifest.hpp"
+#include "../patches/manifest_patches.hpp"
 #include "../analysis/cfg_builder.hpp"
 #include "../codegen/cpp_emitter.hpp"
 #include "../codegen/naming.hpp"
@@ -188,6 +189,8 @@ int run_manifest_command(const cli::CliOptions& opts, const char* argv0) {
     }
 
     if (action == "show") {
+        const auto corroborating = std::count_if(parsed->entries.begin(), parsed->entries.end(),
+                                                 [](const manifest::Entry& entry) { return entry.corroborate; });
         RBREW_LOG_STREAM(::rbrew::log::Level::Info, nullptr)
             << "Manifest:   " << path << '\n'
             << "Id:         " << parsed->id << '\n'
@@ -197,7 +200,10 @@ int run_manifest_command(const cli::CliOptions& opts, const char* argv0) {
             << "Entry point: " << manifest::format_address(parsed->identity_u32("entry_point")) << '\n'
             << "Modules:    " << parsed->modules.size() << '\n'
             << "Imports:    " << parsed->imports.size() << '\n'
-            << "Entries:    " << parsed->entries.size() << '\n'
+            << "Entries:    " << parsed->entries.size() << " (" << parsed->entries.size() - corroborating << " hints, "
+            << corroborating << " corroborating)\n"
+            << "Hooks:      " << parsed->hooks.size() << '\n'
+            << "Patches:    " << parsed->patches.size() << '\n'
             << "Sections:   " << parsed->hashed_section_count() << " hashed\n";
         return EXIT_SUCCESS;
     }
@@ -213,6 +219,26 @@ int run_manifest_command(const cli::CliOptions& opts, const char* argv0) {
         RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr) << "manifest: " << e << '\n';
     for (const auto& w : parsed->warnings)
         RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr) << "manifest: warning: " << w << '\n';
+
+    bool patches_ok = true;
+    std::vector<std::string> patch_errors;
+    if (!opts.rpx_path.empty()) {
+        diagnostics::DiagEngine diag(opts.verbose);
+        rpx::RpxLoader loader(diag);
+        auto image = loader.load(opts.rpx_path);
+        if (!image) {
+            patch_errors.push_back("cannot load image " + opts.rpx_path.string());
+            patches_ok = false;
+        } else {
+            patches_ok = patches::validate(*parsed, *image, patch_errors);
+        }
+    } else {
+        std::vector<patches::EncodedPatch> encoded_patches;
+        patches_ok = patches::encode(*parsed, encoded_patches, patch_errors);
+    }
+    for (const auto& e : patch_errors)
+        RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr) << "manifest: " << e << '\n';
+
     bool images_ok = true;
     if (!opts.rpx_path.empty()) {
         std::vector<std::string> problems;
@@ -220,10 +246,11 @@ int run_manifest_command(const cli::CliOptions& opts, const char* argv0) {
         for (const auto& problem : problems)
             RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr) << "manifest: " << problem << '\n';
     }
-    if (!hashes_ok || !images_ok) return EXIT_FAILURE;
+    if (!hashes_ok || !patches_ok || !images_ok) return EXIT_FAILURE;
     RBREW_LOG_STREAM(::rbrew::log::Level::Info, nullptr)
         << "Manifest OK: " << parsed->id << " (" << parsed->hashed_section_count() << " hashed sections, "
-        << parsed->imports.size() << " imports, " << parsed->entries.size() << " entries)\n";
+        << parsed->imports.size() << " imports, " << parsed->entries.size() << " entries, " << parsed->hooks.size()
+        << " hooks, " << parsed->patches.size() << " patches)\n";
     return EXIT_SUCCESS;
 }
 
@@ -319,48 +346,62 @@ int main(int argc, char** argv) {
                 disc_cfg.analyzer_entries.insert(uint32_t(std::stoul(hex, nullptr, 16)));
             } catch (...) {}
         }
+        if (opts->verbose)
+            RBREW_LOG_STREAM(::rbrew::log::Level::Info, nullptr)
+                << "Loaded " << disc_cfg.analyzer_entries.size() << " analyzer entries for corroboration\n";
+    }
+    // The manifest supplies the entry hints and the instruction patches. Both
+    // must be known before discovery, because a patch can change control flow.
+    std::string manifest_path;
+    auto manifest_opt = load_manifest(*opts, argv[0], &manifest_path);
+    if (!manifest_opt) {
+        // Without a manifest the indirect-dispatch entries are unknown, which
+        // silently drops reachable functions. Fail instead of guessing.
+        return EXIT_FAILURE;
+    }
+    auto& mf = *manifest_opt;
+    const bool hashes_ok = manifest::verify_hashes(mf);
+    for (const auto& e : mf.errors) RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr) << "manifest: " << e << '\n';
+    if (!hashes_ok) {
         RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr)
-            << "Loaded " << disc_cfg.analyzer_entries.size() << " analyzer entries for corroboration\n";
+            << "manifest: " << manifest_path << " was modified without resealing (run 'rebrewu manifest seal')\n";
+        return EXIT_FAILURE;
+    }
+    std::vector<std::string> problems;
+    if (!manifest::verify_image(mf, opts->rpx_path.string(), problems)) {
+        for (const auto& problem : problems)
+            RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr) << "manifest: " << problem << '\n';
+        if (!opts->allow_image_mismatch) {
+            RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr)
+                << "manifest: " << manifest_path << " does not describe " << opts->rpx_path
+                << " (pass --allow-image-mismatch to recompile anyway)\n";
+            return EXIT_FAILURE;
+        }
+        RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr) << "manifest: continuing despite the identity mismatch\n";
+    }
+
+    std::vector<std::string> patch_errors;
+    if (!patches::apply(mf, rpx, patch_errors)) {
+        for (const auto& error : patch_errors)
+            RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr) << "manifest: " << error << '\n';
+        return EXIT_FAILURE;
+    }
+
+    std::size_t hint_count = 0;
+    for (const auto& entry : mf.entries) {
+        if (entry.corroborate)
+            disc_cfg.analyzer_entries.insert(entry.address);
+        else
+            ++hint_count;
     }
     analysis::FunctionDiscovery disc(rpx, lnk, disc_cfg);
-    // Entry hints come from the manifest the image selects: this file holds no
-    // guest address. A new version or region is a new manifest, not a source edit.
-    {
-        std::string manifest_path;
-        auto manifest_opt = load_manifest(*opts, argv[0], &manifest_path);
-        if (!manifest_opt) {
-            // Without a manifest the indirect-dispatch entries are unknown, which
-            // silently drops reachable functions. Fail instead of guessing.
-            return EXIT_FAILURE;
-        }
-        auto& mf = *manifest_opt;
-        const bool hashes_ok = manifest::verify_hashes(mf);
-        for (const auto& e : mf.errors)
-            RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr) << "manifest: " << e << '\n';
-        if (!hashes_ok) {
-            RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr)
-                << "manifest: " << manifest_path << " was modified without resealing (run 'rebrewu manifest seal')\n";
-            return EXIT_FAILURE;
-        }
-        std::vector<std::string> problems;
-        if (!manifest::verify_image(mf, opts->rpx_path.string(), problems)) {
-            for (const auto& problem : problems)
-                RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr) << "manifest: " << problem << '\n';
-            if (!opts->allow_image_mismatch) {
-                RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr)
-                    << "manifest: " << manifest_path << " does not describe " << opts->rpx_path
-                    << " (pass --allow-image-mismatch to recompile anyway)\n";
-                return EXIT_FAILURE;
-            }
-            RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr)
-                << "manifest: continuing despite the identity mismatch\n";
-        }
-        for (const auto& entry : mf.entries) disc.add_hint({entry.address, {}, entry.force});
-        if (opts->verbose)
-            RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr)
-                << "Manifest " << mf.id << " (" << manifest_path << "): " << mf.imports.size() << " imports, "
-                << mf.entries.size() << " entry hints\n";
-    }
+    for (const auto& entry : mf.entries)
+        if (!entry.corroborate) disc.add_hint({entry.address, {}, entry.force});
+    if (opts->verbose)
+        RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr)
+            << "Manifest " << mf.id << " (" << manifest_path << "): " << mf.imports.size() << " imports, " << hint_count
+            << " entry hints, " << mf.entries.size() - hint_count << " corroborating entries, " << mf.hooks.size()
+            << " hooks, " << mf.patches.size() << " patches\n";
     // Diagnostic inventory only: force every listed address as an entry so a
     // single run can show which undiscovered targets startup really reaches.
     if (!opts->hints_file.empty()) {
@@ -455,6 +496,7 @@ int main(int argc, char** argv) {
     if (opts->functions_per_file.has_value()) {
         emit_config.functions_per_file = *opts->functions_per_file;
     }
+    emit_config.hooked.insert(mf.hooks.begin(), mf.hooks.end());
     if (!opts->hooks_file.empty()) {
         std::ifstream hooks(opts->hooks_file);
         if (!hooks) {
@@ -471,15 +513,16 @@ int main(int argc, char** argv) {
                 return EXIT_FAILURE;
             }
         }
-        for (uint32_t addr : emit_config.hooked)
-            if (std::none_of(ir_module.functions.begin(), ir_module.functions.end(),
-                             [&](const auto& f) { return f.entry_addr == addr; })) {
-                RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr)
-                    << "hook address " << std::hex << addr << " is not a discovered function entry" << "\n";
-                return EXIT_FAILURE;
-            }
-        RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr) << "Hook wrappers: " << emit_config.hooked.size() << "\n";
     }
+    for (uint32_t addr : emit_config.hooked)
+        if (std::none_of(ir_module.functions.begin(), ir_module.functions.end(),
+                         [&](const auto& f) { return f.entry_addr == addr; })) {
+            RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr)
+                << "hook address " << std::hex << addr << " is not a discovered function entry" << "\n";
+            return EXIT_FAILURE;
+        }
+    if (!emit_config.hooked.empty())
+        RBREW_LOG_STREAM(::rbrew::log::Level::Info, nullptr) << "Hook wrappers: " << emit_config.hooked.size() << "\n";
     codegen::CppEmitter emitter(ir_module, rpx, lnk, std::move(names), emit_config);
     if (!emitter.emit(opts->output_dir)) {
         RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr)

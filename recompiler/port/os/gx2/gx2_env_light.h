@@ -13,6 +13,7 @@
 // Every write re-checks the parameter header, so a freed or moved object is
 // never touched; objects are searched again after a scene change.
 #pragma once
+#include "../../hooks/gx2_camera_hooks.h"
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -46,66 +47,8 @@ inline float night_lamp_intensity(float original, bool enabled, float night, flo
     const float n = std::clamp(night, 0.f, 1.f);
     return (enabled ? original : std::min(original, ceiling) * n) * (1 + .6f * n);
 }
-// The plaza uses two LookAtCamera objects. Collision/pitch can move their eye
-// away from the player camera's stored eye after they have been identified.
-struct MainCameraIdentity {
-    uint32_t field = 0;
-    std::array<uint32_t, 2> cameras{};
-    bool matches(uint32_t current_field, uint32_t camera, bool at_player_eye) {
-        if (current_field != field) {
-            field = current_field;
-            cameras = {};
-        }
-        if (!field || !camera) return false;
-        for (auto id : cameras)
-            if (id == camera) return true;
-        if (!at_player_eye) return false;
-        for (auto& id : cameras)
-            if (!id) {
-                id = camera;
-                return true;
-            }
-        return false;
-    }
-};
 // Game thread, once per GX2SwapScanBuffers.
 void frame(uint8_t* mem, uint64_t swap_count);
-// Before guest code runs: the camera field of view hook.
-void register_hooks();
-// Free fly camera (testing; F7 or the ESC menu's Tools & hacks page).
-void set_fly_camera(bool on);
-bool fly_camera();
-// Fly spots (this session): save the current view, fly back to it later.
-// save returns false outside the plaza; go turns the fly camera on.
-// Game thread (VPADRead): PC controls of the fly camera while it is on -
-// mouse counts turn it, move/side/up in -1..1 (WASD, Space/Ctrl), fast = Shift.
-// The game meanwhile gets a neutral pad (the character stands still).
-void fly_input(int mouse_dx, int mouse_dy, float move, float side, float up, bool fast);
-// Fly camera field of view (zoom for photos): mouse wheel / Q, E / menu.
-void fly_zoom(float steps);
-float fly_fov();
-void set_fly_fov(float degrees);
-// Spawn hack (plaza): remember the character's position in one of three
-// spots, put the character back there, or where the free camera is.
-bool save_spawn(int slot);
-bool spawn_at(int slot);
-bool spawn_at_camera();
-bool spawn_saved(int slot);
-// The main camera as the game built its view this frame (look-at camera
-// hook): for scenes whose shader data has another layout (Octo Valley).
-struct MainView {
-    float pos[3], at[3], up[3], fovy_deg, near_z, far_z;
-    uint64_t frame;
-};
-bool main_view(MainView& out);
-void want_spawn();
-// Menu actions from the render thread (ImGui), run on the game thread in
-// frame(): the free camera, fly spots, spawning and photos.
-enum class Request { FlyCamera, FlyZoom, SaveFlySpot, GoFlySpot, SaveSpawn, SpawnAt, SpawnAtCamera, Photo };
-void request(Request what, int value); // menu: the camera search starts (the hack needs it)
-bool save_fly_spot(int slot);
-bool go_fly_spot(int slot);
-bool fly_spot_saved(int slot);
 
 // Sky state for the renderer (any thread).
 struct SkyState {

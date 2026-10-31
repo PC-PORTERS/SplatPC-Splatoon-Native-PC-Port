@@ -24,8 +24,6 @@ DEPS="$WORK/deps"
 
 # Every Manifest/*.manifest describes one supported image; the RPX selects it.
 MANIFEST_DIR="$ROOT/Manifest"
-BOUNDARY_PROFILE="$ROOT/profiles/agmp-v16.entries"
-HOOK_PROFILE="$ROOT/profiles/agmp-v16.hooks"
 MINIMUM_FUNCTION_COUNT=96300
 
 # Open-source build dependencies (official upstream releases).
@@ -451,12 +449,11 @@ stage_done '5. RebrewU recompiler build'
 step 'Recompiling your Gambit.rpx into C++ (a few minutes)'
 GENERATED="$WORK/generated/Gambit"
 STAMP="$WORK/generated/source.sha256"
-[ -f "$BOUNDARY_PROFILE" ] || fail 'The supported-game boundary profile is missing. Extract the complete repository ZIP, including profiles, and retry.'
-[ -f "$HOOK_PROFILE" ] || fail 'The supported-game hook profile is missing. Extract the complete repository ZIP, including profiles, and retry.'
-# The profile is address metadata, not game code. The RPX hash above selects
-# its supported version; RebrewU still validates each boundary against the RPX.
-# Include the tool and profile hashes in the stamp so changes regenerate.
-current="$rpx_hash:$(sha256 "$REBREWU"):$(sha256 "$BOUNDARY_PROFILE"):$(sha256 "$HOOK_PROFILE"):$(sha256 "$SELECTED_MANIFEST")"
+# The manifest carries the entry boundaries, hook list and patches. The RPX
+# hash above selects its supported version; RebrewU still validates each
+# boundary against the RPX. Include the tool and manifest hashes in the stamp
+# so changes regenerate.
+current="$rpx_hash:$(sha256 "$REBREWU"):$(sha256 "$SELECTED_MANIFEST")"
 previous=""
 [ -f "$STAMP" ] && previous="$(cat -- "$STAMP")"
 if ! generated_module_complete "$GENERATED" || [ "$current" != "$previous" ]; then
@@ -465,7 +462,6 @@ if ! generated_module_complete "$GENERATED" || [ "$current" != "$previous" ]; th
     ensure_folder "$GENERATED"
     "$REBREWU" recompile --rpx "$rpx" --output "$GENERATED" \
         --manifest "$SELECTED_MANIFEST" \
-        --analyzer-entries "$BOUNDARY_PROFILE" --hooks "$HOOK_PROFILE" \
         || fail 'Recompiling Gambit.rpx'
     generated_module_complete "$GENERATED" \
         || fail 'The recompiler did not produce the complete supported-game function table. Installation stopped before building an incomplete game.'

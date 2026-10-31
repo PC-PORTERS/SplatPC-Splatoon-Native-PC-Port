@@ -8,6 +8,7 @@
 #include "os/gx2/gx2_detile.h"
 #include "os/gx2/vk/gx2_compile_queue.h"
 #include "os/gx2/vk/gx2_render_vk_state.h"
+#include "rebrewu/logger.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -224,7 +225,11 @@ void queue() {
 // Fixed integer work, so every run does identical work and only contention
 // changes its wall time.
 uint64_t busy_work(uint64_t seed, unsigned iterations) {
-    for (unsigned i = 0; i < iterations; ++i) { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; }
+    for (unsigned i = 0; i < iterations; ++i) {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+    }
     return seed;
 }
 // A small-CPU frame model: the game thread computes in chunks, posts bursts of
@@ -250,7 +255,8 @@ void contention() {
         worker_sink = seed;
     });
     struct Replay final : Gx2AsyncWork {
-        std::atomic<uint64_t>& sink; uint64_t seed;
+        std::atomic<uint64_t>& sink;
+        uint64_t seed;
         Replay(std::atomic<uint64_t>& sink, uint64_t seed) : sink(sink), seed(seed) {}
         void run() override { sink.fetch_add(busy_work(seed, 12000), std::memory_order_relaxed); }
     };
@@ -265,14 +271,20 @@ void contention() {
     double cpu_start = 0;
     auto run_start = std::chrono::steady_clock::now();
     for (unsigned f = 0; f < frames + warmup; ++f) {
-        if (f == warmup) { steps_start = worker_steps.load(); cpu_start = process_cpu(); run_start = std::chrono::steady_clock::now(); }
+        if (f == warmup) {
+            steps_start = worker_steps.load();
+            cpu_start = process_cpu();
+            run_start = std::chrono::steady_clock::now();
+        }
         const auto start = std::chrono::steady_clock::now();
         for (unsigned chunk = 0; chunk < 8; ++chunk) {
             seed = busy_work(seed, 1000000);
             for (unsigned i = 0; i < 40; ++i) gx2_native_post(new Replay(sink, seed + i));
         }
         gx2_native_run(true, [] {});
-        if (f >= warmup) times.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+        if (f >= warmup)
+            times.push_back(
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
     }
     const double wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - run_start).count();
     const double cpu = process_cpu() - cpu_start;
@@ -488,7 +500,7 @@ int main(int argc, char** argv) {
             throw std::runtime_error("unknown test mode");
         return 0;
     } catch (const std::exception& error) {
-        std::fprintf(stderr, "FAIL: %s\n", error.what());
+        RBREW_LOG_ERROR("test", "FAIL: %s", error.what());
         return 1;
     }
 }

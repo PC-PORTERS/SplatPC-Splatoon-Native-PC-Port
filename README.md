@@ -122,8 +122,7 @@ cmake --build build/rebrewu --target rebrewu
 # 2. Recompile your dump into C++ (writes build/generated/Gambit).
 #    The RPX selects its manifest from Manifest/*.manifest automatically.
 build/rebrewu/bin/rebrewu recompile \
-    --rpx "/path/to/dump/code/Gambit.rpx" --output build/generated/Gambit \
-    --analyzer-entries profiles/agmp-v16.entries --hooks profiles/agmp-v16.hooks
+    --rpx "/path/to/dump/code/Gambit.rpx" --output build/generated/Gambit
 
 # 3. Game (after ./setup.sh has built the SDL2/glslang dependency profile)
 cmake -S recompiler/port -B build/game -G Ninja -DCMAKE_BUILD_TYPE=Release \

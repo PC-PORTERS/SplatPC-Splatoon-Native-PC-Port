@@ -30,8 +30,6 @@ $Downloads = Join-Path $Work 'downloads'
 
 # Every Manifest\*.manifest describes one supported image; the RPX selects it.
 $ManifestDir = Join-Path $Root 'Manifest'
-$BoundaryProfile = Join-Path $Root 'profiles\agmp-v16.entries'
-$HookProfile = Join-Path $Root 'profiles\agmp-v16.hooks'
 $MinimumFunctionCount = 96300
 
 # Open-source build dependencies (official upstream releases).
@@ -315,8 +313,6 @@ if ($Root -match '[^\x00-\x7F]') {
     $Recompiler = Join-Path $Root 'recompiler'
     $Work = Join-Path $Root 'build'
     $Downloads = Join-Path $Work 'downloads'
-    $BoundaryProfile = Join-Path $Root 'profiles\agmp-v16.entries'
-    $HookProfile = Join-Path $Root 'profiles\agmp-v16.hooks'
 }
 # A build folder configured under another path (the folder was moved or
 # renamed, or the drive above is new): CMake refuses the old cache. Reset that
@@ -692,18 +688,16 @@ Step 'Recompiling your Gambit.rpx into C++ (a few minutes)'
 $script:StepSw = [System.Diagnostics.Stopwatch]::StartNew()
 $generated = Join-Path $Work 'generated\Gambit'
 $stamp = Join-Path $Work 'generated\source.sha256'
-if (-not (Test-Path -LiteralPath $BoundaryProfile -PathType Leaf)) { Fail 'The supported-game boundary profile is missing. Extract the complete repository ZIP, including profiles, and retry.' }
-if (-not (Test-Path -LiteralPath $HookProfile -PathType Leaf)) { Fail 'The supported-game hook profile is missing. Extract the complete repository ZIP, including profiles, and retry.' }
-# The profile is address metadata, not game code. The RPX hash above selects
-# its supported version; RebrewU still validates each boundary against the RPX.
-# Include it in the stamp so incomplete builds made without it regenerate.
-$current = $rpxHash + ':' + (File-Sha256 $rebrewu.FullName) + ':' + (File-Sha256 $BoundaryProfile) + ':' + (File-Sha256 $HookProfile) + ':' + (File-Sha256 $SelectedManifest)
+# The manifest carries the entry boundaries, hook list and patches. The RPX
+# hash above selects its supported version; RebrewU still validates each
+# boundary against the RPX. Include the tool and manifest hashes in the stamp
+# so changes regenerate.
+$current = $rpxHash + ':' + (File-Sha256 $rebrewu.FullName) + ':' + (File-Sha256 $SelectedManifest)
 if (-not ((Complete-GeneratedModule $generated) -and (Test-Path -LiteralPath $stamp) -and ((Get-Content -LiteralPath $stamp -Raw).Trim() -eq $current))) {
     # Safe incremental regeneration: CppEmitter preserves unchanged file timestamps
     # and safely archives obsolete parts to avoid wiping valid compilation units.
     Ensure-Folder $generated
-    # Hook wrappers let the port attach opt-in host code to listed functions.
-    & $rebrewu.FullName recompile --rpx $rpx --output $generated --manifest $SelectedManifest --analyzer-entries $BoundaryProfile --hooks $HookProfile
+    & $rebrewu.FullName recompile --rpx $rpx --output $generated --manifest $SelectedManifest
     Check-Exit 'Recompiling Gambit.rpx'
     if (-not (Complete-GeneratedModule $generated)) { Fail 'The recompiler did not produce the complete supported-game function table. Installation stopped before building an incomplete game.' }
     Set-Content -LiteralPath $stamp -Value $current -Encoding ASCII

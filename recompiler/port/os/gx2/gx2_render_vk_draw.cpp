@@ -3683,19 +3683,21 @@ bool build_stage(uint8_t* mem, Program& prog, unsigned stage, StageDescriptors& 
                                     if (!(seen & bit)) {
                                         seen |= bit;
                                         const std::span<const uint8_t> v{mem + source.address, source.size};
-                                        std::fprintf(stderr,
-                                                     "[material] unmapped %016llx bank=%u bytes=%u "
-                                                     "byte=(%.4g,%.4g,%.4g / %.4g / %.4g) ",
-                                                     (unsigned long long)material->albedo_hash, entry.bank, source.size,
-                                                     gx2material::value(v, 240), gx2material::value(v, 244),
-                                                     gx2material::value(v, 248), gx2material::value(v, 384),
-                                                     gx2material::value(v, 420));
-                                        if (source.size >= 1684)
-                                            std::fprintf(stderr, "word=(%.4g,%.4g,%.4g / %.4g / %.4g)",
-                                                         gx2material::value(v, 960), gx2material::value(v, 964),
-                                                         gx2material::value(v, 968), gx2material::value(v, 1536),
-                                                         gx2material::value(v, 1680));
-                                        std::fputc('\n', stderr);
+                                        char text[512];
+                                        int n = std::snprintf(text, sizeof text,
+                                                              "unmapped %016llx bank=%u bytes=%u "
+                                                              "byte=(%.4g,%.4g,%.4g / %.4g / %.4g) ",
+                                                              (unsigned long long)material->albedo_hash, entry.bank,
+                                                              source.size, gx2material::value(v, 240),
+                                                              gx2material::value(v, 244), gx2material::value(v, 248),
+                                                              gx2material::value(v, 384), gx2material::value(v, 420));
+                                        if (n > 0 && size_t(n) < sizeof text && source.size >= 1684)
+                                            std::snprintf(text + n, sizeof text - size_t(n),
+                                                          "word=(%.4g,%.4g,%.4g / %.4g / %.4g)",
+                                                          gx2material::value(v, 960), gx2material::value(v, 964),
+                                                          gx2material::value(v, 968), gx2material::value(v, 1536),
+                                                          gx2material::value(v, 1680));
+                                        RBREW_LOG_DEBUG("material", "%s", text);
                                     }
                                 }
                             }
@@ -3710,10 +3712,9 @@ bool build_stage(uint8_t* mem, Program& prog, unsigned stage, StageDescriptors& 
                                 const auto bit = 1u << (unsigned(material - gx2material::responses) * 2 + stage);
                                 if (log && !(seen & bit)) {
                                     seen |= bit;
-                                    std::fprintf(stderr,
-                                                 "[material] remapped %016llx stage=%u bank=%u units=%u bytes=%u\n",
-                                                 (unsigned long long)material->albedo_hash, stage, entry.bank, scale,
-                                                 source.size);
+                                    RBREW_LOG_DEBUG("material", "remapped %016llx stage=%u bank=%u units=%u bytes=%u",
+                                                    (unsigned long long)material->albedo_hash, stage, entry.bank, scale,
+                                                    source.size);
                                 }
                             }
                         }
@@ -3948,8 +3949,8 @@ bool build_stage(uint8_t* mem, Program& prog, unsigned stage, StageDescriptors& 
             const auto bit = 1u << unsigned(material - gx2material::responses);
             if (log && !(seen & bit)) {
                 seen |= bit;
-                std::fprintf(stderr, "[material] calibrated %016llx stage=%u bank=%u bytes=%llu\n",
-                             (unsigned long long)material->albedo_hash, stage, bank, (unsigned long long)span.size);
+                RBREW_LOG_DEBUG("material", "calibrated %016llx stage=%u bank=%u bytes=%llu",
+                                (unsigned long long)material->albedo_hash, stage, bank, (unsigned long long)span.size);
             }
         }
         const VkDeviceSize range =

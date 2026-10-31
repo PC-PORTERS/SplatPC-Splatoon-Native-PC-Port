@@ -240,8 +240,8 @@ VkShaderModule shader_module(VkShaderStageFlagBits stage, const std::string& sou
                             log.c_str(), source.c_str());
             // RBREW_SHADER_ERRORS: 1 = compiler log in release builds, 2 = also the failing source.
             if (const char* v = std::getenv("RBREW_SHADER_ERRORS"); v && (v[0] == '1' || v[0] == '2')) {
-                std::fprintf(stderr, "[vk] shader compilation failed (stage %d):\n%s\n", int(stage), log.c_str());
-                if (v[0] == '2') std::fprintf(stderr, "----- source -----\n%s\n", source.c_str());
+                RBREW_LOG_ERROR("vk", "shader compilation failed (stage %d):\n%s\n", int(stage), log.c_str());
+                if (v[0] == '2') RBREW_LOG_ERROR("vk", "----- source -----\n%s\n", source.c_str());
             }
             promise->set_value(VK_NULL_HANDLE);
             return VK_NULL_HANDLE;

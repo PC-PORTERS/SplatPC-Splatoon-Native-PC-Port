@@ -102,15 +102,15 @@ jobs:
             -DREBREWU_BUILD_TESTS=OFF
           cmake --build build/rebrewu --config Release --target rebrewu --parallel
 
-      - name: Verify RebrewU recompiler CLI and profiles
+      - name: Verify RebrewU recompiler CLI and manifest
         shell: pwsh
         run: |
           $rebrewu = (Get-ChildItem -Path build/rebrewu -Recurse -Filter rebrewu.exe | Select-Object -First 1).FullName
           $output = (& $rebrewu 2>&1 | Out-String)
           $global:LASTEXITCODE = 0
           if ($output -notmatch "Usage:") { throw "rebrewu CLI did not output usage" }
-          if (-not (Test-Path "profiles/agmp-v16.entries")) { throw "Missing entries profile" }
-          if (-not (Test-Path "profiles/agmp-v16.hooks")) { throw "Missing hooks profile" }
+          & $rebrewu manifest verify --manifest Manifest/Gambit_v16.manifest
+          if ($LASTEXITCODE -ne 0) { throw "Manifest verification failed" }
 
       - name: Configure & build port runtime and regression tests
         shell: pwsh

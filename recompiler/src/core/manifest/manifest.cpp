@@ -74,6 +74,11 @@ std::string normalize_value(const std::string& raw) {
     return normalize_atom(v);
 }
 
+// An explicit `Undefined` hash opts a section out of verification.
+bool is_undefined_hash(const std::string& raw) {
+    return lower(trim(raw)) == "undefined";
+}
+
 bool parse_hex_u32(const std::string& raw, uint32_t& out) {
     std::string t = trim(raw);
     if (t.size() > 2 && t[0] == '0' && (t[1] == 'x' || t[1] == 'X')) t = t.substr(2);
@@ -216,7 +221,8 @@ std::string to_hex(const std::array<uint8_t, 32>& digest) {
 } // namespace
 
 bool is_hashed_section(const std::string& name) {
-    return name == "identity" || name == "modules" || name == "imports" || name == "entries";
+    return name == "identity" || name == "modules" || name == "imports" || name == "entries" || name == "hooks" ||
+           name == "patches";
 }
 
 std::string format_hash(uint64_t value) {
@@ -360,20 +366,82 @@ Manifest parse_text(const std::string& text, const std::string& path) {
         m.imports.push_back(std::move(import));
     }
 
-    // [entries]: "0xADDR = normal|force"
-    for (const auto& [key, value] : sections["entries"]) {
-        if (key == "hash") continue;
-        Entry entry;
-        if (!parse_hex_u32(key, entry.address)) {
-            m.errors.push_back("[entries] '" + key + "' is not a 32-bit address");
-            continue;
+    // [entries]: "0xADDR = normal|force|corroborate"
+    {
+        std::map<uint32_t, std::string> seen;
+        for (const auto& [key, value] : sections["entries"]) {
+            if (key == "hash") continue;
+            Entry entry;
+            if (!parse_hex_u32(key, entry.address)) {
+                m.errors.push_back("[entries] '" + key + "' is not a 32-bit address");
+                continue;
+            }
+            const std::string mode = lower(trim(value));
+            if (mode == "force")
+                entry.force = true;
+            else if (mode == "corroborate")
+                entry.corroborate = true;
+            else if (mode != "normal")
+                m.errors.push_back("[entries] " + key + ": mode must be 'normal', 'force' or 'corroborate'");
+            const auto [it, inserted] = seen.emplace(entry.address, key);
+            if (!inserted) {
+                m.errors.push_back("[entries] " + key + " duplicates " + it->second);
+                continue;
+            }
+            m.entries.push_back(entry);
         }
-        const std::string mode = lower(trim(value));
-        if (mode == "force")
-            entry.force = true;
-        else if (mode != "normal")
-            m.errors.push_back("[entries] " + key + ": mode must be 'normal' or 'force'");
-        m.entries.push_back(entry);
+    }
+
+    // [hooks]: "0xADDR = hook"
+    {
+        std::map<uint32_t, std::string> seen;
+        for (const auto& [key, value] : sections["hooks"]) {
+            if (key == "hash") continue;
+            uint32_t address = 0;
+            if (!parse_hex_u32(key, address)) {
+                m.errors.push_back("[hooks] '" + key + "' is not a 32-bit address");
+                continue;
+            }
+            if (address & 3u) {
+                m.errors.push_back("[hooks] " + key + ": address is not 4-byte aligned");
+                continue;
+            }
+            if (lower(trim(value)) != "hook") m.errors.push_back("[hooks] " + key + ": value must be 'hook'");
+            const auto [it, inserted] = seen.emplace(address, key);
+            if (!inserted) {
+                m.errors.push_back("[hooks] " + key + " duplicates " + it->second);
+                continue;
+            }
+            m.hooks.push_back(address);
+        }
+    }
+
+    // [patches]: "0xADDR = instruction"
+    {
+        std::map<uint32_t, std::string> seen;
+        for (const auto& [key, value] : sections["patches"]) {
+            if (key == "hash") continue;
+            Patch patch;
+            if (!parse_hex_u32(key, patch.address)) {
+                m.errors.push_back("[patches] '" + key + "' is not a 32-bit address");
+                continue;
+            }
+            if (patch.address & 3u) {
+                m.errors.push_back("[patches] " + key + ": address is not 4-byte aligned");
+                continue;
+            }
+            patch.instruction = trim(value);
+            if (patch.instruction.empty()) {
+                m.errors.push_back("[patches] " + key + ": missing instruction");
+                continue;
+            }
+            const auto [it, inserted] = seen.emplace(patch.address, key);
+            if (!inserted) {
+                m.errors.push_back("[patches] " + key + " duplicates " + it->second);
+                continue;
+            }
+            m.patches.push_back(std::move(patch));
+        }
     }
 
     std::sort(m.imports.begin(), m.imports.end(), [](const Import& a, const Import& b) {
@@ -381,12 +449,19 @@ Manifest parse_text(const std::string& text, const std::string& path) {
         return a.symbol < b.symbol;
     });
     std::sort(m.entries.begin(), m.entries.end(), [](const Entry& a, const Entry& b) { return a.address < b.address; });
+    std::sort(m.hooks.begin(), m.hooks.end());
+    std::sort(m.patches.begin(), m.patches.end(), [](const Patch& a, const Patch& b) { return a.address < b.address; });
 
-    // Per-section hashes: only the section's own pairs contribute.
+    // Per-section hashes: only the section's own pairs contribute. A section
+    // whose hash is `Undefined` is explicitly opted out of verification.
     for (const auto& [name, pairs] : sections) {
         if (!is_hashed_section(name)) continue;
-        m.computed_hashes[name] = section_hash(pairs);
         const auto stored = pairs.find("hash");
+        if (stored != pairs.end() && is_undefined_hash(stored->second)) {
+            m.ignored_hashes.insert(name);
+            continue;
+        }
+        m.computed_hashes[name] = section_hash(pairs);
         if (stored == pairs.end()) {
             m.warnings.push_back("section [" + name + "] has no hash line");
             continue;
@@ -415,6 +490,7 @@ std::optional<Manifest> parse_file(const std::string& path, std::string* error) 
 bool verify_hashes(Manifest& m) {
     bool ok = m.errors.empty();
     for (const auto& [name, computed] : m.computed_hashes) {
+        if (m.ignored_hashes.contains(name)) continue;
         const auto stored = m.stored_hashes.find(name);
         if (stored == m.stored_hashes.end()) {
             m.errors.push_back("[" + name + "] has no hash line (run 'manifest seal')");
@@ -471,7 +547,9 @@ bool seal_file(const std::string& path, std::string* error) {
             output.push_back(line);
             const std::string name = lower(trim(std::string_view(bare).substr(1, bare.size() - 2)));
             // Insert a hash line for a hashed section that never had one.
-            if (is_hashed_section(name) && !parsed.stored_hashes.contains(name)) {
+            // An ignored `hash = Undefined` line is preserved as written.
+            if (is_hashed_section(name) && !parsed.stored_hashes.contains(name) &&
+                !parsed.ignored_hashes.contains(name)) {
                 current = name;
                 pending_hash = true;
             } else {

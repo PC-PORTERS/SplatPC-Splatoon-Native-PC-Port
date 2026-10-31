@@ -154,7 +154,8 @@ add_library(gambit_runtime STATIC
     os/padscore/padscore.cpp
     os/stubs/stubs.cpp
     os/nsysnet/nsysnet.cpp
-    os/game/player_anim.cpp
+    hooks/gx2_camera_hooks.cpp
+    hooks/player_anim.cpp
     loader/gambit_loader.cpp
     loader/native_console_profile.cpp
     runtime/splatoon_diagnostics.cpp

@@ -547,7 +547,7 @@ int main(int argc, char** argv) {
     // Register all recompiled game functions so rbrew_dispatch can find them
     Gambit_game_register(&cpu_reg);
     player_anim_register();
-    gx2env::register_hooks(); // camera field of view (gx2_env_light.h)
+    gx2env::register_hooks(); // game camera hooks (hooks/gx2_camera_hooks.h)
     erreula_register(&cpu_reg);
 
     RBREW_LOG_INFO("IMPORT", "OS modules and game dispatch registered\n");

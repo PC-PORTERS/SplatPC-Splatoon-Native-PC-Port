@@ -6,6 +6,7 @@
 #include "os/gx2/gx2_weather_shaders.h"
 #include "os/gx2/vk/gx2_vk_shader.h"
 #include "runtime/port_settings.h"
+#include "rebrewu/logger.hpp"
 #include <bit>
 #include <cmath>
 #include <cstdio>
@@ -787,7 +788,7 @@ int main(int argc, char** argv) {
         collision();
         return 0;
     } catch (const std::exception& e) {
-        std::fprintf(stderr, "FAILED: %s\n", e.what());
+        RBREW_LOG_ERROR("test", "FAILED: %s", e.what());
         return 1;
     }
 }

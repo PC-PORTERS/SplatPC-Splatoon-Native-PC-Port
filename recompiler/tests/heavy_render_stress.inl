@@ -1,6 +1,7 @@
 // Authored populated-scene proxy, with no game code, assets or scene claims.
 // Kept beside production draw helpers to exercise vertex translation and residency.
 #include "../port/runtime/rebrewu_memory_observer.h"
+#include "rebrewu/logger.hpp"
 void gx2_render_vk_test_heavy(bool overdraw, bool push) {
     using namespace render_stress;
     using Clock = std::chrono::steady_clock;
@@ -295,8 +296,8 @@ void gx2_render_vk_test_heavy(bool overdraw, bool push) {
         const auto result = vkGetQueryPoolResults(gx2vk::device(), timestamps, 0, frames * 2, ticks.size() * 8,
                                                   ticks.data(), 8, VK_QUERY_RESULT_64_BIT);
         if (result != VK_SUCCESS)
-            std::fprintf(stderr, "timestamp result=%d valid_bits=%u submissions=%llu\n", int(result), valid_bits,
-                         (unsigned long long)(gx2vk::submission_count() - submissions));
+            RBREW_LOG_WARN("render", "timestamp result=%d valid_bits=%u submissions=%llu", int(result), valid_bits,
+                           (unsigned long long)(gx2vk::submission_count() - submissions));
         require(result == VK_SUCCESS, "heavy timestamps unavailable");
         const uint64_t mask = valid_bits == 64 ? ~0ull : (1ull << valid_bits) - 1;
         for (unsigned f = 0; f < frames; ++f)
@@ -325,8 +326,8 @@ void gx2_render_vk_test_heavy(bool overdraw, bool push) {
                 const size_t p = ((o / 32 * 16 + 8) * extent + o % 32 * 16 + 8) * 4;
                 for (unsigned c = 0; c < 3; ++c) {
                     if (std::abs(int(pixels[p + c]) - int(expected[c])) > 2)
-                        std::fprintf(stderr, "pixel target=%u object=%u component=%u actual=%u expected=%u\n", target,
-                                     o, c, pixels[p + c], expected[c]);
+                        RBREW_LOG_WARN("render", "pixel target=%u object=%u component=%u actual=%u expected=%u", target,
+                                       o, c, pixels[p + c], expected[c]);
                     require(std::abs(int(pixels[p + c]) - int(expected[c])) <= 2,
                             "heavy texture/shadow/blend/order output mismatch");
                 }

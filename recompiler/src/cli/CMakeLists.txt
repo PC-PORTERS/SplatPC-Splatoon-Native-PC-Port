@@ -14,6 +14,7 @@ target_link_libraries(rebrewu
     PRIVATE
         rebrewu_core
         rebrewu_ppc
+        rebrewu_patches
         rebrewu_ir
         rebrewu_analysis
         rebrewu_codegen

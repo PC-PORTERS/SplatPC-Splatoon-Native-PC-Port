@@ -16,7 +16,7 @@
 //
 // Addresses and layouts were reverse-engineered from the v16 executable and
 // one recorded trace (docs/player-anim-trace.md); names are descriptive.
-#include "../../runtime/rebrewu_runtime.h"
+#include "../runtime/rebrewu_runtime.h"
 #include <array>
 #include <chrono>
 #include <cstdarg>

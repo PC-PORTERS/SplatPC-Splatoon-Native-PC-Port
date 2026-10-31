@@ -2879,8 +2879,8 @@ static void dump_frame(gx2vk::Image& image, uint32_t width, uint32_t height, con
     if (!gx2vk::read_image(image, VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, width, height, raw)) return;
     previous = frame;
     if (replay_position)
-        std::fprintf(stderr, "[capture] %s recorded=%u live=%u\n", prefix, frame,
-                     rbrew_benchmark::frame.load(std::memory_order_relaxed));
+        RBREW_LOG_DEBUG("capture", "%s recorded=%u live=%u", prefix, frame,
+                        rbrew_benchmark::frame.load(std::memory_order_relaxed));
     rbrew_benchmark::captured_frame.store(rbrew_benchmark::frame.load(), std::memory_order_relaxed);
     char name[64];
     std::snprintf(name, sizeof(name), "%s_%05u", prefix, frame);
@@ -3712,7 +3712,7 @@ static void save_photo(const std::vector<uint8_t>& rgba, uint32_t width, uint32_
         if (factory) factory->Release();
         CoUninitialize();
     }).join();
-    std::fprintf(stderr, "[photo] %s %ls (%ux%u)\n", ok ? "saved" : "could not save", path.c_str(), width, height);
+    RBREW_LOG_INFO("photo", "%s %ls (%ux%u)", ok ? "saved" : "could not save", path.c_str(), width, height);
 #else
     (void)rgba;
     (void)width;

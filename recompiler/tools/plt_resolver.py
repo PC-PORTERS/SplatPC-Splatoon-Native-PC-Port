@@ -40,7 +40,7 @@ import sys
 from pathlib import Path
 
 FORMAT = "rebrew-manifest/1"
-HASHED_SECTIONS = ("identity", "modules", "imports", "entries")
+HASHED_SECTIONS = ("identity", "modules", "imports", "entries", "hooks", "patches")
 FNV_OFFSET = 0xCBF29CE484222325
 FNV_PRIME = 0x100000001B3
 MASK64 = (1 << 64) - 1
@@ -141,8 +141,11 @@ class Manifest:
         self.modules = {}
         self.imports = []
         self.entries = []
+        self.hooks = []
+        self.patches = []
         self.stored = {}
         self.computed = {}
+        self.ignored = set()
         self.errors = []
         self.warnings = []
 
@@ -216,6 +219,7 @@ def parse_manifest(text, path):
         m.imports.append(Import(module.strip(), symbol.strip(), address, is_data))
     m.imports.sort(key=lambda i: (i.module, i.symbol))
 
+    seen_entries = {}
     for key, value in sections.get("entries", {}).items():
         if key == "hash":
             continue
@@ -224,16 +228,66 @@ def parse_manifest(text, path):
             m.errors.append("[entries] '%s' is not a 32-bit address" % key)
             continue
         mode = value.strip().lower()
-        if mode not in ("normal", "force"):
-            m.errors.append("[entries] %s: mode must be 'normal' or 'force'" % key)
+        if mode not in ("normal", "force", "corroborate"):
+            m.errors.append("[entries] %s: mode must be 'normal', 'force' or 'corroborate'" % key)
             continue
+        if address in seen_entries:
+            m.errors.append("[entries] %s duplicates %s" % (key, seen_entries[address]))
+            continue
+        seen_entries[address] = key
         m.entries.append((address, mode))
     m.entries.sort()
+
+    seen_hooks = {}
+    for key, value in sections.get("hooks", {}).items():
+        if key == "hash":
+            continue
+        address = parse_hex_u32(key)
+        if address is None:
+            m.errors.append("[hooks] '%s' is not a 32-bit address" % key)
+            continue
+        if address & 3:
+            m.errors.append("[hooks] %s: address is not 4-byte aligned" % key)
+            continue
+        if value.strip().lower() != "hook":
+            m.errors.append("[hooks] %s: value must be 'hook'" % key)
+            continue
+        if address in seen_hooks:
+            m.errors.append("[hooks] %s duplicates %s" % (key, seen_hooks[address]))
+            continue
+        seen_hooks[address] = key
+        m.hooks.append((address, "hook"))
+    m.hooks.sort()
+
+    seen_patches = {}
+    for key, value in sections.get("patches", {}).items():
+        if key == "hash":
+            continue
+        address = parse_hex_u32(key)
+        if address is None:
+            m.errors.append("[patches] '%s' is not a 32-bit address" % key)
+            continue
+        if address & 3:
+            m.errors.append("[patches] %s: address is not 4-byte aligned" % key)
+            continue
+        instruction = value.strip()
+        if not instruction:
+            m.errors.append("[patches] %s: missing instruction" % key)
+            continue
+        if address in seen_patches:
+            m.errors.append("[patches] %s duplicates %s" % (key, seen_patches[address]))
+            continue
+        seen_patches[address] = key
+        m.patches.append((address, instruction))
+    m.patches.sort()
 
     for name in HASHED_SECTIONS:
         if name not in sections:
             continue
         pairs = sections[name]
+        if "hash" in pairs and pairs["hash"].strip().lower() == "undefined":
+            m.ignored.add(name)
+            continue
         m.computed[name] = section_hash(pairs)
         if "hash" not in pairs:
             m.warnings.append("section [%s] has no hash line" % name)
@@ -258,6 +312,8 @@ def load_manifest(path):
 def verify_hashes(m):
     ok = not m.errors
     for name, computed in m.computed.items():
+        if name in m.ignored:
+            continue
         if name not in m.stored:
             m.errors.append("[%s] has no hash line (run 'seal')" % name)
             ok = False
@@ -399,12 +455,12 @@ def seal_file(path):
             flush()
             output.append(line)
             current = bare[1:-1].strip().lower()
-            if current in HASHED_SECTIONS and current not in parsed.stored:
+            if current in HASHED_SECTIONS and current not in parsed.stored and current not in parsed.ignored:
                 pending = True
             continue
         if "=" in bare:
             key = bare.split("=", 1)[0].strip().lower()
-            if key == "hash" and current in parsed.computed:
+            if key == "hash" and current in parsed.computed and current not in parsed.ignored:
                 output.append("hash = " + format_hash(parsed.computed[current]))
                 continue
         output.append(line)
@@ -637,30 +693,29 @@ def scan(args):
     default_header = "os/stubs/stubs_addrs.h"
     data_count = sum(1 for i in imports if i.address >= 0xC0000000)
 
-    # Keep entries a previous run collected: they cannot be derived statically.
+    # Keep entries, hooks and patches a previous run collected: they cannot be
+    # derived statically.
     preserved_entries = []
+    preserved_hooks = []
+    preserved_patches = []
     out_path = Path(args.out)
     if out_path.exists():
         previous = load_manifest(out_path)
         preserved_entries = previous.entries
+        preserved_hooks = previous.hooks
+        preserved_patches = previous.patches
         if previous.errors:
-            print("warning: previous manifest has errors; entries not preserved",
+            print("warning: previous manifest has errors; entries, hooks and patches not preserved",
                   file=sys.stderr)
             preserved_entries = []
+            preserved_hooks = []
+            preserved_patches = []
 
     lines = []
     add = lines.append
     add("# ============================================================================")
     add("# RebrewU manifest — %s" % title)
     add("#")
-    add("# Source of truth for everything guest-specific about this image. Adding a")
-    add("# version or a region means adding a manifest, not editing C++ source.")
-    add("# Format: see Manifest/README.md  (\"%s\")" % FORMAT)
-    add("#")
-    add("# Every data section carries its own `hash` line, computed over that")
-    add("# section's own pairs only: comments, blank lines, pair order and any")
-    add("# additional section are outside it, so extending this file never")
-    add("# invalidates it. Re-seal with:  plt_resolver.py seal --manifest <file>")
     add("# ============================================================================")
     add("")
     add("[manifest]")
@@ -713,20 +768,41 @@ def scan(args):
     add("[entries]")
     add("# Guest entry points reached only through indirect dispatch (vtable calls,")
     add("# function-pointer tables): the static scanners cannot prove them.")
-    add("# normal = validated by the usual code-address checks")
-    add("# force  = bypass that check when the target sits in a coverage gap")
+    add("# normal      = validated hint")
+    add("# force       = hint that bypasses the code-address check in a coverage gap")
+    add("# corroborate = external analyzer evidence only; never a discovery hint")
     if preserved_entries:
         add("# Preserved from the previous manifest.")
     add("hash = 0x0000000000000000")
     for address, mode in preserved_entries:
         add("0x%08X = %s" % (address, mode))
     add("")
+    add("[hooks]")
+    add("# Guest function entries wrapped so the port can attach opt-in host hooks.")
+    add("# Without a registered hook, a wrapper calls the original body directly.")
+    if preserved_hooks:
+        add("# Preserved from the previous manifest.")
+    add("hash = 0x0000000000000000")
+    for address, mode in preserved_hooks:
+        add("0x%08X = %s" % (address, mode))
+    add("")
+    add("[patches]")
+    add("# 0xADDR = instruction, applied when this manifest is used to recompile")
+    add("# the image. The instruction is PowerPC assembly (cmpwi, li, stw, b, ...);")
+    add("# branch targets are absolute guest addresses.")
+    if preserved_patches:
+        add("# Preserved from the previous manifest.")
+    add("hash = 0x0000000000000000")
+    for address, instruction in preserved_patches:
+        add("0x%08X = %s" % (address, instruction))
+    add("")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines), encoding="utf-8")
     sealed = seal_file(out_path)
-    print("Wrote %s: %d imports (%d data), %d entries, %d hashed sections"
-          % (out_path, len(imports), data_count, len(preserved_entries), sealed))
+    print("Wrote %s: %d imports (%d data), %d entries, %d hooks, %d patches, %d hashed sections"
+          % (out_path, len(imports), data_count, len(preserved_entries),
+             len(preserved_hooks), len(preserved_patches), sealed))
 
 
 
@@ -849,8 +925,8 @@ def main(argv=None):
             ok = ok and not problems
         if not ok:
             return 1
-        print("Manifest OK: %s (%d hashed sections, %d imports, %d entries)"
-              % (m.id, len(m.computed), len(m.imports), len(m.entries)))
+        print("Manifest OK: %s (%d hashed sections, %d imports, %d entries, %d hooks, %d patches)"
+              % (m.id, len(m.computed), len(m.imports), len(m.entries), len(m.hooks), len(m.patches)))
         return 0
 
     if args.command == "seal":
@@ -868,7 +944,10 @@ def main(argv=None):
         print("Entry point: 0x%08X" % m.identity_u32("entry_point"))
         print("Modules:     %d" % len(m.modules))
         print("Imports:     %d" % len(m.imports))
-        print("Entries:     %d" % len(m.entries))
+        corroborating = sum(1 for _, mode in m.entries if mode == "corroborate")
+        print("Entries:     %d (%d hints, %d corroborating)" % (len(m.entries), len(m.entries) - corroborating, corroborating))
+        print("Hooks:       %d" % len(m.hooks))
+        print("Patches:     %d" % len(m.patches))
         print("Sections:    %d hashed" % len(m.computed))
         return 0
 

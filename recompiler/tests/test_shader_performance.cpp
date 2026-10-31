@@ -4,6 +4,7 @@
 #include "runtime/rebrewu_runtime.h"
 #include "os/gx2/vk/gx2_vk_shader.h"
 #include "os/gx2/vk/gx2_compile_queue.h"
+#include "rebrewu/logger.hpp"
 #ifdef DEFINE_ENUM_FLAG_OPERATORS
 #undef DEFINE_ENUM_FLAG_OPERATORS
 #endif
@@ -230,7 +231,7 @@ bool reference(const Source& source, std::vector<uint32_t>& spirv) {
         spirv.resize(glslang_program_SPIRV_get_size(program));
         glslang_program_SPIRV_get(program, spirv.data());
     }
-    if (!ok) std::fprintf(stderr, "reference: %s\n", glslang_shader_get_info_log(shader));
+    if (!ok) RBREW_LOG_ERROR("shader", "reference: %s", glslang_shader_get_info_log(shader));
     glslang_program_delete(program);
     glslang_shader_delete(shader);
     return ok;
@@ -846,7 +847,7 @@ int main(int argc, char** argv) {
             throw std::runtime_error("unknown benchmark");
         return 0;
     } catch (const std::exception& e) {
-        std::fprintf(stderr, "FAIL: %s\n", e.what());
+        RBREW_LOG_ERROR("test", "FAIL: %s", e.what());
         return 1;
     }
 }

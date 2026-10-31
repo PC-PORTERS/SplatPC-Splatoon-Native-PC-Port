@@ -91,7 +91,7 @@ constexpr float kAdaptReference = 0.07f;
 
 bool fail(const char* what) {
     s_failed = true;
-    std::fprintf(stderr, "[weather] %s unavailable; keeping the original sky\n", what);
+    RBREW_LOG_WARN("weather", "%s unavailable; keeping the original sky", what);
     return false;
 }
 
@@ -410,7 +410,7 @@ void fill(Params& p, const Frame& f, uint32_t w, uint32_t h) {
     p.post[1] = f.settings.film_look ? 0.015f : 0.f;
     p.post[2] = f.settings.film_look ? 2.f / float(std::max(w, 1u)) : 0.f; // subpixel fringes at every resolution
     p.post[3] = float(s_frame_index % 997);
-    // The wiggle moves the real camera now (gx2_env_light.cpp camera hook);
+    // The wiggle moves the real camera now (hooks/gx2_camera_hooks.cpp);
     // RBREW_IMAGE_SWAY=1: the old shift of the picture in cinema mode.
     static const bool image_sway = [] {
         const char* v = std::getenv("RBREW_IMAGE_SWAY");
@@ -635,7 +635,7 @@ VkPipeline sky_pipeline(const VkFormat* colors, VkFormat depth, bool stencil) {
     info.layout = s_layout;
     if (vkCreateGraphicsPipelines(gx2vk::device(), gx2vk::pipeline_cache(), 1, &info, nullptr, &entry->second) !=
         VK_SUCCESS)
-        std::fprintf(stderr, "[weather] Sky pipeline unavailable\n");
+        RBREW_LOG_ERROR("weather", "Sky pipeline unavailable");
     return entry->second;
 }
 
@@ -700,7 +700,7 @@ VkPipeline rain_pipeline(VkFormat format) {
     info.layout = s_layout;
     if (vkCreateGraphicsPipelines(gx2vk::device(), gx2vk::pipeline_cache(), 1, &info, nullptr, &entry->second) !=
         VK_SUCCESS)
-        std::fprintf(stderr, "[weather] Rain pipeline unavailable\n");
+        RBREW_LOG_ERROR("weather", "Rain pipeline unavailable");
     return entry->second;
 }
 
@@ -756,15 +756,15 @@ bool apply(gx2vk::Image& color, gx2vk::Image& depth, const Camera& camera, const
     if (s_cover_loading.valid() && s_cover_loading.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
         try {
             if (!set_rain_cover(s_cover_loading.get()))
-                std::fprintf(stderr, "[weather] Collision cover unavailable; rain stays off\n");
+                RBREW_LOG_WARN("weather", "Collision cover unavailable; rain stays off");
         } catch (const std::exception&) {
-            std::fprintf(stderr, "[weather] Could not load the collision cover; rain stays off\n");
+            RBREW_LOG_WARN("weather", "Could not load the collision cover; rain stays off");
         }
     }
     static bool format_logged = false;
     if (!format_logged && std::getenv("RBREW_WEATHER_LOG")) {
         format_logged = true;
-        std::fprintf(stderr, "[weather] final image format %d\n", int(color.desc.format));
+        RBREW_LOG_DEBUG("weather", "final image format %d", int(color.desc.format));
     }
     Frame f = s_frame;
     f.camera = camera;
@@ -994,7 +994,7 @@ bool apply(gx2vk::Image& color, gx2vk::Image& depth, const Camera& camera, const
                     std::fwrite(raw.data(), 1, raw.size(), out);
                     std::fclose(out);
                 }
-                std::fprintf(stderr, "[weather] dumped %s %ux%u\n", name, image->desc.width, image->desc.height);
+                RBREW_LOG_INFO("weather", "dumped %s %ux%u", name, image->desc.width, image->desc.height);
             }
         }
     }
@@ -1048,7 +1048,7 @@ bool is_dome(uint8_t* memory, uint32_t addr, uint32_t size, uint32_t stride) {
         }
     }
     cache.emplace(key, dome);
-    if (dome) std::fprintf(stderr, "[weather] sky dome found (%u vertices, %u bytes)\n", n, size);
+    if (dome) RBREW_LOG_INFO("weather", "sky dome found (%u vertices, %u bytes)", n, size);
     return dome;
 }
 bool sky_draw(uint8_t* memory, uint32_t count) {
@@ -1153,11 +1153,12 @@ bool find_camera(uint8_t* memory, Camera& camera) {
         }
         if (std::getenv("RBREW_WEATHER_LOG") && now == logged && calls++ < 3) {
             const auto& iv = camera.inverse_view;
-            std::fprintf(stderr,
-                         "[weather-camera] frame %llu bank %d hook %d fov %.2f clip %.2f %.1f view %.3f %.3f %.3f pos "
-                         "%.1f %.1f %.1f target %u\n",
-                         (unsigned long long)now, bank, int(fresh), v.fovy_deg, camera.projection[2],
-                         camera.projection[3], -iv[2], -iv[6], -iv[10], iv[3], iv[7], iv[11], target ? target->id : 0);
+            RBREW_LOG_DEBUG("weather-camera",
+                            "frame %llu bank %d hook %d fov %.2f clip %.2f %.1f view %.3f %.3f %.3f pos "
+                            "%.1f %.1f %.1f target %u",
+                            (unsigned long long)now, bank, int(fresh), v.fovy_deg, camera.projection[2],
+                            camera.projection[3], -iv[2], -iv[6], -iv[10], iv[3], iv[7], iv[11],
+                            target ? target->id : 0);
         }
     };
     if (hook_camera && fresh && look_at_camera(v.pos, v.at, v.up, v.fovy_deg, v.near_z, v.far_z, aspect, camera)) {
@@ -1176,7 +1177,7 @@ bool find_camera(uint8_t* memory, Camera& camera) {
     }
     for (int i = 0; i < 16; ++i)
         if (i != last_bank && try_bank(i)) {
-            if (i != last_bank) std::fprintf(stderr, "[weather] camera block in vertex bank %d\n", i);
+            if (i != last_bank) RBREW_LOG_DEBUG("weather", "camera block in vertex bank %d", i);
             last_bank = i;
             log(i);
             return true;
@@ -1261,7 +1262,7 @@ void observe_draw(uint8_t* memory, uint32_t primitive, uint32_t count) {
             try {
                 s_cover_loading = std::async(std::launch::async, load_cover);
             } catch (const std::exception&) {
-                std::fprintf(stderr, "[weather] Could not start loading the collision cover; rain stays off\n");
+                RBREW_LOG_WARN("weather", "Could not start loading the collision cover; rain stays off");
             }
         }
     }
@@ -1281,12 +1282,12 @@ void observe_draw(uint8_t* memory, uint32_t primitive, uint32_t count) {
     if (why) {
         if (now != why_frame) {
             if (why_frame != UINT32_MAX && why_frame % 300 == 0)
-                std::fprintf(stderr,
-                             "[weather-why] frame %u allowed %d applied %d draws %u depth %u bank %u (size %u) cam %u "
-                             "tv-tris %u rejected %u target %ux%u depth %ux%u\n",
-                             why_frame, int(allowed), int(applied), w_last.draws, w_last.depth_draws, w_last.bank_ok,
-                             w_last.bank_size, w_last.cam_ok, w_last.tv_tris, w_last.tri_rejected, w_last.tw, w_last.th,
-                             w_last.dw, w_last.dh);
+                RBREW_LOG_DEBUG("weather-why",
+                                "frame %u allowed %d applied %d draws %u depth %u bank %u (size %u) cam %u "
+                                "tv-tris %u rejected %u target %ux%u depth %ux%u",
+                                why_frame, int(allowed), int(applied), w_last.draws, w_last.depth_draws, w_last.bank_ok,
+                                w_last.bank_size, w_last.cam_ok, w_last.tv_tris, w_last.tri_rejected, w_last.tw,
+                                w_last.th, w_last.dw, w_last.dh);
             why_frame = now;
             w_now = {};
         }
@@ -1356,10 +1357,9 @@ void observe_draw(uint8_t* memory, uint32_t primitive, uint32_t count) {
         static uint32_t last = 0;
         if (now - last >= 120) {
             last = now;
-            std::fprintf(stderr,
-                         "[graphics] scene %d:%d applied %d color %ux%u depth %ux%u quality %d original_sky %d\n",
-                         s_frame.sky.scene_type, s_frame.sky.scene_id, int(applied), target->width, target->height,
-                         depth->desc.width, depth->desc.height, settings.shader_quality, int(s_frame.sky.post_only));
+            RBREW_LOG_INFO("graphics", "scene %d:%d applied %d color %ux%u depth %ux%u quality %d original_sky %d",
+                           s_frame.sky.scene_type, s_frame.sky.scene_id, int(applied), target->width, target->height,
+                           depth->desc.width, depth->desc.height, settings.shader_quality, int(s_frame.sky.post_only));
         }
     }
     // RBREW_CAM_SCAN=<frame> (diagnostics): guest addresses holding the
@@ -1423,7 +1423,7 @@ void observe_draw(uint8_t* memory, uint32_t primitive, uint32_t count) {
     }
     if (std::getenv("RBREW_WEATHER_LOG") && now % 120 == 0) {
         const auto& iv = s_frame.camera.inverse_view;
-        std::fprintf(stderr, "[weather] frame %u forward %.3f %.3f %.3f\n", now, -iv[2], -iv[6], -iv[10]);
+        RBREW_LOG_DEBUG("weather", "frame %u forward %.3f %.3f %.3f", now, -iv[2], -iv[6], -iv[10]);
     }
     // Cinema mode: the HUD draws that follow the final scene pass are skipped.
     if (applied && settings.cinema_mode) s_hud_hidden = true;
