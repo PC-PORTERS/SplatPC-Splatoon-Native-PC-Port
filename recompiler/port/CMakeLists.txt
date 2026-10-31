@@ -5,8 +5,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Shared public headers (the logger lives here).
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../include)
-set(RBREW_GAME_REVISION "16" CACHE STRING "Supported title revision: 16 or experimental 288")
-if(NOT RBREW_GAME_REVISION MATCHES "^(16|288)$")
+set(RBREW_GAME_REVISION "16" CACHE STRING "Title revision of the selected manifest (app_version)")
+if(NOT RBREW_GAME_REVISION MATCHES "^[0-9]+$")
     message(FATAL_ERROR "Unsupported title revision")
 endif()
 add_compile_definitions(RBREW_GAME_REVISION=${RBREW_GAME_REVISION})

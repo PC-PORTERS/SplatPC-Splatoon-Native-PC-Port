@@ -373,6 +373,10 @@ rpx_hash="$(sha256 "$rpx")"
 SELECTED_MANIFEST="$(select_manifest "$rpx")" || {
     fail "Unsupported game version. None of the manifests in $MANIFEST_DIR describes your code/Gambit.rpx (SHA-256 $rpx_hash). Add a manifest for this image, or use a supported dump."
 }
+# An update image (title id 0005000E...) is not a base game: say so instead of building it as one.
+if grep -qiE '^title_id[[:space:]]*=[[:space:]]*0x0005000E' "$SELECTED_MANIFEST"; then
+    fail "This folder is a game update ($SELECTED_MANIFEST), not the base game. Select the base game dump here. Game updates are installed on Windows with scripts/Install-Update.ps1; the Linux build supports the base game only."
+fi
 good "Matched manifest: $SELECTED_MANIFEST"
 
 if [ -z "$OUTPUT" ]; then OUTPUT="$ROOT/Game"; fi

@@ -49,7 +49,7 @@ function Expect([string]$name, [bool]$ok, [string]$details) {
 
 # Release message and README must point at the v288 executable, not the base one.
 $text = Get-Content -LiteralPath $installer -Raw
-Expect 'installer names Splatoon-v288.exe' ($text -match 'Splatoon-v288\.exe') 'missing v288 exe'
+Expect 'installer names the versioned exe' ($text.Contains('Splatoon-v') -and $text.Contains('.version')) 'missing versioned exe'
 Expect 'installer does not name base exe' ($text -notmatch 'Start the game with Game\\Splatoon\.exe') 'old base exe message'
 $readmeText = Get-Content -LiteralPath $readme -Raw
 Expect 'README names Splatoon-v288.exe' ($readmeText -match 'Splatoon-v288\.exe') 'missing v288 exe'
@@ -81,7 +81,7 @@ Expect 'missing update dump is refused' ($r.Code -eq 2 -and $r.Output -match 'no
 
 $dump = Add-UpdateDump $root
 $r = Invoke-Installer $root @('-UpdateDump', $dump, '-BaseDump', (Join-Path $root 'Game'))
-Expect 'wrong RPX hash is refused' ($r.Code -eq 2 -and $r.Output -match 'not the v288 update') $r.Output
+Expect 'wrong RPX hash is refused' ($r.Code -eq 2 -and $r.Output -match 'not a supported game update') $r.Output
 
 $bad = Join-Path $root 'update-wrong-version'
 foreach ($part in 'code', 'content', 'meta') {

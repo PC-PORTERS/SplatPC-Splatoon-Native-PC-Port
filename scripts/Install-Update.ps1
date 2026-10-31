@@ -6,7 +6,7 @@ param(
   [switch]$ValidateOnly,
   [switch]$CheckDependencies
 )
-# Separate installer for the v288 update, started by Setup.bat after the base install. It never copies
+# Separate installer for game updates (the image is chosen by its manifest), started by Setup.bat after the base install. It never copies
 # Nintendo files into the repository: everything is staged under build\.
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
@@ -58,18 +58,41 @@ function Test-DumpFolder([string]$Path, [string]$Label) {
   }
 }
 
-function Test-UpdateDump([string]$Path, $Profile) {
+function Get-ManifestImages() {
+  # Every Manifest\*.manifest describes one image; read only what the installer needs.
+  foreach ($file in (Get-ChildItem -LiteralPath $ManifestDir -Filter '*.manifest' -File)) {
+    [pscustomobject]@{
+      Path    = $file.FullName
+      TitleId = Get-ManifestValue $file.FullName 'title_id'
+      Sha     = Get-ManifestValue $file.FullName 'image_sha256'
+      Version = Get-ManifestValue $file.FullName 'app_version'
+      Product = Get-ManifestValue $file.FullName 'product_code'
+    }
+  }
+}
+
+function Resolve-UpdateImage([string]$RpxHash) {
+  $images = @(Get-ManifestImages)
+  $update = $images | Where-Object { $_.TitleId -match '^0x0005000E' -and $_.Sha -eq $RpxHash } | Select-Object -First 1
+  if (-not $update) {
+    $known = ($images | Where-Object { $_.TitleId -match '^0x0005000E' } | ForEach-Object { "v$($_.Version)" }) -join ', '
+    Fail "This is not a supported game update: Gambit.rpx SHA-256 is $RpxHash. Supported updates: $known."
+  }
+  $base = $images | Where-Object { $_.TitleId -match '^0x00050000' -and $_.Product -eq $update.Product } | Select-Object -First 1
+  if (-not $base) { Fail "No base game manifest matches the update v$($update.Version) ($($update.Product))." }
+  return [pscustomobject]@{ base_rpx_sha256 = $base.Sha; rpx_sha256 = $update.Sha; version = $update.Version; update_manifest = $update.Path }
+}
+
+function Test-UpdateDump([string]$Path) {
   Test-DumpFolder $Path 'Update dump'
   $rpx = Join-Path $Path 'code\Gambit.rpx'
   if (-not (Test-Path -LiteralPath $rpx -PathType Leaf)) { Fail "Missing code\Gambit.rpx in $Path" }
-  $hash = (Get-FileHash -LiteralPath $rpx -Algorithm SHA256).Hash
-  if ($hash -ne $Profile.rpx_sha256) {
-    Fail "This is not the v288 update: Gambit.rpx SHA-256 is $hash, expected $($Profile.rpx_sha256)."
-  }
+  $image = Resolve-UpdateImage (Get-FileHash -LiteralPath $rpx -Algorithm SHA256).Hash
   [xml]$meta = Get-Content -LiteralPath (Join-Path $Path 'meta\meta.xml') -Raw
   $version = $meta.SelectSingleNode('/menu/title_version').InnerText
-  if ($version -ne '288') { Fail "Expected title version 288, found '$version'." }
-  Write-Host "Update dump OK: revision 288, RPX hash matches." -ForegroundColor Green
+  if ($version -ne $image.version) { Fail "Expected title version $($image.version), found '$version'." }
+  Write-Host "Update dump OK: revision $($image.version), RPX hash matches." -ForegroundColor Green
+  return $image
 }
 
 function Get-SetupState([string]$Name) {
@@ -124,24 +147,23 @@ function Resolve-DependencyRoot() {
 }
 
 function Get-ManifestValue([string]$Path,[string]$Key){$Line=Get-Content -LiteralPath $Path | Where-Object { $_ -match "^\s*$Key\s*=" } | Select-Object -First 1;if(-not $Line){throw "Missing $Key in $Path"};return (($Line -split '=',2)[1] -split '#')[0].Trim()}
-# Image digests come from the manifests: the base game (v16) and the update (288).
-$Profile = [pscustomobject]@{base_rpx_sha256 = Get-ManifestValue (Join-Path $ManifestDir 'Gambit_v16.manifest') 'image_sha256'; rpx_sha256 = Get-ManifestValue (Join-Path $ManifestDir 'Gambit_v288.manifest') 'image_sha256'}
-# The update build: recompiles the 288 image with its manifest and packages
-# Splatoon-v288.exe next to the base game. $Root may be a mapped drive (see below).
+# The update build: recompiles the update image with its manifest and packages
+# Splatoon-v<version>.exe next to the base game. $Root may be a mapped drive (see below).
 function Invoke-UpdateBuild([string]$Root, [string]$BaseDump, [string]$UpdateDump, [string]$DependencyRoot,
-                            [string]$Output = '', [bool]$Diagnostics = $false, [bool]$Optimize = $false) {
+                            [string]$Output = '', [bool]$Diagnostics = $false, [bool]$Optimize = $false, $Image = $null) {
+  $Version = $Image.version
   $Work=Join-Path $Root 'build'
   if(-not $Output){$Output=Join-Path $Root 'Game'}
   function Checked([string]$What){if($LASTEXITCODE -ne 0){throw "$What failed: $LASTEXITCODE"}}
   function CopyTree([string]$From,[string]$To){& robocopy $From $To /E /NFL /NDL /NJH /NJS /NP | Out-Null; if($LASTEXITCODE -ge 8){throw "Copy failed: $From"};$global:LASTEXITCODE=0}
-  $RevisionProfile=[pscustomobject]@{base_rpx_sha256=Get-ManifestValue (Join-Path $Root 'Manifest\Gambit_v16.manifest') 'image_sha256';rpx_sha256=Get-ManifestValue (Join-Path $Root 'Manifest\Gambit_v288.manifest') 'image_sha256'}
+  $RevisionProfile = $Image
   foreach($InputCheck in @(@($BaseDump,$RevisionProfile.base_rpx_sha256),@($UpdateDump,$RevisionProfile.rpx_sha256))){
    $InputPath=$InputCheck[0]
    foreach($Directory in @('code','content','meta')){if(-not (Test-Path -LiteralPath (Join-Path $InputPath $Directory) -PathType Container)){throw "Missing $Directory in $InputPath"}}
    if((Get-FileHash -LiteralPath (Join-Path $InputPath 'code\Gambit.rpx') -Algorithm SHA256).Hash -ne $InputCheck[1]){throw "RPX revision mismatch: $InputPath"}
   }
   [xml]$UpdateMeta=Get-Content -LiteralPath (Join-Path $UpdateDump 'meta\meta.xml') -Raw
-  if($UpdateMeta.SelectSingleNode('/menu/title_version').InnerText -ne '288'){throw 'Expected title version 288'}
+  if($UpdateMeta.SelectSingleNode('/menu/title_version').InnerText -ne $Version){throw "Expected title version $Version"}
   $VsWhere=Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
   # Same Visual Studio range and generator as Setup.ps1 (2022 or 2026).
   $Vs=(& $VsWhere -version '[17.0,19.0)' -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -format json | ConvertFrom-Json)[0]
@@ -169,22 +191,22 @@ function Invoke-UpdateBuild([string]$Root, [string]$BaseDump, [string]$UpdateDum
   & $Cmake --build $RecompilerBuild --config Release --target rebrewu --parallel -- /p:TrackFileAccess=false
   Checked 'Build recompiler'
   Write-Output '[2/5] Translate update RPX with revision-specific candidates'
-  $Generated=Join-Path $Work 'generated-v288'
+  $Generated=Join-Path $Work "generated-v$Version"
   $RecompilerExe=Join-Path $RecompilerBuild 'bin\Release\rebrewu.exe'
-  # Imports, entries and hooks of the 288 image all come from its manifest.
-  $Manifest=Join-Path $Root 'Manifest\Gambit_v288.manifest'
+  # Imports, entries and hooks of the image all come from its manifest.
+  $Manifest=Join-Path $Root (Join-Path 'Manifest' (Split-Path -Leaf $Image.update_manifest))
   if(-not(Test-Path -LiteralPath $Manifest -PathType Leaf)){throw "Missing manifest: $Manifest"}
   & $RecompilerExe recompile --rpx (Join-Path $UpdateDump 'code\Gambit.rpx') --output $Generated --manifest $Manifest --discover-referenced-entries -v
   Checked 'Translate update RPX'
   Write-Output '[3/5] Merge owned content into private staging folder'
-  $Merged=Join-Path $Work 'merged-v288'
+  $Merged=Join-Path $Work "merged-v$Version"
   CopyTree $BaseDump $Merged
   CopyTree $UpdateDump $Merged
   Write-Output '[4/5] Build experimental update runtime'
-  $GameBuild=Join-Path $Work $(if($Optimize){'game-v288-release'}else{'game-v288-diagnostic'})
+  $GameBuild=Join-Path $Work $(if($Optimize){"game-v$Version-release"}else{"game-v$Version-diagnostic"})
   $FastGuest=if($Optimize){'OFF'}else{'ON'}
   $DiagnosticRuntime=if($Optimize -and -not $Diagnostics){'OFF'}else{'ON'}
-  & $Cmake -S (Join-Path $Root 'recompiler\port') -B $GameBuild -G Ninja "-DCMAKE_MAKE_PROGRAM=$Ninja" -DCMAKE_BUILD_TYPE=Release "-DCMAKE_TOOLCHAIN_FILE=$Toolchain" "-DGAMBIT_GENERATED_DIR=$Generated" "-DRBREW_MANIFEST=$Manifest" "-DSDL2_DIR=$Sdl" "-Dglslang_DIR=$Glslang" -DRBREW_GAME_REVISION=288 -DRBREW_GRAPHICS_BACKEND=Vulkan -DRBREW_BUILD_GAME=ON "-DRBREW_DIAGNOSTIC_RUNTIME=$DiagnosticRuntime" "-DRBREW_FAST_DIAGNOSTIC_GUEST=$FastGuest" -DRBREW_ENABLE_PPC_FALLBACK=OFF
+  & $Cmake -S (Join-Path $Root 'recompiler\port') -B $GameBuild -G Ninja "-DCMAKE_MAKE_PROGRAM=$Ninja" -DCMAKE_BUILD_TYPE=Release "-DCMAKE_TOOLCHAIN_FILE=$Toolchain" "-DGAMBIT_GENERATED_DIR=$Generated" "-DRBREW_MANIFEST=$Manifest" "-DSDL2_DIR=$Sdl" "-Dglslang_DIR=$Glslang" -DRBREW_GAME_REVISION=$Version -DRBREW_GRAPHICS_BACKEND=Vulkan -DRBREW_BUILD_GAME=ON "-DRBREW_DIAGNOSTIC_RUNTIME=$DiagnosticRuntime" "-DRBREW_FAST_DIAGNOSTIC_GUEST=$FastGuest" -DRBREW_ENABLE_PPC_FALLBACK=OFF
   Checked 'Configure update game'
   & $Cmake --build $GameBuild --target Gambit -- -j ([Environment]::ProcessorCount)
   Checked 'Build update game'
@@ -207,7 +229,7 @@ function Invoke-UpdateBuild([string]$Root, [string]$BaseDump, [string]$UpdateDum
   $CopyDependencyGame=(Test-Path -LiteralPath $DependencyGame -PathType Container) -and -not ((Resolve-Path -LiteralPath $DependencyGame).Path.TrimEnd('\') -eq (Resolve-Path -LiteralPath $Output).Path.TrimEnd('\'))
   $DependencyTitles=Join-Path $DependencyGame 'mlc01\sys\title'
   if($CopyDependencyGame -and (Test-Path -LiteralPath $DependencyTitles -PathType Container)){CopyTree $DependencyTitles (Join-Path $Output 'mlc01\sys\title')}
-  Copy-Item -LiteralPath (Join-Path $GameBuild 'Splatoon.exe') -Destination (Join-Path $Output 'Splatoon-v288.exe') -Force
+  Copy-Item -LiteralPath (Join-Path $GameBuild 'Splatoon.exe') -Destination (Join-Path $Output "Splatoon-v$Version.exe") -Force
   Get-ChildItem -LiteralPath $GameBuild -Filter '*.dll' | Copy-Item -Destination $Output -Force
   if($CopyDependencyGame){Get-ChildItem -LiteralPath $DependencyGame -Filter '*.dll' | Copy-Item -Destination $Output -Force}
   $ZlibDll=Join-Path $Output 'z.dll'
@@ -216,7 +238,7 @@ function Invoke-UpdateBuild([string]$Root, [string]$BaseDump, [string]$UpdateDum
    if(-not(Test-Path -LiteralPath $ZlibSource)){throw "Missing required zlib runtime: $ZlibSource"}
    Copy-Item -LiteralPath $ZlibSource -Destination $ZlibDll
   }
-  Write-Output "EXPERIMENTAL BUILD COMPLETE: $Output\Splatoon-v288.exe"
+  Write-Output "EXPERIMENTAL BUILD COMPLETE: $Output\Splatoon-v$Version.exe"
 }
 
 if ($CheckDependencies) {
@@ -225,7 +247,7 @@ if ($CheckDependencies) {
   exit 0
 }
 
-Write-Host 'Splatoon PC port - update to revision 288'
+Write-Host 'Splatoon PC port - game update'
 Write-Host 'This keeps your existing installation and only builds the updated game.'
 Write-Host ''
 
@@ -233,12 +255,12 @@ $gameDir = Get-GameRoot $GameRoot
 Test-BaseInstall $gameDir
 if (-not $UpdateDump -and $env:SPLATOON_UPDATE_DUMP) { $UpdateDump = $env:SPLATOON_UPDATE_DUMP }
 if (-not $UpdateDump) {
-  $UpdateDump = Ask-Folder 'Select the UPDATE dump for revision 288 (contains code, content and meta).'
+  $UpdateDump = Ask-Folder 'Select the UPDATE dump (contains code, content and meta).'
 }
 if (-not $UpdateDump) {
-  $UpdateDump = Read-DumpPath 'Select the UPDATE dump (revision 288, folders code, content, meta).'
+  $UpdateDump = Read-DumpPath 'Select the UPDATE dump (folders code, content, meta).'
 }
-Test-UpdateDump $UpdateDump $Profile
+$Profile = Test-UpdateDump $UpdateDump
 
 if (-not $BaseDump) {
   # The folder Setup recorded, if it still holds a dump (it may have moved since).
@@ -285,19 +307,19 @@ if ($Root -match '[^\x00-\x7F]') {
 Write-Host ''
 Write-Host 'Starting the update build. This takes 20-60 minutes.' -ForegroundColor Cyan
 try {
-  Invoke-UpdateBuild -Root $buildRoot -BaseDump $BaseDump -UpdateDump $UpdateDump -DependencyRoot $deps -Output $gameDir -Optimize $true
+  Invoke-UpdateBuild -Root $buildRoot -BaseDump $BaseDump -UpdateDump $UpdateDump -DependencyRoot $deps -Output $gameDir -Optimize $true -Image $Profile
 } catch {
   Fail "Update build failed: $($_.Exception.Message)"
 } finally {
   if ($buildDrive) { subst "$buildDrive" /D 2>$null | Out-Null }
 }
 Write-Host ''
-Write-Host "Update installed. Start the game with $(Join-Path $gameDir 'Splatoon-v288.exe')." -ForegroundColor Green
+Write-Host "Update installed. Start the game with $(Join-Path $gameDir ('Splatoon-v' + $Profile.version + '.exe'))." -ForegroundColor Green
 
 $shortcutPath = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Splatoon PC Port.lnk'
 if (Test-Path -LiteralPath $shortcutPath -PathType Leaf) {
   $gameDir = Get-GameRoot $GameRoot
-  $updateExe = Join-Path $gameDir 'Splatoon-v288.exe'
+  $updateExe = Join-Path $gameDir ('Splatoon-v' + $Profile.version + '.exe')
   if (Test-Path -LiteralPath $updateExe -PathType Leaf) {
     try {
       $shell = New-Object -ComObject WScript.Shell
@@ -306,7 +328,7 @@ if (Test-Path -LiteralPath $shortcutPath -PathType Leaf) {
       $shortcut.WorkingDirectory = $gameDir
       $shortcut.IconLocation = "$updateExe,0"
       $shortcut.Save()
-      Write-Host 'Desktop shortcut updated to Splatoon-v288.exe.' -ForegroundColor Green
+      Write-Host "Desktop shortcut updated to Splatoon-v$($Profile.version).exe." -ForegroundColor Green
     } catch {
       Write-Host "The desktop shortcut could not be updated: $($_.Exception.Message)" -ForegroundColor Yellow
     }
