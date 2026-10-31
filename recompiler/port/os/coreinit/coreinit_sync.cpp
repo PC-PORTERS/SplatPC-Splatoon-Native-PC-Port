@@ -56,7 +56,7 @@ static T* sync_object(uint32_t address, std::mutex& registry_lock, std::unordere
 // ---------------------------------------------------------------------------
 struct MutexImpl {
     std::recursive_mutex m;
-    WatchedOwnerStack owner_stack;   // RBREW_MUTEX_WATCH: guest LRs of the last locker
+    WatchedOwnerStack owner_stack; // RBREW_MUTEX_WATCH: guest LRs of the last locker
 };
 static std::mutex s_mutex_map_lock;
 static std::unordered_map<uint32_t, MutexImpl*> s_mutexes;
@@ -67,7 +67,10 @@ static MutexImpl* get_mutex(uint32_t ptr) {
 
 // RBREW_MUTEX_WATCH=1 (diagnostic): a lock still waiting after 3 s prints the
 // mutex, the waiter's and the last locker's guest return addresses to stderr.
-static const bool s_mutex_watch = [] { const char* v = std::getenv("RBREW_MUTEX_WATCH"); return v && *v == '1'; }();
+static const bool s_mutex_watch = [] {
+    const char* v = std::getenv("RBREW_MUTEX_WATCH");
+    return v && *v == '1';
+}();
 static void guest_stack(CPUState* cpu, uint32_t* out, int n) {
     out[0] = cpu->lr;
     uint32_t frame = cpu->r[1];
@@ -86,34 +89,56 @@ static void lock_watched(CPUState* cpu, MutexImpl* md, uint32_t address) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
             if (!reported && std::chrono::steady_clock::now() - start > std::chrono::seconds(3)) {
                 reported = true;
-                uint32_t mine[6]; guest_stack(cpu, mine, 6); const auto owner=md->owner_stack.snapshot();
-                RBREW_LOG_WARN("mutex", "%08X blocked 3s; waiter %08X %08X %08X %08X %08X %08X; last locker %08X %08X %08X %08X %08X %08X\n",
-                               address, mine[0], mine[1], mine[2], mine[3], mine[4], mine[5], owner[0], owner[1], owner[2],
-                               owner[3], owner[4], owner[5]);
+                uint32_t mine[6];
+                guest_stack(cpu, mine, 6);
+                const auto owner = md->owner_stack.snapshot();
+                RBREW_LOG_WARN("mutex",
+                               "%08X blocked 3s; waiter %08X %08X %08X %08X %08X %08X; last locker %08X %08X %08X %08X "
+                               "%08X %08X\n",
+                               address, mine[0], mine[1], mine[2], mine[3], mine[4], mine[5], owner[0], owner[1],
+                               owner[2], owner[3], owner[4], owner[5]);
             }
         }
     }
-    uint32_t owner[6];guest_stack(cpu,owner,6);md->owner_stack.store(owner);
+    uint32_t owner[6];
+    guest_stack(cpu, owner, 6);
+    md->owner_stack.store(owner);
 }
 static void lock_mutex(CPUState* cpu, uint32_t address) {
     MutexImpl* md = get_mutex(address);
-    if (s_mutex_watch) lock_watched(cpu, md, address);
-    else md->m.lock();
+    if (s_mutex_watch)
+        lock_watched(cpu, md, address);
+    else
+        md->m.lock();
 }
 
-static void OSInitMutex(CPUState* cpu)    { get_mutex(ARG0); }
-static void OSLockMutex(CPUState* cpu)    { lock_mutex(cpu, ARG0); }
-static void OSUnlockMutex(CPUState* cpu)  { get_mutex(ARG0)->m.unlock(); }
-static void OSTryLockMutex(CPUState* cpu) { RET = get_mutex(ARG0)->m.try_lock() ? 1u : 0u; }
+static void OSInitMutex(CPUState* cpu) {
+    get_mutex(ARG0);
+}
+static void OSLockMutex(CPUState* cpu) {
+    lock_mutex(cpu, ARG0);
+}
+static void OSUnlockMutex(CPUState* cpu) {
+    get_mutex(ARG0)->m.unlock();
+}
+static void OSTryLockMutex(CPUState* cpu) {
+    RET = get_mutex(ARG0)->m.try_lock() ? 1u : 0u;
+}
 
 // OSFastMutex — same backing as OSMutex
 static void OSFastMutex_Init(CPUState* cpu) {
     get_mutex(ARG0);
     if (ARG0 && rbrew_memory_accessible(MEM, ARG0, 0x20u)) memset(MEM + ARG0, 0, 0x20);
 }
-static void OSFastMutex_Lock(CPUState* cpu)    { lock_mutex(cpu, ARG0); }
-static void OSFastMutex_Unlock(CPUState* cpu)  { get_mutex(ARG0)->m.unlock(); }
-static void OSFastMutex_TryLock(CPUState* cpu) { RET = get_mutex(ARG0)->m.try_lock() ? 1u : 0u; }
+static void OSFastMutex_Lock(CPUState* cpu) {
+    lock_mutex(cpu, ARG0);
+}
+static void OSFastMutex_Unlock(CPUState* cpu) {
+    get_mutex(ARG0)->m.unlock();
+}
+static void OSFastMutex_TryLock(CPUState* cpu) {
+    RET = get_mutex(ARG0)->m.try_lock() ? 1u : 0u;
+}
 
 // ---------------------------------------------------------------------------
 // OSCond — per-address condition variable, paired with a recursive_mutex
@@ -265,8 +290,8 @@ static void OSWaitEventWithTimeout(CPUState* cpu) {
     std::unique_lock<std::mutex> lk(e->mtx);
     bool signaled = e->signaled;
     if (!signaled && ticks > 0) {
-        const auto wait = rbrew_timeout_deadline(uint64_t(ticks),RBREW_TIMER_CLOCK,std::chrono::steady_clock::now());
-        signaled = e->cv.wait_until(lk, wait, [e]{ return e->signaled; });
+        const auto wait = rbrew_timeout_deadline(uint64_t(ticks), RBREW_TIMER_CLOCK, std::chrono::steady_clock::now());
+        signaled = e->cv.wait_until(lk, wait, [e] { return e->signaled; });
     }
     if (signaled && e->auto_reset) e->signaled = false;
     RET = signaled ? 1u : 0u;

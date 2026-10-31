@@ -28,6 +28,11 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Python tests (manifests and update scripts)
+        run: |
+          python recompiler/tools/test_revision_profile.py
+          python scripts/tests/test_update_scripts.py
+
       - name: Install system build dependencies
         run: |
           sudo apt-get update

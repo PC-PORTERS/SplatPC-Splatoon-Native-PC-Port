@@ -141,7 +141,7 @@ For incremental rebuilds just run **`./build.sh`** — it reuses the configured 
 Once the base game has been built with Setup, the revision 288 update is installed by a separate
 installer. Setup records the base dump and output folders in `build\setup-base-dump.txt` and
 `build\setup-output.txt`, and refuses an update dump as the base game. `Setup.bat` starts this
-installer automatically after a successful base install and asks for the update dump; `scripts\Install-Update.ps1` can also be run on its own.
+installer automatically after a successful base install and asks for the update dump. Setup also recognises an update dump by its manifest (SHA-256 and title id) and routes it to the installer; `scripts\Install-Update.ps1` can also be run on its own.
 
 You need Visual Studio 2022 (or 2026) C++ tools, Python, the base v16 and update 288 dumps (folders `code`,
 `content`, `meta`), and about 10 GB free.

@@ -1,8 +1,8 @@
-# Guard tests for Build-Update.ps1: never copy Game\ onto itself, and skip the copy when a
+# Guard tests for the update build in Install-Update.ps1: never copy Game\ onto itself, and skip the copy when a
 # custom Setup output folder means there is no <DependencyRoot>\Game at all.
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $PSScriptRoot
-$buildUpdate = Join-Path $here 'Build-Update.ps1'
+$buildUpdate = Join-Path $here 'Install-Update.ps1'
 $failures = 0
 
 function Expect([string]$name, [bool]$ok, [string]$details) {

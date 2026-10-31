@@ -664,7 +664,7 @@ static void AXInit(CPUState* cpu) {
             RBREW_LOG_ERROR("snd_core", "miniaudio: failed to start playback device\n");
             ma_device_uninit(&s_ma_device);
         } else {
-            s_device_open=true;
+            s_device_open = true;
             RBREW_LOG_INFO("snd_core", "AXInit: miniaudio stereo 32000 Hz, 96-sample AX frames\n");
             RBREW_LOG_INFO("snd_core", "Playback device: %s\n", s_ma_device.playback.name);
         }
