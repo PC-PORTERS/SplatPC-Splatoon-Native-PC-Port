@@ -113,16 +113,30 @@ struct Registers {
 };
 uint32_t call_guest(CPUState* cpu, uint32_t address, std::initializer_list<uint32_t> args, double f1 = 0.0) {
     Registers saved;
-    std::memcpy(saved.r, cpu->r, sizeof(saved.r)); std::memcpy(saved.cr, cpu->cr, sizeof(saved.cr));
-    std::memcpy(saved.f, cpu->f, sizeof(saved.f)); std::memcpy(saved.ps1, cpu->ps1, sizeof(saved.ps1));
-    std::memcpy(saved.gqr,cpu->gqr,sizeof saved.gqr);
-    saved.lr = cpu->lr; saved.ctr = cpu->ctr; saved.xer = cpu->xer; saved.fpscr = cpu->fpscr;
-    struct Restore { CPUState* cpu; const Registers& saved; ~Restore() {
-    std::memcpy(cpu->r, saved.r, sizeof(saved.r)); std::memcpy(cpu->cr, saved.cr, sizeof(saved.cr));
-    std::memcpy(cpu->f, saved.f, sizeof(saved.f)); std::memcpy(cpu->ps1, saved.ps1, sizeof(saved.ps1));
-    std::memcpy(cpu->gqr,saved.gqr,sizeof saved.gqr);
-    cpu->lr = saved.lr; cpu->ctr = saved.ctr; cpu->xer = saved.xer; cpu->fpscr = saved.fpscr;
-    }} restore{cpu,saved};
+    std::memcpy(saved.r, cpu->r, sizeof(saved.r));
+    std::memcpy(saved.cr, cpu->cr, sizeof(saved.cr));
+    std::memcpy(saved.f, cpu->f, sizeof(saved.f));
+    std::memcpy(saved.ps1, cpu->ps1, sizeof(saved.ps1));
+    std::memcpy(saved.gqr, cpu->gqr, sizeof saved.gqr);
+    saved.lr = cpu->lr;
+    saved.ctr = cpu->ctr;
+    saved.xer = cpu->xer;
+    saved.fpscr = cpu->fpscr;
+    struct Restore {
+        CPUState* cpu;
+        const Registers& saved;
+        ~Restore() {
+            std::memcpy(cpu->r, saved.r, sizeof(saved.r));
+            std::memcpy(cpu->cr, saved.cr, sizeof(saved.cr));
+            std::memcpy(cpu->f, saved.f, sizeof(saved.f));
+            std::memcpy(cpu->ps1, saved.ps1, sizeof(saved.ps1));
+            std::memcpy(cpu->gqr, saved.gqr, sizeof saved.gqr);
+            cpu->lr = saved.lr;
+            cpu->ctr = saved.ctr;
+            cpu->xer = saved.xer;
+            cpu->fpscr = saved.fpscr;
+        }
+    } restore{cpu, saved};
     unsigned n = 3;
     for (uint32_t value : args) cpu->r[n++] = value;
     cpu->f[1] = f1;
@@ -381,4 +395,3 @@ void player_anim_register() {
          ok ? "armed" : "INCOMPLETE", s_lookaround ? "on" : "off", kAnimTable, kAnimCount);
     if (s_log) std::fflush(s_log);
 }
-

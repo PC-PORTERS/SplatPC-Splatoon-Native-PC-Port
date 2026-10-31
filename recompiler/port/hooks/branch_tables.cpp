@@ -28,7 +28,6 @@ extern "C" void gambit_tables_register_none(CPUState*) {}
 extern "C" __attribute__((weak)) void gambit_tables_register(CPUState*) {}
 #endif
 
-
 void branch_tables_install(CPUState* cpu) {
 #if RBREW_GAME_REVISION == 288
     gambit_tables_register(cpu);
@@ -39,8 +38,8 @@ void branch_tables_install(CPUState* cpu) {
             const uint32_t target = table.targets[slot];
             const uint32_t from = table.base + 4u * slot;
             const uint32_t from_index = from >> 2, to_index = target >> 2;
-            if (from_index < cpu->dispatch_size && to_index < cpu->dispatch_size &&
-                !cpu->dispatch_table[from_index] && cpu->dispatch_table[to_index]) {
+            if (from_index < cpu->dispatch_size && to_index < cpu->dispatch_size && !cpu->dispatch_table[from_index] &&
+                cpu->dispatch_table[to_index]) {
                 cpu->dispatch_table[from_index] = cpu->dispatch_table[to_index];
                 ++linked;
             }

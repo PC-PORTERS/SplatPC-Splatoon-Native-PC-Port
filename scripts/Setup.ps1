@@ -148,7 +148,7 @@ function Select-Manifest([string]$RpxPath) {
     return ([string]$line).Trim()
 }
 # Setup builds a base game (title id 00050000-...) with the base profiles. An update image
-# (0005000E-...) also has a manifest, but it is installed afterwards by Install-Update.ps1.
+# (0005000E-...) also has a manifest: Setup recognises it and hands it to Install-Update.ps1.
 function Test-UpdateManifest([string]$ManifestPath) {
     $titleLine = Get-Content -LiteralPath $ManifestPath | Where-Object { $_ -match '^\s*title_id\s*=' } | Select-Object -First 1
     return [bool]($titleLine -match '=\s*0x0005000E')
@@ -573,7 +573,13 @@ if (-not $SelectedManifest) {
     Fail "Unsupported game version. None of the manifests in $ManifestDir describes your code\Gambit.rpx (SHA-256 $rpxHash). Add a manifest for this image, or use a supported dump."
 }
 if (Test-UpdateManifest $SelectedManifest) {
-    Fail "This folder is the game update ($SelectedManifest), not the base game. Select the base game dump here; the update installer asks for the update next."
+    # An update image is recognised by its manifest: hand it to the update installer, which builds it
+    # next to the base game (the base game must be installed first).
+    Good "Matched manifest: $SelectedManifest (game update)"
+    $updateArguments = @('-UpdateDump', $GameDump)
+    if ($Output) { $updateArguments += @('-GameRoot', $Output) }
+    & (Join-Path $PSScriptRoot 'Install-Update.ps1') @updateArguments
+    exit $LASTEXITCODE
 }
 Good "Matched manifest: $SelectedManifest"
 

@@ -29,6 +29,7 @@ Studio 2022 C++ tools, Python, and about 10 GB free. Do not use a save you canno
 3. After the base install, `Setup.bat` opens the update dump picker: select the revision 288 dump.
 4. Start `Game\Splatoon-v288.exe`.
 
+`Setup.bat` also recognises an update dump by its manifest: pass it to `scripts\Setup.ps1` and it is handed to the update installer.
 You can also run `scripts\Install-Update.ps1` on its own at any time.
 
 ## Reporting a problem
@@ -42,7 +43,7 @@ Windows, Visual Studio 2022 (or 2026) C++ tools and Python are required. Reuse a
 checkout's libraries by giving its directory as `DependencyRoot`.
 
 ```powershell
-.\scripts\Build-Update.ps1 -BaseDump 'D:\Owned\Splatoon Base' -UpdateDump 'D:\Owned\Splatoon Update' -DependencyRoot 'D:\SplatoonPort'
+.\scripts\Install-Update.ps1 -BaseDump 'D:\Owned\Splatoon Base' -UpdateDump 'D:\Owned\Splatoon Update' -DependencyRoot 'D:\SplatoonPort'
 ```
 
 Both input hashes are checked before translation. Base content is copied into
@@ -60,7 +61,7 @@ py -3.12 recompiler/tools/test_revision_profile.py
 ```
 
 The profile generator is `recompiler/tools/generate_revision_header.py`. `runtime/game_revision.h`
-is reproducible from `profiles/agmp-v288.json`. The test also checks that every import shared by
+is generated from the manifests (`Manifest/*.manifest`) at configure time and is not committed. The test also checks that every import shared by
 the two manifests sits where that map sends it, and that the 288 manifest describes this RPX.
 
 `compare_revisions.py` can regenerate a private comparison report from two owned RPX files using

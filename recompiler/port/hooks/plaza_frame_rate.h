@@ -40,18 +40,29 @@ struct PlazaGovernor {
         if (!half) {
             ++since_one_step;
             const unsigned char s = work_ms > kSlowMs;
-            slow_count += s; slow_count -= slow[slow_head];
-            slow[slow_head] = s; slow_head = (slow_head + 1) % kSlowWindow;
+            slow_count += s;
+            slow_count -= slow[slow_head];
+            slow[slow_head] = s;
+            slow_head = (slow_head + 1) % kSlowWindow;
             if (slow_count >= kSlowLimit) {
-                next_hold = since_one_step < kRelapse ? (next_hold * 2 > kMaxHold ? kMaxHold : next_hold * 2) : kMinHold;
-                half = true; hold = next_hold; reset_windows();
+                next_hold =
+                    since_one_step < kRelapse ? (next_hold * 2 > kMaxHold ? kMaxHold : next_hold * 2) : kMinHold;
+                half = true;
+                hold = next_hold;
+                reset_windows();
             }
         } else {
             if (hold) --hold;
             const unsigned char f = work_ms < kHeadroomMs;
-            fast_count += f; fast_count -= fast[fast_head];
-            fast[fast_head] = f; fast_head = (fast_head + 1) % kFastWindow;
-            if (!hold && samples >= kFastWindow && fast_count >= kFastNeeded) { half = false; since_one_step = 0; reset_windows(); }
+            fast_count += f;
+            fast_count -= fast[fast_head];
+            fast[fast_head] = f;
+            fast_head = (fast_head + 1) % kFastWindow;
+            if (!hold && samples >= kFastWindow && fast_count >= kFastNeeded) {
+                half = false;
+                since_one_step = 0;
+                reset_windows();
+            }
         }
         return half;
     }
@@ -80,10 +91,13 @@ inline std::atomic<bool> requested{false};
 inline std::atomic<bool> keeper_owns{false};
 constexpr uint32_t kRenderManager = RBREW_GAME_RENDER_MANAGER;
 inline void half_rate(CPUState* cpu, uint32_t address, HostFunc original) {
-    if (plaza_skip_half_rate(address, cpu->lr, plaza_mode() != 0)) { requested = true; return; }
+    if (plaza_skip_half_rate(address, cpu->lr, plaza_mode() != 0)) {
+        requested = true;
+        return;
+    }
     original(cpu);
 }
-}  // namespace plaza_regulator_detail
+} // namespace plaza_regulator_detail
 
 inline void plaza_frame_rate_register() {
     if (plaza_mode() == 0) return;
@@ -114,14 +128,19 @@ inline void speed_keeper_update(uint8_t* mem, float frame_ms, uint32_t flags, ui
         if (valid && owns) rbrew_write32(mem, manager + 0x304, rbrew_read32(mem, manager + 0x304) & ~1u);
         plaza_regulator_detail::keeper_owns = false;
     };
-    if (!valid) { plaza_regulator_detail::keeper_owns = false; return; }
-    if ((flags & 1u) && !owns) { plaza_regulator_detail::keeper_owns = false; return; }
+    if (!valid) {
+        plaza_regulator_detail::keeper_owns = false;
+        return;
+    }
+    if ((flags & 1u) && !owns) {
+        plaza_regulator_detail::keeper_owns = false;
+        return;
+    }
     static SpeedKeeper keeper;
     const double step_ms = 1001.0 / 60.0 * double(swap_interval > 1 ? swap_interval : 1);
     const bool twice = keeper.update(double(frame_ms) / step_ms, (flags & 1u) ? 2u : 1u);
     const uint32_t now = rbrew_read32(mem, manager + 0x304);
-    if (twice != bool(now & 1u))
-        rbrew_write32(mem, manager + 0x304, twice ? (now | 1u) : (now & ~1u));
+    if (twice != bool(now & 1u)) rbrew_write32(mem, manager + 0x304, twice ? (now | 1u) : (now & ~1u));
     plaza_regulator_detail::keeper_owns = twice;
 }
 #else
