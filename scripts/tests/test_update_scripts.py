@@ -49,7 +49,9 @@ class UpdateScriptTests(unittest.TestCase):
         self.assertEqual(update['app_version'], '288')
         self.assertTrue(update['title_id'].upper().startswith('0X0005000E'))
         installer = text(SCRIPTS / 'Install-Update.ps1')
-        self.assertIn("Get-ManifestValue (Join-Path $ManifestDir 'Gambit_v288.manifest') 'image_sha256'", installer)
+        self.assertIn('Resolve-UpdateImage', installer)
+        self.assertNotIn('Gambit_v288', installer)
+        self.assertNotIn('Splatoon-v288', installer)
 
 
 if __name__ == '__main__':
