@@ -55,7 +55,7 @@ Turn it on in the settings menu with *Graphics preset* (Balanced, Realistic or C
 - **GPU with Vulkan 1.3** and an up-to-date driver (developed on an RTX 5060 Ti; a modern NVIDIA is recommended)
 - **CPU:** modern 6–8 cores or more · **RAM:** 16 GB minimum, 32 GB recommended (building the game uses a lot of memory)
 - **Disk:** about 40 GB free during setup FINAL BUILD IS 6GB COUNTING THE SHADER CACHES
-- **Your own game dump:** Supported Splatoon version (see VersionDb.md), with the folders `code`, `content` and `meta` (for example made with *Dumpling* on your Wii U).
+- **Your own game dump:** Supported Splatoon version (see [VersionDb](/VersionDb.md)), with the folders `code`, `content` and `meta` (for example made with *Dumpling* on your Wii U).
 
 ## Installation (Windows)
 
