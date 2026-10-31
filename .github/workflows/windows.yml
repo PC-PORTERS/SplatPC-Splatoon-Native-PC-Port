@@ -147,4 +147,5 @@ jobs:
       - name: Run offline regression test suite (CTest)
         shell: pwsh
         run: |
-          ctest --test-dir build/port -C Release --output-on-failure -E "guest_paired_equivalence|streaming_textures|streaming_edgecases|shader_gpu|shader_gpu_memory|advanced_pipeline_gpu|memory_allocator|memory_transfers|efficiency_shader"
+          # native_queries needs a real GPU for reliable occlusion-query timing; GitHub runners do not have one.
+          ctest --test-dir build/port -C Release --output-on-failure -E "guest_paired_equivalence|native_queries|streaming_textures|streaming_edgecases|shader_gpu|shader_gpu_memory|advanced_pipeline_gpu|memory_allocator|memory_transfers|efficiency_shader"

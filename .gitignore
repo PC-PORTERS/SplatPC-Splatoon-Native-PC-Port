@@ -67,8 +67,7 @@ __pycache__/
 !/scripts/git-hooks/
 !/scripts/git-hooks/*
 
-# v288 update tooling (tracked on purpose)
-!/scripts/Build-Update.ps1
-!/scripts/Install-Update.ps1
+# Merged-ROM update tooling (tracked on purpose)
+!/scripts/update_combinator.py
 !/scripts/tests/
 !/scripts/tests/**

@@ -148,5 +148,7 @@ jobs:
           cmake --build build/port
 
       - name: Run offline regression test suite (CTest)
+        # GitHub runners have no GPU. native_queries depends on real occlusion-query
+        # timing and is intermittently wrong under llvmpipe, so keep it out of CI.
         run: |
-          xvfb-run ctest --test-dir build/port --output-on-failure -E guest_paired_equivalence
+          xvfb-run ctest --test-dir build/port --output-on-failure -E "guest_paired_equivalence|native_queries"

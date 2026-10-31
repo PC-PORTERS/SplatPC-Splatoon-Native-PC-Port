@@ -1,16 +1,16 @@
 # Experimental EUR revision 288
 
-Separate experimental build for the locally supplied EUR update RPX with SHA-256
-`06684edefe90fea2de20430eb0e68500995980fef154caa88e4dcb59cdb7cd65`. The installer checks exact
-executable hashes instead of relying on the v16/288 labels in the metadata. Its import addresses
-come from `Manifest/Gambit_v288.manifest`, which the build selects for this image.
+Experimental build for the locally supplied EUR update RPX with SHA-256
+`06684edefe90fea2de20430eb0e68500995980fef154caa88e4dcb59cdb7cd65`. Setup selects the
+matching `Manifest/Gambit_v288.manifest` from the merged ROM's executable, so the build uses that
+image's import addresses. The update is installed as a complete merged ROM, not as a second
+executable next to the base game.
 
 ## Status and limits
 
 - Experimental: expect crashes, graphical bugs and frame-rate drops. Tested on one PC (NVIDIA GPU) only.
 - The game starts, completes the tutorial and reaches the plaza.
-- The update's content files are copied into `Game/content`; `Game/Splatoon-v288.exe` is created next to the base executable.
-- Update content entries are copied over a copy of the base content in `build/merged-v288`, then installed into `Game/content`.
+- The merged ROM contains the base v16 content overlaid by the update's content.
 - No Nintendo files are added to the repository.
 - Plaza game speed is regulated on revision 288 by `plaza_frame_rate.h` (PR-5): a measurement
   run gave about 59.9 logic steps/s between 35 and 60 FPS, with brief dips during loading.
@@ -21,16 +21,21 @@ come from `Manifest/Gambit_v288.manifest`, which the build selects for this imag
 
 ## Quick start
 
-You need the base v16 dump and the update 288 dump (folders `code`, `content`, `meta`), Visual
-Studio 2022 C++ tools, Python, and about 10 GB free. Do not use a save you cannot afford to reset.
+You need the base v16 dump and the update 288 dump (folders `code`, `content`, `meta`), Python 3,
+the normal setup tools, and about 10 GB free. Do not use a save you cannot afford to reset.
 
 1. Extract the zip.
-2. Run `Setup.bat` and select the base dump.
-3. After the base install, `Setup.bat` opens the update dump picker: select the revision 288 dump.
-4. Start `Game\Splatoon-v288.exe`.
+2. Merge the two dumps from the repository folder:
+   ```bash
+   python scripts/update_combinator.py --base "D:/Owned/Splatoon v16" --update "D:/Owned/Splatoon 288" --output "D:/Owned/Splatoon v288 combined"
+   ```
+   On Linux use `python3`. Add `--force` to replace an existing merged folder.
+3. Run `Setup.bat` and select the merged folder. On Linux run
+   `./setup.sh --dump "D:/Owned/Splatoon v288 combined"`.
+4. Start `Game\Splatoon.exe` on Windows or `./Game/Splatoon` on Linux.
 
-`Setup.bat` also recognises an update dump by its manifest: pass it to `scripts\Setup.ps1` and it is handed to the update installer.
-You can also run `scripts\Install-Update.ps1` on its own at any time.
+The merged folder is a normal Wii U dump structure, so Setup builds it directly. The original
+dumps are not modified. Keep the merged folder private; it contains Nintendo content.
 
 ## Reporting a problem
 
@@ -39,30 +44,30 @@ saves or generated files.
 
 ## Build
 
-Windows, Visual Studio 2022 (or 2026) C++ tools and Python are required. Reuse a prepared upstream
-checkout's libraries by giving its directory as `DependencyRoot`.
+Windows needs Visual Studio 2022 (or 2026) C++ tools; Linux needs the packages listed in the README.
+Both need Python 3. Update-combinator uses only the Python standard library and runs on either OS.
 
-```powershell
-.\scripts\Install-Update.ps1 -BaseDump 'D:\Owned\Splatoon Base' -UpdateDump 'D:\Owned\Splatoon Update' -DependencyRoot 'D:\SplatoonPort'
+```bash
+python scripts/update_combinator.py \
+  --base "D:/Owned/Splatoon v16" \
+  --update "D:/Owned/Splatoon 288" \
+  --output "D:/Owned/Splatoon v288 combined"
 ```
 
-Both input hashes are checked before translation. Base content is copied into
-`build/merged-v288`, then update content overlays it. Original dumps are not changed. The update's
-content files are then copied into `Game/content`, and the runtime is packaged as
-`Game/Splatoon-v288.exe`.
-
-Use `-Optimize` to compile optimized guest code. This disables verbose runtime diagnostics by
-default; add `-Diagnostics` when needed. Start `Game/Splatoon-v288.exe` directly.
+The tool copies the base dump first and overlays the update dump. Original dumps are not changed.
+It refuses to write into a non-empty folder unless `--force` is given. Then run Setup on the merged
+folder; Setup reads the revision from the selected manifest and compiles the matching game.
 
 ## Validation
 
-```powershell
-py -3.12 recompiler/tools/test_revision_profile.py
+```bash
+python recompiler/tools/test_revision_profile.py
 ```
 
 The profile generator is `recompiler/tools/generate_revision_header.py`. `runtime/game_revision.h`
-is generated from the manifests (`Manifest/*.manifest`) at configure time and is not committed. The test also checks that every import shared by
-the two manifests sits where that map sends it, and that the 288 manifest describes this RPX.
+is generated from the manifests (`Manifest/*.manifest`) at configure time and is not committed. The
+test also checks that every import shared by the two manifests sits where that map sends it, and
+that the 288 manifest describes this RPX.
 
 `compare_revisions.py` can regenerate a private comparison report from two owned RPX files using
 `--base`, `--update`, `--root` and `--recompiler`. Normalized signatures only suggest candidates;

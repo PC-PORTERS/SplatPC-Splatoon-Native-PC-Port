@@ -373,11 +373,9 @@ rpx_hash="$(sha256 "$rpx")"
 SELECTED_MANIFEST="$(select_manifest "$rpx")" || {
     fail "Unsupported game version. None of the manifests in $MANIFEST_DIR describes your code/Gambit.rpx (SHA-256 $rpx_hash). Add a manifest for this image, or use a supported dump."
 }
-# An update image (title id 0005000E...) is not a base game: say so instead of building it as one.
-if grep -qiE '^title_id[[:space:]]*=[[:space:]]*0x0005000E' "$SELECTED_MANIFEST"; then
-    fail "This folder is a game update ($SELECTED_MANIFEST), not the base game. Select the base game dump here. Game updates are installed on Windows with scripts/Install-Update.ps1; the Linux build supports the base game only."
-fi
-good "Matched manifest: $SELECTED_MANIFEST"
+GAME_REVISION="$(awk -F= '/^[[:space:]]*app_version[[:space:]]*=/{gsub(/[[:space:]]|#.*/, "", $2); print $2; exit}' "$SELECTED_MANIFEST")"
+[ -n "$GAME_REVISION" ] || fail "The selected manifest has no app_version: $SELECTED_MANIFEST"
+good "Matched manifest: $SELECTED_MANIFEST (title version $GAME_REVISION)"
 
 if [ -z "$OUTPUT" ]; then OUTPUT="$ROOT/Game"; fi
 OUTPUT="$(readlink -f -- "$(dirname -- "$OUTPUT")")/$(basename -- "$OUTPUT")"
@@ -486,6 +484,7 @@ GLSLANG_DIR="$DEPS/glslang-vulkan/lib/cmake/glslang"
 cmake -S "$RECOMPILER/port" -B "$GAME_BUILD" -G "$GENERATOR" \
     -DCMAKE_BUILD_TYPE=Release \
     -DRBREW_GRAPHICS_BACKEND=Vulkan \
+    -DRBREW_GAME_REVISION="$GAME_REVISION" \
     -DRBREW_RPX="$rpx" \
     -DGAMBIT_GENERATED_DIR="$GENERATED" \
     -DSDL2_DIR="$SDL2_DIR" \
