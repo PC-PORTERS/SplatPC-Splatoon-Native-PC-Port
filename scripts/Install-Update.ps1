@@ -206,7 +206,7 @@ function Invoke-UpdateBuild([string]$Root, [string]$BaseDump, [string]$UpdateDum
   $GameBuild=Join-Path $Work $(if($Optimize){"game-v$Version-release"}else{"game-v$Version-diagnostic"})
   $FastGuest=if($Optimize){'OFF'}else{'ON'}
   $DiagnosticRuntime=if($Optimize -and -not $Diagnostics){'OFF'}else{'ON'}
-  & $Cmake -S (Join-Path $Root 'recompiler\port') -B $GameBuild -G Ninja "-DCMAKE_MAKE_PROGRAM=$Ninja" -DCMAKE_BUILD_TYPE=Release "-DCMAKE_TOOLCHAIN_FILE=$Toolchain" "-DGAMBIT_GENERATED_DIR=$Generated" "-DRBREW_MANIFEST=$Manifest" "-DSDL2_DIR=$Sdl" "-Dglslang_DIR=$Glslang" -DRBREW_GAME_REVISION=$Version -DRBREW_GRAPHICS_BACKEND=Vulkan -DRBREW_BUILD_GAME=ON "-DRBREW_DIAGNOSTIC_RUNTIME=$DiagnosticRuntime" "-DRBREW_FAST_DIAGNOSTIC_GUEST=$FastGuest" -DRBREW_ENABLE_PPC_FALLBACK=OFF
+  & $Cmake -S (Join-Path $Root 'recompiler\port') -B $GameBuild -G Ninja "-DCMAKE_MAKE_PROGRAM=$Ninja" -DCMAKE_BUILD_TYPE=Release "-DCMAKE_TOOLCHAIN_FILE=$Toolchain" "-DGAMBIT_GENERATED_DIR=$Generated" "-DRBREW_MANIFEST=$Manifest" "-DSDL2_DIR=$Sdl" "-Dglslang_DIR=$Glslang" "-DRBREW_GAME_REVISION=$Version" -DRBREW_GRAPHICS_BACKEND=Vulkan -DRBREW_BUILD_GAME=ON "-DRBREW_DIAGNOSTIC_RUNTIME=$DiagnosticRuntime" "-DRBREW_FAST_DIAGNOSTIC_GUEST=$FastGuest" -DRBREW_ENABLE_PPC_FALLBACK=OFF
   Checked 'Configure update game'
   & $Cmake --build $GameBuild --target Gambit -- -j ([Environment]::ProcessorCount)
   Checked 'Build update game'
