@@ -134,37 +134,17 @@ cmake --build build/game --target Gambit
 
 For incremental rebuilds just run **`./build.sh`** — it reuses the configured build trees and CMake re-runs itself when any `CMakeLists.txt` or `*.cmake` file changed.
 
-## Update to 288
+## Update to 288 (experimental, Windows)
 
-Once the base game has been built with Setup, the revision 288 update is installed by a separate
-installer. Setup records the base dump and output folders in `build\setup-base-dump.txt` and
-`build\setup-output.txt`, and refuses an update dump as the base game. `Setup.bat` starts this
-installer automatically after a successful base install and asks for the update dump. Setup also recognises an update dump by its manifest (SHA-256 and title id) and routes it to the installer; `scripts\Install-Update.ps1` can also be run on its own.
+You need the base v16 dump and the update 288 dump (folders `code`, `content`, `meta`), Visual Studio 2022 (or 2026) C++ tools, Python and about 10 GB free.
 
-You need Visual Studio 2022 (or 2026) C++ tools, Python, the base v16 and update 288 dumps (folders `code`,
-`content`, `meta`), and about 10 GB free.
+1. Run `Setup.bat` and select the base game dump.
+2. When asked, select the update 288 dump. The installer recognises it by its manifest, checks it, recompiles it and installs `Splatoon-v288.exe` next to `Splatoon.exe` (in `Game\` by default).
+3. Start `Splatoon-v288.exe`.
 
-1. Have the update dump for revision 288 ready (folders `code`, `content`, `meta`).
-2. Run:
-   ```bat
-   powershell -ExecutionPolicy Bypass -File scripts\Install-Update.ps1
-   ```
-3. Select the update dump when asked. The installer checks the SHA-256 of `code\Gambit.rpx`
-   and the `title_version` in `meta\meta.xml` (must be 288), then builds the update into
-   the game folder next to the base game (`Game\` by default, or Setup's `-Output` folder). The
-   update's content files are copied into its `content` folder. The import addresses come from
-   `Manifest\Gambit_v288.manifest`.
-4. Start the update with `Splatoon-v288.exe` in that folder. An existing `Splatoon PC Port`
-   desktop shortcut is pointed at it.
+Base game already installed? Run `powershell -ExecutionPolicy Bypass -File scripts\Install-Update.ps1` and do step 2 only. More details: [docs/update-288.md](docs/update-288.md).
 
-The installer first reuses the base dump folder recorded by Setup. If that folder is gone, it
-looks in `Downloads`, `dump\` and `game-dump\`, then asks for the folder that contains
-`code\Gambit.rpx`.
-
-Validation only (no build): add `-ValidateOnly`.
-
-If something fails, report the step, your GPU and the exact error text; do not attach game
-content, dumps, saves or generated files.
+If something fails, report the step, your GPU and the exact error text; do not attach game content, dumps, saves or generated files.
 
 ## Controls
 
