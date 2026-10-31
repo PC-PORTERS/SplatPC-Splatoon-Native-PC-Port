@@ -27,6 +27,9 @@
 #include "../vpad/game_controllers.h"
 #include "../../runtime/splatoon_diagnostics.h"
 #include "../../runtime/benchmark_input.h"
+#if RBREW_GAME_REVISION == 288
+#include "../../hooks/plaza_frame_rate.h"
+#endif
 #include "../../runtime/native_control_defaults.h"
 #include "../../runtime/discord_rpc.h"
 #include <cstdlib>
@@ -835,6 +838,10 @@ void plaza_mode_sync(CPUState* cpu) {
     s_plaza_sync_original(cpu);
 }
 void install_plaza_60fps(CPUState* cpu) {
+#if RBREW_GAME_REVISION == 288
+    (void)cpu; // revision 288 registers its own callsite (plaza_frame_rate_register)
+    return;
+#else
     static const bool enabled = [] {
         const char* v = std::getenv("RBREW_PLAZA_60FPS");
         return !(v && v[0] == '0');
@@ -846,12 +853,23 @@ void install_plaza_60fps(CPUState* cpu) {
     s_plaza_sync_original = cpu->dispatch_table[kSync >> 2];
     cpu->dispatch_table[kSync >> 2] = plaza_mode_sync;
     RBREW_LOG_INFO("gx2", "plaza 60 FPS mode sync installed\n");
+#endif
 }
 } // namespace
 
 // GX2SwapScanBuffers()
 // Called every frame — pump SDL events, blit game FBO to window, swap buffers.
 static void GX2SwapScanBuffers(CPUState* cpu) {
+#if RBREW_GAME_REVISION == 288
+    static const bool regulator_ready = [] {
+        plaza_frame_rate_register();
+        return true;
+    }();
+    (void)regulator_ready;
+    static float s_prev_guest_work_ms = 0.0f;
+    uint32_t timing_flags = 0;
+    plaza_frame_rate_update(MEM, s_prev_guest_work_ms);
+#endif
     install_plaza_60fps(cpu);
     // 120 FPS mode (gx2_frame_interp.h): in-between frames, the plaza
     // included since 2026-10-27. RBREW_INTERP_PLAZA=0: not in the plaza.
@@ -1020,6 +1038,11 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
             }
         }
     }
+#if RBREW_GAME_REVISION == 288
+    const uint32_t timing_owner = rbrew_read32(MEM, RBREW_GAME_RENDER_MANAGER);
+    if (timing_owner && rbrew_memory_accessible(MEM, timing_owner + 0x304, 4))
+        timing_flags = rbrew_read32(MEM, timing_owner + 0x304);
+#endif
     pace_flip();
     s_flip_count.store(s_swap_count.load());
     const uint64_t flip_tick = rbrew_system_ticks();
@@ -1037,6 +1060,10 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
     const float vsync_wait_ms = s_last_vsync_wait_ms.exchange(0.0f, std::memory_order_relaxed);
     const float present_wait_ms = s_last_present_wait_ms.exchange(0.0f, std::memory_order_relaxed);
     const float guest_work_ms = std::max(0.0f, frame_delta_ms - (vsync_wait_ms + present_wait_ms));
+#if RBREW_GAME_REVISION == 288
+    speed_keeper_update(MEM, frame_delta_ms, timing_flags, s_swap_interval.load(std::memory_order_relaxed));
+    s_prev_guest_work_ms = guest_work_ms;
+#endif
 
     SplatoonDiagnostics::RecordFrame(uint32_t(s_swap_count.load()), frame_delta_ms, guest_work_ms, present_wait_ms,
                                      vsync_wait_ms, cpu_duration_ms, 0, 0, 0, uint8_t(g_screen_mode));

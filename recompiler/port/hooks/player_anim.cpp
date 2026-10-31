@@ -108,7 +108,7 @@ std::string registers(CPUState* cpu) {
 // Runs a guest function with the given integer arguments (r3...) and f1, then
 // restores every register the interrupted caller can observe.
 struct Registers {
-    uint32_t r[32], cr[8], lr, ctr, xer, fpscr;
+    uint32_t r[32], cr[8], gqr[8], lr, ctr, xer, fpscr;
     double f[32], ps1[32];
 };
 uint32_t call_guest(CPUState* cpu, uint32_t address, std::initializer_list<uint32_t> args, double f1 = 0.0) {
@@ -117,10 +117,26 @@ uint32_t call_guest(CPUState* cpu, uint32_t address, std::initializer_list<uint3
     std::memcpy(saved.cr, cpu->cr, sizeof(saved.cr));
     std::memcpy(saved.f, cpu->f, sizeof(saved.f));
     std::memcpy(saved.ps1, cpu->ps1, sizeof(saved.ps1));
+    std::memcpy(saved.gqr, cpu->gqr, sizeof saved.gqr);
     saved.lr = cpu->lr;
     saved.ctr = cpu->ctr;
     saved.xer = cpu->xer;
     saved.fpscr = cpu->fpscr;
+    struct Restore {
+        CPUState* cpu;
+        const Registers& saved;
+        ~Restore() {
+            std::memcpy(cpu->r, saved.r, sizeof(saved.r));
+            std::memcpy(cpu->cr, saved.cr, sizeof(saved.cr));
+            std::memcpy(cpu->f, saved.f, sizeof(saved.f));
+            std::memcpy(cpu->ps1, saved.ps1, sizeof(saved.ps1));
+            std::memcpy(cpu->gqr, saved.gqr, sizeof saved.gqr);
+            cpu->lr = saved.lr;
+            cpu->ctr = saved.ctr;
+            cpu->xer = saved.xer;
+            cpu->fpscr = saved.fpscr;
+        }
+    } restore{cpu, saved};
     unsigned n = 3;
     for (uint32_t value : args) cpu->r[n++] = value;
     cpu->f[1] = f1;
@@ -128,14 +144,6 @@ uint32_t call_guest(CPUState* cpu, uint32_t address, std::initializer_list<uint3
     cpu->lr = 0; // never a constructor call site for the registration hook
     rbrew_call(cpu, address);
     const uint32_t result = cpu->r[3];
-    std::memcpy(cpu->r, saved.r, sizeof(saved.r));
-    std::memcpy(cpu->cr, saved.cr, sizeof(saved.cr));
-    std::memcpy(cpu->f, saved.f, sizeof(saved.f));
-    std::memcpy(cpu->ps1, saved.ps1, sizeof(saved.ps1));
-    cpu->lr = saved.lr;
-    cpu->ctr = saved.ctr;
-    cpu->xer = saved.xer;
-    cpu->fpscr = saved.fpscr;
     return result;
 }
 
@@ -370,6 +378,10 @@ void player_anim_test_advance_idle(double seconds) {
 #endif
 
 void player_anim_register() {
+#if RBREW_GAME_REVISION == 288
+    // These optional hooks have only been validated for the base RPX.
+    return;
+#endif
     const char* lookaround = std::getenv("RBREW_IDLE_LOOKAROUND");
     s_lookaround = !(lookaround && lookaround[0] == '0');
     if (const char* path = std::getenv("RBREW_ANIM_LOG"); path && *path) s_log = std::fopen(path, "w");

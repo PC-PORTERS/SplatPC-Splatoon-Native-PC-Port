@@ -47,6 +47,7 @@ struct CliOptions {
     bool verbose{false};
     bool color{true};
     bool no_codegen{false};
+    bool discover_referenced_entries{false};
     bool emit_ppc_image{false};        // relocated executable bytes for opt-in fallback
     bool emit_coverage{false};         // RBREW_COVERAGE_* probes in generated code
     std::string hints_file;            // diagnostic: extra forced entry addresses (hex per line)

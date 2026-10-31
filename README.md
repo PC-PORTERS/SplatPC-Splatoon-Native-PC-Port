@@ -95,7 +95,7 @@ Setup.bat -GameDump "D:\My Wii U games\Splatoon [AGMP01]"
 
 Options: `./setup.sh --clean` rebuilds everything, `--output ~/Games/Splatoon` picks a different game folder, `--mlc PATH` adds a system-resource location, `--jobs N` sets the compile parallelism. Re-running the setup keeps your save (`Game/save`) and shader cache; run it again after pulling updates.
 
-**Updating:** download the new version, then run `Setup.sh` again. Your save (`Game/save`) and shader cache are kept.
+**Updating:** download the new version, then run `./setup.sh` again. Your save (`Game/save`) and shader cache are kept.
 
 ---
 
@@ -133,6 +133,34 @@ cmake --build build/game --target Gambit
 ```
 
 For incremental rebuilds just run **`./build.sh`** — it reuses the configured build trees and CMake re-runs itself when any `CMakeLists.txt` or `*.cmake` file changed.
+
+## Update to 288 (experimental)
+
+The update is installed as a complete merged ROM. **Update-combinator** copies your base v16 dump and overlays the 288 update's Wii U folders (`code`, `content`, `meta`). Setup then builds that folder like a normal game, so the same steps work on Windows and Linux. The merged folder stays private: never share it.
+
+You need the base v16 dump and the update 288 dump, Python 3, the normal setup tools and about 10 GB free. Run these commands from the repository folder. Add `--force` to replace a previous merged folder.
+
+### Windows
+
+1. Merge the dumps:
+   ```bat
+   py -3 scripts\update_combinator.py --base "D:\Owned\Splatoon v16" --update "D:\Owned\Splatoon 288" --output "D:\Owned\Splatoon v288 combined"
+   ```
+2. Run **`Setup.bat`** and select the merged folder when it asks for your game dump. To keep your v16 install, start Setup with a different game folder, for example `Setup.bat -Output D:\Splatoon288`.
+3. Start **`Game\Splatoon.exe`**.
+
+### Linux
+
+1. Merge the dumps:
+   ```bash
+   python3 scripts/update_combinator.py --base "/home/me/Splatoon v16" --update "/home/me/Splatoon 288" --output "/home/me/Splatoon v288 combined"
+   ```
+2. Run **`./setup.sh --dump "/home/me/Splatoon v288 combined"`**. To keep your v16 install, add `--output ~/Games/Splatoon288`.
+3. Start **`./Game/Splatoon`** (or the `--output` path).
+
+Original dumps are never modified. More details: [docs/update-288.md](docs/update-288.md).
+
+If something fails, report the step, your GPU and the exact error text; do not attach game content, dumps, saves or generated files.
 
 ## Controls
 

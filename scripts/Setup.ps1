@@ -564,7 +564,10 @@ $SelectedManifest = Select-Manifest $rpx
 if (-not $SelectedManifest) {
     Fail "Unsupported game version. None of the manifests in $ManifestDir describes your code\Gambit.rpx (SHA-256 $rpxHash). Add a manifest for this image, or use a supported dump."
 }
-Good "Matched manifest: $SelectedManifest"
+$revisionLine = Get-Content -LiteralPath $SelectedManifest | Where-Object { $_ -match '^\s*app_version\s*=' } | Select-Object -First 1
+$GameRevision = if ($revisionLine) { (($revisionLine -split '=', 2)[1] -split '#')[0].Trim() } else { '' }
+if (-not $GameRevision) { Fail "The selected manifest has no app_version: $SelectedManifest" }
+Good "Matched manifest: $SelectedManifest (title version $GameRevision)"
 
 if (-not $Output) { $Output = Join-Path $ProjectRoot 'Game' }
 $Output = Full-FolderPath $Output
@@ -716,6 +719,7 @@ $gameCmakeArgs = @(
     "-DCMAKE_TOOLCHAIN_FILE=$toolchain",
     '-DVCPKG_TARGET_TRIPLET=x64-windows',
     '-DRBREW_GRAPHICS_BACKEND=Vulkan',
+    "-DRBREW_GAME_REVISION=$GameRevision",
     "-DRBREW_RPX=$rpx",
     "-DGAMBIT_GENERATED_DIR=$generated",
     "-DSDL2_DIR=$(Split-Path $sdlMarker)",
