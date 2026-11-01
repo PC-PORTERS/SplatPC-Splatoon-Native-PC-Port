@@ -69,7 +69,7 @@ static constexpr int DRC_H = 480;
 static void update_window_title() {
     if (!s_window) return;
     char title_buf[128];
-    std::snprintf(title_buf, sizeof(title_buf), "Splatoon | %s | Vulkan [F3=overlay | Tab=view | F11=window]",
+    std::snprintf(title_buf, sizeof(title_buf), "Splatoon | %s | Vulkan [F3=overlay | Tab=view | F4=social]",
                   g_screen_mode == ScreenMode::TV ? "TV" : "Gamepad");
     SDL_SetWindowTitle(s_window, title_buf);
 }
