@@ -118,7 +118,9 @@ void publish(const Values& v) {
 }
 } // namespace
 void normalize(Values& v) {
-    v.shader_quality = std::clamp(v.shader_quality, 0, kShaderQualityCount - 1);
+    // The new shaders (graphics presets, weather) are hidden in this build: they do not work
+    // yet, and online every player sees the same game. The code stays for later.
+    v.shader_quality = kShadersOff;
     v.weather = std::clamp(v.weather, 0, kWeatherCount - 1);
     v.time_of_day = std::clamp(v.time_of_day, 0, 1439);
     v.day_length = std::clamp(v.day_length, 5, 120);
@@ -210,7 +212,35 @@ bool load_look(Values& v, int slot) {
     return true;
 }
 namespace {
+// Lines of the existing file whose key this menu does not own (online_server=,
+// pseudo=, ...): they are written back so saving the menu never drops them.
+std::string foreign_lines() {
+    std::string kept;
+    std::ifstream in(file_path());
+    for (std::string line; in && std::getline(in, line);) {
+        if (!line.empty() && line.back() == 13) line.pop_back();   // CR
+        const size_t eq = line.find('=');
+        if (line.empty() || line[0] == '#' || eq == std::string::npos) continue;
+        const std::string key = line.substr(0, eq);
+        static const char* const kOwned[] = {
+            "resolution", "plaza_60fps", "frame_rate", "gsync", "fullscreen", "fps_overlay", "simple_overlay",
+            "gyro", "gyro_sensitivity", "gyro_invert_pitch", "mouse_sensitivity", "volume", "shader_quality",
+            "weather", "time_of_day", "day_cycle", "day_length", "clouds", "sun_rays", "bloom", "antialiasing",
+            "motion_blur", "camera_fov", "focus_blur", "vignette", "white_balance", "sway_strength", "cloud_speed",
+            "wind_direction", "mouse_direct", "camera_distance", "camera_height", "realistic_look", "cloud_amount",
+            "big_cloud", "cumulus_amount", "real_time", "fog", "saturation", "contrast", "exposure", "gamma",
+            "shadow_lift", "highlight_softness", "sharpness", "clarity", "film_look", "camera_motion", "cinema_mode",
+            "bindings"};
+        bool own = key.rfind("look_", 0) == 0;
+        for (const char* name : kOwned) own = own || key == name;
+        for (int i = 0; i < kActionCount && !own; ++i)
+            own = key == std::string("key_") + kActionKeys[i] || key == std::string("pad_") + kActionKeys[i];
+        if (!own) kept += line + '\n';
+    }
+    return kept;
+}
 void write(const Values& v) {
+    const std::string foreign = foreign_lines();
     std::ofstream out(file_path(), std::ios::trunc);
     if (!out) return;
     out << "# Splatoon PC port settings (ESC menu)\n"
@@ -267,8 +297,8 @@ void write(const Values& v) {
     for (unsigned i = 0; i < v.looks.size(); ++i)
         if (v.looks[i].saved) out << "look_" << i + 1 << '=' << encode_look(v.looks[i]) << '\n';
     for (int i = 0; i < kActionCount; ++i)
-        out << "key_" << kActionKeys[i] << "=" << v.keys[i] << "\n"
-            << "pad_" << kActionKeys[i] << "=" << v.pad[i] << "\n";
+        out << "key_" << kActionKeys[i] << "=" << v.keys[i] << "\n" << "pad_" << kActionKeys[i] << "=" << v.pad[i] << "\n";
+    out << foreign;
 }
 } // namespace
 

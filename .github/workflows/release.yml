@@ -16,25 +16,30 @@ on:
         description: 'Release tag to create (for example v1.2)'
         required: true
 
-permissions:
-  contents: write
+permissions: {}
 
 jobs:
   package:
     name: Package Windows and Linux
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
       - name: Choose the tag
         id: tag
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
         run: |
-          TAG="${{ github.event.inputs.tag }}"
+          TAG="$INPUT_TAG"
           if [ -z "$TAG" ]; then TAG="${GITHUB_REF_NAME}"; fi
+          case "$TAG" in v[0-9]*) ;; *) echo "bad tag"; exit 1;; esac
+          if printf '%s' "$TAG" | grep -q '[^A-Za-z0-9._-]'; then echo "bad tag"; exit 1; fi
           echo "name=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Build the packages
@@ -51,7 +56,7 @@ jobs:
           ls -l dist
 
       - name: Publish the release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ steps.tag.outputs.name }}
           name: Splatoon 1 PC Port ${{ steps.tag.outputs.name }}
@@ -65,7 +70,7 @@ jobs:
             | Linux (x64, Vulkan) | `SPLATOON-1-PC-PORT-${{ steps.tag.outputs.name }}-linux.tar.gz` | `./setup.sh --dump /path/to/your/dump` |
 
             The packages contain the source code and the setup only. You need **your own dump** of Splatoon
-            (EUR, AGMP01 v16); the setup recompiles it into a native game on your PC. No game files are included.
+            (EUR) and its update 288 (revision 288, needed for online play); the setup recompiles it into a native game on your PC. No game files are included.
             See the README for requirements and controls. Checksums: `SHA256SUMS.txt`.
           files: |
             dist/SPLATOON-1-PC-PORT-${{ steps.tag.outputs.name }}-windows.zip

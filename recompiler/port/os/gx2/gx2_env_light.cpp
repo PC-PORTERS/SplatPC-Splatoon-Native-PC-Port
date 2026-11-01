@@ -6,6 +6,7 @@
 #include "../../runtime/port_settings.h"
 #include "../../runtime/rebrewu_runtime.h"
 #include "../../runtime/native_control_defaults.h"
+#include "../../runtime/online_identity.h"
 #include <array>
 #include <atomic>
 #include <cctype>
@@ -1278,11 +1279,15 @@ void register_hooks() {
         std::fprintf(stderr, "[camera] field of view hook unavailable\n");
 }
 
+bool online_mode() {
+    static const bool online = rbrew_online::config().online;   // fixed for the session
+    return online;
+}
 void set_fly_camera(bool on) {
-    s_fly.store(on);
+    s_fly.store(on && !online_mode());
 }
 bool fly_camera() {
-    return s_fly.load();
+    return s_fly.load() && !online_mode();
 }
 void fly_zoom(float steps) {
     s_fly_fov.store(std::clamp(s_fly_fov.load() - steps * 3.f, 15.f, 110.f));
@@ -1610,7 +1615,7 @@ void frame(uint8_t* mem, uint64_t swap_count) {
         const Uint8* keys = SDL_GetKeyboardState(nullptr);
         static bool f7_was = false;
         const bool f7 = keys && keys[SDL_SCANCODE_F7];
-        if (f7 && !f7_was) {
+        if (f7 && !f7_was && !online_mode()) {
             s_fly.store(!s_fly.load());
             std::fprintf(stderr, "[camera] fly camera %s\n", s_fly.load() ? "on" : "off");
         }

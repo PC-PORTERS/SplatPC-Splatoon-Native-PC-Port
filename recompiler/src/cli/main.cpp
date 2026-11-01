@@ -299,6 +299,7 @@ int main(int argc, char** argv) {
 
     // Function discovery
     analysis::FunctionDiscovery::Config disc_cfg;
+    disc_cfg.discover_referenced_entries = opts->discover_referenced_entries;
     AuditInventory audit;
     if (opts->command == cli::Command::Audit) disc_cfg.frame_audit = [&](const auto& finding) { audit.frame(finding); };
     if (opts->command == cli::Command::Audit) disc_cfg.thunk_audit = [&](const auto& finding) { audit.thunk(finding); };
@@ -319,7 +320,7 @@ int main(int argc, char** argv) {
                 disc_cfg.analyzer_entries.insert(uint32_t(std::stoul(hex, nullptr, 16)));
             } catch (...) {}
         }
-        RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr)
+        RBREW_LOG_STREAM(::rbrew::log::Level::Info, nullptr)
             << "Loaded " << disc_cfg.analyzer_entries.size() << " analyzer entries for corroboration\n";
     }
     analysis::FunctionDiscovery disc(rpx, lnk, disc_cfg);
@@ -376,7 +377,7 @@ int main(int argc, char** argv) {
             disc.add_hint({uint32_t(std::stoul(line, nullptr, 16)), {}, true});
             ++count;
         }
-        RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr)
+        RBREW_LOG_STREAM(::rbrew::log::Level::Info, nullptr)
             << "Forced " << count << " diagnostic entry hints from " << opts->hints_file << '\n';
     }
     auto boundaries = disc.discover();
@@ -478,7 +479,7 @@ int main(int argc, char** argv) {
                     << "hook address " << std::hex << addr << " is not a discovered function entry" << "\n";
                 return EXIT_FAILURE;
             }
-        RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr) << "Hook wrappers: " << emit_config.hooked.size() << "\n";
+        RBREW_LOG_STREAM(::rbrew::log::Level::Info, nullptr) << "Hook wrappers: " << emit_config.hooked.size() << "\n";
     }
     codegen::CppEmitter emitter(ir_module, rpx, lnk, std::move(names), emit_config);
     if (!emitter.emit(opts->output_dir)) {

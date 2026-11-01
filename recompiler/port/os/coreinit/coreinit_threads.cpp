@@ -54,7 +54,7 @@ static thread_local uint32_t t_thread_specific[16] = {};
 static thread_local bool t_in_guest_thread = false;
 
 // Exception used to cleanly exit from a guest thread (OSExitThread).
-struct GuestThreadExit {};
+struct GuestThreadExit { uint32_t value; };
 
 // ---------------------------------------------------------------------------
 // GuestThread — one per OSCreateThread call
@@ -64,7 +64,10 @@ struct GuestThread {
     uint32_t entry_addr = 0;
     CPUState cpu; // own register file; shares mem/dispatch
     std::thread host_thread;
-    std::atomic<bool> started{false};
+    std::atomic<bool> started{false}, finished{false};
+    std::mutex done_mutex;
+    std::condition_variable done;
+    uint32_t exit_value=0;
     std::atomic<uint32_t> affinity{2}; // OSThread attr bits 0-2 (core 0/1/2)
     std::atomic<uint32_t> core{1};     // core this thread runs on (OSGetCoreId)
 
@@ -73,10 +76,11 @@ struct GuestThread {
     GuestThread& operator=(const GuestThread&) = delete;
 };
 
-static std::mutex s_threads_mutex;
-static std::unordered_map<uint32_t, GuestThread*> s_threads; // osthread_addr → GuestThread*
-static std::atomic<uint32_t> s_main_affinity{2};             // main thread: core 1
-static std::vector<GuestThread*> s_retired_threads;          // replaced, never freed (see OSCreateThread)
+static std::mutex                              s_threads_mutex;
+static std::unordered_map<uint32_t, std::shared_ptr<GuestThread>> s_threads; // osthread_addr → GuestThread*
+static std::atomic<uint32_t> s_main_affinity{2}; // main thread: core 1
+static std::unordered_map<uint32_t, uint32_t> s_pending_affinity; // set before OSCreateThread (s_threads_mutex)
+static constexpr size_t kMaxPendingAffinity=1024; // reject new requests once full; never claim a discarded affinity succeeded
 
 // Pick the core for an affinity set: stay on the preferred core when the set
 // allows it, otherwise use the lowest allowed core; an empty set keeps it.
@@ -87,7 +91,7 @@ static uint32_t pick_core(uint32_t affinity, uint32_t preferred) {
 }
 static thread_local GuestThread* t_guest_thread = nullptr;
 static uint32_t current_affinity() {
-    return t_guest_thread ? t_guest_thread->affinity.load() : s_main_affinity.load();
+    return t_guest_thread ? t_guest_thread->affinity.load() : rbrew_system_thread ? (1u<<rbrew_current_core()) : s_main_affinity.load();
 }
 
 // ---------------------------------------------------------------------------
@@ -109,7 +113,7 @@ static void OSCreateThread(CPUState* cpu) {
         return;
     }
 
-    auto* gt = new GuestThread();
+    auto gt = std::make_shared<GuestThread>();
     gt->osthread_addr = thread_addr;
     gt->entry_addr = entry_addr;
 
@@ -146,17 +150,11 @@ static void OSCreateThread(CPUState* cpu) {
         rbrew_write32(cpu->mem, thread_addr + 0x10u, 1u); // OS_THREAD_STATE_READY
 
     std::lock_guard<std::mutex> lk(s_threads_mutex);
-    auto it = s_threads.find(thread_addr);
-    if (it != s_threads.end()) {
-        // Recreating an OSThread (Gambit 0x329F03B0, entry 0284E5F4): the old
-        // host thread may still be finishing (it writes the guest state and
-        // reads its GuestThread after "finished"), and OSJoinThread may hold
-        // it. Retire it instead of freeing it under them.
-        GuestThread* old = it->second;
-        if (old->host_thread.joinable() && old->host_thread.get_id() != std::this_thread::get_id())
-            old->host_thread.detach();
-        s_retired_threads.push_back(old);
+    if (auto pending = s_pending_affinity.find(thread_addr); pending != s_pending_affinity.end()) {
+        if (!(ARG7 & 7u) && pending->second) { gt->affinity = pending->second; gt->core = pick_core(pending->second, rbrew_current_core()); }
+        s_pending_affinity.erase(pending);
     }
+    // Running workers and joiners retain the old object; no raw retired list is needed.
     s_threads[thread_addr] = gt;
     RET = 1; // TRUE
 }
@@ -174,11 +172,8 @@ static void OSResumeThread(CPUState* cpu) {
         return;
     }
 
-    GuestThread* gt = it->second;
-    if (gt->started.exchange(true)) {
-        RET = 0;
-        return;
-    } // already running
+    auto gt = it->second;
+    if (gt->started.exchange(true)) { RET = 0; return; } // already running
 
     // Mark RUNNING in guest struct
     if (rbrew_memory_accessible(gt->cpu.mem, thread_addr, 0x20u))
@@ -187,24 +182,29 @@ static void OSResumeThread(CPUState* cpu) {
     gt->host_thread = std::thread([gt]() {
         t_osthread_addr = gt->osthread_addr;
         t_in_guest_thread = true;
-        t_guest_thread = gt;
+        t_guest_thread    = gt.get();
         rbrew_thread_core_slot = &gt->core;
         memset(t_thread_specific, 0, sizeof(t_thread_specific));
 
-        RBREW_LOG_INFO("coreinit", "thread 0x%08X started (entry=0x%08X host_tid=%lu cpu=%p)\n", gt->osthread_addr,
-                       gt->entry_addr, host_thread_id(), (void*)&gt->cpu);
-        try {
-            rbrew_dispatch(&gt->cpu, gt->entry_addr);
-        } catch (const GuestThreadExit&) {
-            // OSExitThread was called — clean exit
+        RBREW_LOGF(stderr, "[coreinit] thread 0x%08X started (entry=0x%08X host_tid=%lu cpu=%p)\n",
+                gt->osthread_addr, gt->entry_addr, host_thread_id(), (void*)&gt->cpu);
+        uint32_t exit_value=0;
+        try { rbrew_dispatch(&gt->cpu,gt->entry_addr);exit_value=gt->cpu.r[3]; }
+        catch(const GuestThreadExit& e){exit_value=e.value;}
+        catch(const std::exception& e){RBREW_LOGF(stderr,"[thread] %08X failed: %s\n",gt->osthread_addr,e.what());exit_value=~0u;}
+        catch(...){RBREW_LOGF(stderr,"[thread] %08X failed\n",gt->osthread_addr);exit_value=~0u;}
+        {
+            std::lock_guard registry(s_threads_mutex);
+            auto current=s_threads.find(gt->osthread_addr);
+            if(current!=s_threads.end() && current->second.get()==gt.get() &&
+               rbrew_memory_accessible(gt->cpu.mem,gt->osthread_addr,0x20u))
+                rbrew_write32(gt->cpu.mem,gt->osthread_addr+0x10u,8u);
         }
-        RBREW_LOG_INFO("coreinit", "thread 0x%08X finished\n", gt->osthread_addr);
-
-        // Mark MORIBUND in guest struct
-        if (rbrew_memory_accessible(gt->cpu.mem, gt->osthread_addr, 0x20u))
-            rbrew_write32(gt->cpu.mem, gt->osthread_addr + 0x10u, 8u);
+        { std::lock_guard done(gt->done_mutex);gt->exit_value=exit_value;gt->finished.store(true,std::memory_order_release); }
+        gt->done.notify_all();
+        rbrew_thread_core_slot=nullptr;t_guest_thread=nullptr;t_in_guest_thread=false;
     });
-
+    gt->host_thread.detach(); // completion is joined through done, never racing std::thread::join/detach
     RET = 1; // previous suspend count
 }
 
@@ -213,29 +213,25 @@ static void OSResumeThread(CPUState* cpu) {
 // r3=OSThread*, r4=optional exit value out ptr
 // ---------------------------------------------------------------------------
 static void OSJoinThread(CPUState* cpu) {
-    uint32_t thread_addr = ARG0;
-
-    GuestThread* gt = nullptr;
-    {
-        std::lock_guard<std::mutex> lk(s_threads_mutex);
-        auto it = s_threads.find(thread_addr);
-        if (it != s_threads.end()) gt = it->second;
-    }
-    if (gt && gt->host_thread.joinable()) gt->host_thread.join();
-
-    // Write exit value 0 to output ptr if given
-    if (ARG1) rbrew_write32(MEM, ARG1, 0u);
-    RET = 1;
+    const uint32_t address=ARG0,out=ARG1;
+    std::shared_ptr<GuestThread> gt;
+    { std::lock_guard lock(s_threads_mutex);auto it=s_threads.find(address);if(it!=s_threads.end())gt=it->second; }
+    if(!gt || gt.get()==t_guest_thread || !gt->started || (out && !rbrew_memory_accessible(MEM,out,4))) {RET=0;return;}
+    std::unique_lock done(gt->done_mutex);
+    gt->done.wait(done,[&]{return gt->finished.load(std::memory_order_acquire);});
+    if(out)rbrew_write32(MEM,out,gt->exit_value);
+    done.unlock();
+    { std::lock_guard registry(s_threads_mutex);auto it=s_threads.find(address);if(it!=s_threads.end() && it->second==gt)s_threads.erase(it); }
+    RET=1;
 }
-
 // ---------------------------------------------------------------------------
 // OSExitThread — gracefully terminate the current thread
 // Implemented as a C++ throw so the stack unwinds cleanly back to the
 // thread lambda in OSResumeThread, which catches GuestThreadExit.
 // For the main thread (t_in_guest_thread == false) this is a no-op.
 // ---------------------------------------------------------------------------
-void coreinit_exit_thread(CPUState*) {
-    if (t_in_guest_thread) throw GuestThreadExit{};
+void coreinit_exit_thread(CPUState* cpu) {
+    if (t_in_guest_thread) throw GuestThreadExit{cpu->r[3]};
 }
 
 // ---------------------------------------------------------------------------
@@ -264,23 +260,31 @@ static void OSSetThreadName(CPUState* cpu) {
     (void)cpu;
 }
 // OSSetThreadAffinity(thread, affinity): the thread moves to an allowed core
-// (staying put when its current core is still allowed). Unknown threads are
-// the main thread (its OSThread is not tracked here).
+// (staying put when its current core is still allowed). Only the main
+// thread's own OSThread moves the main thread. sead and the startup code set the affinity
+// of OSThreads not created yet; that is kept for their OSCreateThread.
+// Applied to the main thread instead, it moved it between cores while it held
+// a per-core mutex (029BC018), and a render worker of the old core waited
+// forever: the game froze during startup.
 static void OSSetThreadAffinity(CPUState* cpu) {
-    const uint32_t thread_addr = ARG0, affinity = ARG1 & 7u;
-    {
-        std::lock_guard<std::mutex> lk(s_threads_mutex);
-        auto it = s_threads.find(thread_addr);
-        if (it != s_threads.end()) {
-            it->second->affinity = affinity;
-            it->second->core = pick_core(affinity, it->second->core.load());
-            RET = 1;
-            return;
-        }
+    const uint32_t thread_addr=ARG0,affinity=ARG1&7u;
+    if(!affinity){RET=0;return;}
+    if(thread_addr==rbrew_system_thread && rbrew_thread_core_slot) {
+        *rbrew_thread_core_slot=pick_core(affinity,rbrew_current_core());RET=1;return;
     }
-    s_main_affinity = affinity;
-    rbrew_main_thread_core = pick_core(affinity, rbrew_main_thread_core.load());
-    RET = 1;
+    if(thread_addr==MAIN_THREAD_ADDR) {
+        s_main_affinity=affinity;rbrew_main_thread_core=pick_core(affinity,rbrew_main_thread_core.load());RET=1;return;
+    }
+    if(!thread_addr || uint64_t(thread_addr)+0x20>cpu->guest_memory_size || !rbrew_memory_accessible(MEM,thread_addr,0x20)){RET=0;return;}
+    std::lock_guard lock(s_threads_mutex);
+    const auto it=s_threads.find(thread_addr);
+    if(it!=s_threads.end() && !it->second->finished.load(std::memory_order_acquire)) {
+        it->second->affinity=affinity;it->second->core=pick_core(affinity,it->second->core.load());
+    } else {
+        if(!s_pending_affinity.contains(thread_addr) && s_pending_affinity.size()>=kMaxPendingAffinity){RET=0;return;}
+        s_pending_affinity[thread_addr]=affinity;
+    }
+    RET=1;
 }
 static void OSSetThreadPriority(CPUState* cpu) {
     RET = 1;
@@ -392,14 +396,36 @@ static void OSWaitEventWithTimeout(CPUState* cpu) {
     (void)cpu;
     RET = 0;
 }
-static void OSDriver_Register(CPUState* cpu) {
-    (void)cpu;
-    RET = 0;
-}
+// OSWaitEventWithTimeout lives with the other events (coreinit_sync.cpp).
+static void OSDriver_Register(CPUState* cpu)     { (void)cpu; RET = 0; }
 
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
+// Diagnostic for a frozen game (main.cpp, RBREW_HANG_SAMPLE=freeze): guest
+// LR, SP, r3 and the saved-LR chain of every guest thread. PPC frames start
+// with the back chain at [sp] and the caller saves LR at [back chain + 4].
+// Read-only; values written by a running thread may be a little stale.
+static void dump_guest_stack(FILE* out, const char* name, uint32_t id, const CPUState* cpu) {
+    std::fprintf(out, "[stack] %s %08X lr=%08X sp=%08X r3=%08X r4=%08X r30=%08X r31=%08X chain:", name, id,
+                 cpu->lr, cpu->r[1], cpu->r[3], cpu->r[4], cpu->r[30], cpu->r[31]);
+    uint32_t sp = cpu->r[1];
+    for (int depth = 0; depth < 16 && sp && rbrew_memory_accessible(cpu->mem, sp, 4); ++depth) {
+        const uint32_t back = rbrew_read32(cpu->mem, sp);
+        if (back <= sp || !rbrew_memory_accessible(cpu->mem, back + 4, 4)) break;
+        std::fprintf(out, " %08X", rbrew_read32(cpu->mem, back + 4));
+        sp = back;
+    }
+    std::fprintf(out, "\n");
+}
+void rbrew_dump_guest_stacks(FILE* out, const CPUState* main_cpu) {
+    if (main_cpu) dump_guest_stack(out, "main", 0, main_cpu);
+    std::lock_guard<std::mutex> lock(s_threads_mutex);
+    for (const auto& [address, thread] : s_threads)
+        if (thread && thread->started && !thread->finished) dump_guest_stack(out, "thread", address, &thread->cpu);
+    std::fflush(out);
+}
+
 #include "coreinit_addrs.h"
 void coreinit_threads_register(CPUState* cpu) {
 #define REG(name) rbrew_register_func(cpu, ADDR_##name, name)
@@ -418,7 +444,6 @@ void coreinit_threads_register(CPUState* cpu) {
     REG(OSSleepTicks);
     REG(OSWaitRendezvous);
     REG(OSInitRendezvous);
-    REG(OSWaitEventWithTimeout);
     REG(OSDriver_Register);
     // OSExitThread is registered in coreinit_misc.cpp via coreinit_exit_thread()
 #undef REG

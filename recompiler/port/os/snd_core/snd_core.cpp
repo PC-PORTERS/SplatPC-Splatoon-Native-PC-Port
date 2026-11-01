@@ -652,14 +652,22 @@ static void AXInit(CPUState* cpu) {
     }
 
     if (ma_device_init(&s_ma_context, &cfg, &s_ma_device) != MA_SUCCESS) {
-        RBREW_LOG_ERROR("snd_core", "miniaudio: failed to open playback device\n");
-    } else if (ma_device_start(&s_ma_device) != MA_SUCCESS) {
-        RBREW_LOG_ERROR("snd_core", "miniaudio: failed to start playback device\n");
-        ma_device_uninit(&s_ma_device);
+        RBREW_LOGF(stderr, "[snd_core] miniaudio: failed to open playback device\n");
     } else {
-        s_device_open = true;
-        RBREW_LOG_INFO("snd_core", "AXInit: miniaudio stereo 32000 Hz, 96-sample AX frames\n");
-        RBREW_LOG_INFO("snd_core", "Playback device: %s\n", s_ma_device.playback.name);
+        // Test-only playback silence: retain mixing, device callbacks and
+        // timing so profiling is representative. No system volume changes.
+        if (const char* mute = std::getenv("RBREW_AUDIO_MUTE"); mute && std::strcmp(mute, "1") == 0) {
+            if (ma_device_set_master_volume(&s_ma_device, 0.0f) == MA_SUCCESS)
+                std::fprintf(stderr, "[snd_core] Test playback muted (mixer active)\n");
+        }
+        if (ma_device_start(&s_ma_device) != MA_SUCCESS) {
+            RBREW_LOGF(stderr, "[snd_core] miniaudio: failed to start playback device\n");
+            ma_device_uninit(&s_ma_device);
+        } else {
+            s_device_open=true;
+            RBREW_LOGF(stderr, "[snd_core] AXInit: miniaudio stereo 32000 Hz, 96-sample AX frames\n");
+            RBREW_LOGF(stderr,"[snd_core] Playback device: %s\n",s_ma_device.playback.name);
+        }
     }
 #else
     RBREW_LOG_INFO("snd_core", "AXInit: no audio back-end (build with HAVE_MINIAUDIO)\n");

@@ -14,6 +14,7 @@
 #include "runtime/host_process.h"
 #include "runtime/discord_rpc.h"
 #include "runtime/port_settings.h"
+#include "runtime/online_settings.h"
 #include "os/erreula/erreula.h"
 #include "os/coreinit/coreinit_overlay.h"
 #include "os/coreinit/coreinit_system_settings.h"
@@ -359,6 +360,9 @@ void Gambit_game_register(CPUState* cpu); // registers all recompiled game funct
 #endif
 #include "os/gx2/gx2_env_light.h"
 void player_anim_register(); // idle look-around and opt-in (RBREW_ANIM_LOG) animation trace
+void player_anim_register();                 // idle look-around and opt-in (RBREW_ANIM_LOG) animation trace
+void branch_tables_install(CPUState* cpu);   // branch_tables.cpp
+void broadcast_guard_install();              // broadcast_guard.cpp
 void coreinit_memory_init(uint8_t* mem);
 void coreinit_memory_register(CPUState* cpu);
 void coreinit_dimport_repatch(CPUState* cpu); // re-apply after Gambit_data_init
@@ -419,7 +423,10 @@ int main(int argc, char** argv) {
                    getenv("RBREW_CONTENT_DIR") ? getenv("RBREW_CONTENT_DIR") : "./content");
 
     // 1. Allocate the shared native layout, including application heap memory
-    const size_t arena_sz = WIIU_MEM_SIZE;
+    // The whole 32-bit guest space plus a guard is reserved (no access outside the committed
+    // regions), so a guest address + a short length can never reach host memory, even in a
+    // helper that skips the bounds check: a bad pointer from network data only faults.
+    const size_t arena_sz = (size_t(1) << 32) + 0x100000;
     uint8_t* arena = alloc_arena(arena_sz);
     if (!arena) {
         RBREW_LOG_ERROR("gambit", "Failed to allocate %zu MB guest arena\n", arena_sz >> 20);
@@ -500,16 +507,17 @@ int main(int argc, char** argv) {
         // Explicit native offline profile: English and unregistered country.
         // These match the selected local reference profile, independently of
         // title region. Neither the provider nor guest code depends on Cemu.
-        RbrewUcSystemProfile uc_profile{1, 0};
-        if (const char* value = getenv("RBREW_CONSOLE_LANGUAGE"); value && *value)
-            uc_profile.language = rbrew_parse_native_uc_scalar(value, 11);
-        if (const char* value = getenv("RBREW_COUNTRY_REGISTRATION"); value && *value)
-            uc_profile.country_registration = rbrew_parse_native_uc_scalar(value, 255);
-        rbrew_uc_configure_profile(&cpu_reg, uc_profile);
-        RBREW_LOG_INFO("UC", "Native profile: language=%u country_registration=%u\n", uc_profile.language,
-                       uc_profile.country_registration);
-        RBREW_LOG_INFO("MCP", "Native profile: console=0x%X title_regions=0x%X metadata=%s\n", regions.console_region,
-                       regions.title_regions, metadata.string().c_str());
+        RbrewUcSystemProfile uc_profile{1,0};
+        // settings.ini language=1 English / 2 French; RBREW_CONSOLE_LANGUAGE wins.
+        if(const std::string value=rbrew_online_cfg::resolved("RBREW_CONSOLE_LANGUAGE","language","1");!value.empty())
+            uc_profile.language=rbrew_parse_native_uc_scalar(value.c_str(),11);
+        if(const char* value=getenv("RBREW_COUNTRY_REGISTRATION");value && *value)
+            uc_profile.country_registration=rbrew_parse_native_uc_scalar(value,255);
+        rbrew_uc_configure_profile(&cpu_reg,uc_profile);
+        RBREW_LOGF(stderr,"[UC] Native profile: language=%u country_registration=%u\n",
+            uc_profile.language,uc_profile.country_registration);
+        RBREW_LOGF(stderr, "[MCP] Native profile: console=0x%X title_regions=0x%X metadata=%s\n",
+            regions.console_region, regions.title_regions, metadata.string().c_str());
     } catch (const std::exception& error) {
         RBREW_LOG_ERROR("MCP", "Native profile setup failed: %s\n", error.what());
         delete overlay_mapping;
@@ -523,7 +531,7 @@ int main(int argc, char** argv) {
     gambit_plt_auto_register(&cpu_reg);
     // Every PLT slot now holds the same blank STUB; remember it so imports
     // that no native module overrides can be reported (RBREW_STUB_REPORT).
-    const HostFunc blank_stub = cpu_reg.dispatch_table[0x02D051A0u >> 2];
+    const HostFunc blank_stub = cpu_reg.dispatch_table[rbrew_game_address(0x02D051A0u) >> 2];
     // Now override with real implementations
     coreinit_memory_init(arena);
     coreinit_memory_register(&cpu_reg);
@@ -546,6 +554,8 @@ int main(int argc, char** argv) {
     sysapp_title_register(&cpu_reg);
     // Register all recompiled game functions so rbrew_dispatch can find them
     Gambit_game_register(&cpu_reg);
+    branch_tables_install(&cpu_reg);    // link branch-table case blocks (see os/game/branch_tables.cpp)
+    broadcast_guard_install();          // 0285C3D0 broadcast loop guard
     player_anim_register();
     gx2env::register_hooks(); // camera field of view (gx2_env_light.h)
     erreula_register(&cpu_reg);

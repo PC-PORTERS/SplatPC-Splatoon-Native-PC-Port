@@ -5,6 +5,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Shared public headers (the logger lives here).
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../include)
+set(RBREW_GAME_REVISION "16" CACHE STRING "Supported title revision: 16 or experimental 288")
+if(NOT RBREW_GAME_REVISION MATCHES "^(16|288)$")
+    message(FATAL_ERROR "Unsupported title revision")
+endif()
+add_compile_definitions(RBREW_GAME_REVISION=${RBREW_GAME_REVISION})
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/gx2_windowing.cmake)
 if(DEFINED RBREW_GRAPHICS_BACKEND AND NOT RBREW_GRAPHICS_BACKEND STREQUAL "Vulkan")
@@ -80,9 +85,16 @@ if(NOT RBREW_MANIFEST_PATH AND Python3_Interpreter_FOUND AND EXISTS "${RBREW_PLT
         if(RBREW_MANIFEST_COUNT EQUAL 1)
             list(GET RBREW_MANIFESTS 0 RBREW_MANIFEST_PATH)
         elseif(RBREW_MANIFEST_COUNT GREATER 1)
-            message(FATAL_ERROR
-                "Several manifests are available. Pass -DRBREW_RPX=<Gambit.rpx> "
-                "(or -DRBREW_MANIFEST=<file>) so the build uses the right one.")
+            # Without an image, fall back to the manifest of the selected revision
+            # (16 by default), so builds that need no dump (CI, tests) still configure.
+            set(RBREW_REVISION_MANIFEST "${RBREW_MANIFEST_DIR}/Gambit_v${RBREW_GAME_REVISION}.manifest")
+            if(EXISTS "${RBREW_REVISION_MANIFEST}")
+                set(RBREW_MANIFEST_PATH "${RBREW_REVISION_MANIFEST}")
+            else()
+                message(FATAL_ERROR
+                    "Several manifests are available. Pass -DRBREW_RPX=<Gambit.rpx> "
+                    "(or -DRBREW_MANIFEST=<file>) so the build uses the right one.")
+            endif()
         endif()
     endif()
 endif()
@@ -121,6 +133,22 @@ else()
     message(STATUS "PLT addresses: using the existing generated headers (no manifest selected)")
 endif()
 
+# The headers live in the source tree and are shared by every build tree (the base
+# game and the 288 update use separate trees). Re-emit this tree's manifest before
+# each build so an incremental build never compiles the other revision's map;
+# unchanged files are not rewritten.
+if(RBREW_PLT_GENERATED)
+    list(TRANSFORM RBREW_PLT_OUTPUTS PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/" OUTPUT_VARIABLE RBREW_PLT_FILES)
+    # BYPRODUCTS: Ninja re-checks the headers after the step instead of trusting
+    # the timestamps it read when the build started.
+    add_custom_target(rbrew_plt_emit
+        BYPRODUCTS ${RBREW_PLT_FILES}
+        COMMAND "${Python3_EXECUTABLE}" "${RBREW_PLT_RESOLVER}" emit
+                --manifest "${RBREW_MANIFEST_PATH}" --out "${CMAKE_CURRENT_SOURCE_DIR}"
+        COMMENT "PLT addresses from ${RBREW_MANIFEST_PATH}"
+        VERBATIM)
+endif()
+
 add_library(gambit_runtime STATIC
     runtime/rebrewu_runtime.cpp
     runtime/rebrewu_paired.cpp
@@ -151,10 +179,17 @@ add_library(gambit_runtime STATIC
     os/snd_core/snd_core.cpp
     os/vpad/game_controllers.cpp
     os/vpad/vpad.cpp
+    os/vpad/write_probe.cpp
     os/padscore/padscore.cpp
     os/stubs/stubs.cpp
+    os/stubs/zlib_bridge.cpp
+    os/stubs/boss_local.cpp
+    os/stubs/acp_network_time.cpp
+    os/stubs/fp_lab.cpp
     os/nsysnet/nsysnet.cpp
     os/game/player_anim.cpp
+    os/game/branch_tables.cpp
+    os/game/broadcast_guard.cpp
     loader/gambit_loader.cpp
     loader/native_console_profile.cpp
     runtime/splatoon_diagnostics.cpp
@@ -224,6 +259,10 @@ endif()
 option(RBREW_BUILD_GAME "Build a private, locally generated game" ${RBREW_GAME_DEFAULT})
 if(RBREW_BUILD_GAME)
 file(GLOB GAMBIT_PARTS "${GAMBIT_GENERATED_DIR}/Gambit_part*.cpp")
+
+if(TARGET rbrew_plt_emit)
+    add_dependencies(gambit_runtime rbrew_plt_emit)
+endif()
 
 add_library(gambit_generated OBJECT
     ${GAMBIT_PARTS}
@@ -510,6 +549,16 @@ if(RBREW_BUILD_TESTS)
             set_tests_properties(compatibility_${case} PROPERTIES TIMEOUT 30)
         endforeach()
     endif()
+endif()
+
+# Online mode: network confinement policy and local identity (header-only, no guest code).
+if(RBREW_BUILD_TESTS)
+    add_executable(gambit_net_policy_tests ../tests/test_net_policy.cpp)
+    target_include_directories(gambit_net_policy_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME net_policy COMMAND gambit_net_policy_tests)
+    add_executable(gambit_online_identity_tests ../tests/test_online_identity.cpp)
+    target_include_directories(gambit_online_identity_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+    add_test(NAME online_identity COMMAND gambit_online_identity_tests)
 endif()
 
 # The developer test sources are not part of the public tree.

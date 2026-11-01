@@ -1,0 +1,3 @@
+# Public keys allowed to sign the update tags (online-vX.Y.Z): one line per maintainer,
+# '<name> <key type> <public key>'. See docs/RELEASES.md. Empty: updates are switched off.
+release ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDUVpyOYqyxfR+IBo7OKNIrY0xNWZAGufAC+cgg31ic4

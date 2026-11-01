@@ -1,6 +1,7 @@
 #include "../../runtime/rbrew_diagnostics.h"
 // coreinit miscellaneous: time, I/O, system info, debug, mem helpers
 #include "../os_common.h"
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -9,7 +10,10 @@
 #include <condition_variable>
 #include <unordered_map>
 #include <stdexcept>
+#include "coreinit_alarm.h"
+#include "coreinit_sync_helpers.h"
 #include "coreinit_dynload.h"
+#include <thread>
 #include "coreinit_system_settings.h"
 #include "coreinit_user_config.h"
 
@@ -50,7 +54,8 @@ static void OSGetTime(CPUState* cpu) {
 // OSGetSystemInfo returns a pointer to coreinit's static OSSystemInfo
 // (coreinit.rpl: "return &systemInfo"). Layout and boot values per decaf
 // coreinit_systeminfo: busSpeed, coreSpeed, baseTime, l2CacheSize[3], cpuRatio.
-uint32_t coreinit_alloc_system_block(uint32_t size); // coreinit_memory.cpp
+uint32_t coreinit_alloc_system_block(uint32_t size);
+void coreinit_alarm_shutdown(); // coreinit_memory.cpp
 static void OSGetSystemInfo(CPUState* cpu) {
     static uint32_t info = 0;
     static std::once_flag once;
@@ -375,51 +380,168 @@ static void OSReceiveMessage(CPUState* cpu) {
     RET = 1;
 }
 
-// --- Alarms (no-op) ---
-static void OSCreateAlarm(CPUState* cpu) {
-    if (ARG0) memset(MEM + ARG0, 0, 0x40);
+// --- Alarms ---
+// One host thread fires every alarm at its OS-tick deadline and calls the
+// guest handler(alarm, context) like the audio callbacks do: own guest stack,
+// a native-thread identity (rbrew_system_thread) and the setter's core.
+// The no-op versions never fired: the 3 ms remote-speaker alarm (02CF5FB8)
+// and system timers depend on them.
+uint32_t coreinit_alloc_system_block(uint32_t size);
+void coreinit_alarm_shutdown();
+namespace {
+struct PendingAlarm { uint64_t next=0,period=0,generation=0;uint32_t handler=0,core=1;bool firing=false; };
+struct AlarmService {
+    std::mutex mutex;std::condition_variable changed;
+    std::unordered_map<uint32_t,PendingAlarm> pending;
+    bool started=false,stopping=false;
+    std::thread worker;
+    uint64_t generation=0;
+    CPUState cpu{};uint32_t storage=0;
+    std::atomic<uint32_t> core{1};
+};
+AlarmService& alarm_service(){static auto* s=new AlarmService;return *s;}
+constexpr uint32_t kAlarmStorage=0x8000,kAlarmContext=0x100;
+uint64_t alarm_now(){return rbrew_alarm_add(s_base_time,rbrew_system_ticks());}
+void fire_alarm(AlarmService& s,uint32_t alarm,const PendingAlarm& a) {
+    CPUState call=s.cpu;call.r[1]=(s.storage+kAlarmStorage-16)&~15u;
+    rbrew_write32(call.mem,call.r[1],0);
+    std::memset(call.mem+s.storage+kAlarmContext,0,0x400);
+    call.r[3]=alarm;call.r[4]=s.storage+kAlarmContext;call.lr=0;
+    s.core.store(a.core);
+    struct Scope {
+        uint32_t thread=rbrew_system_thread;std::atomic<uint32_t>* core=rbrew_thread_core_slot;
+        Scope(AlarmService& s){rbrew_system_thread=s.storage;rbrew_thread_core_slot=&s.core;}
+        ~Scope(){rbrew_system_thread=thread;rbrew_thread_core_slot=core;}
+    } scope(s);
+    try{rbrew_dispatch(&call,a.handler);}
+    catch(const std::exception& e){RBREW_LOGF(stderr,"[alarm] %08X: %s\n",a.handler,e.what());}
+    catch(...){RBREW_LOGF(stderr,"[alarm] %08X: handler failed\n",a.handler);}
 }
-static void OSSetAlarm(CPUState* cpu) {
-    (void)cpu;
+void alarm_thread() {
+    auto& s=alarm_service();std::unique_lock lock(s.mutex);
+    while(!s.stopping) {
+        if(s.pending.empty()){s.changed.wait(lock);continue;}
+        auto due=s.pending.begin();
+        for(auto it=s.pending.begin();it!=s.pending.end();++it)if(it->second.next<due->second.next)due=it;
+        const uint64_t now=alarm_now();
+        if(due->second.next>now) {
+            const auto deadline=rbrew_timeout_deadline(due->second.next-s_base_time,RBREW_TIMER_CLOCK,rbrew_boot_time);
+            s.changed.wait_until(lock,deadline);continue;
+        }
+        const uint32_t address=due->first;const PendingAlarm a=due->second;
+        due->second.firing=true;
+        // Dispatch is claimed under the lock. Cancel may cancel a future fire
+        // or the rearm of an in-flight handler; it never waits while holding a guest lock.
+        lock.unlock();fire_alarm(s,address,a);lock.lock();
+        auto current=s.pending.find(address);
+        if(current!=s.pending.end() && current->second.generation==a.generation) {
+            if(a.period) {
+                current->second.next=rbrew_alarm_next_periodic(a.next,a.period,alarm_now());
+                current->second.firing=false;
+                rbrew_write64(s.cpu.mem,address+kOSAlarmNext,current->second.next);
+            } else s.pending.erase(current);
+        }
+    }
 }
-static void OSCancelAlarm(CPUState* cpu) {
-    RET = 1;
+void schedule_alarm(CPUState* cpu,uint32_t alarm,uint64_t next,uint64_t period,uint32_t handler) {
+    if(!alarm || !handler || !rbrew_memory_accessible(MEM,alarm,kOSAlarmSize)){RET=0;return;}
+    auto& s=alarm_service();
+    {
+        std::lock_guard lock(s.mutex);
+        if(s.stopping){RET=0;return;}
+        if(!s.started) {
+            s.storage=coreinit_alloc_system_block(kAlarmStorage);
+            if(!s.storage)throw std::runtime_error("alarm thread storage allocation failed");
+            s.cpu=*cpu;s.stopping=false;
+            s.worker=std::thread(alarm_thread);s.started=true;
+            static const bool registered=[] {std::atexit(coreinit_alarm_shutdown);return true;}();(void)registered;
+        }
+        if(s.cpu.mem!=MEM)throw std::runtime_error("Alarm service belongs to another guest arena");
+        rbrew_write32(MEM,alarm+kOSAlarmHandler,handler);
+        rbrew_write64(MEM,alarm+kOSAlarmNext,next);rbrew_write64(MEM,alarm+kOSAlarmPeriod,period);
+        s.pending[alarm]=PendingAlarm{next,period,++s.generation,handler,rbrew_current_core(),false};
+    }
+    s.changed.notify_all();RET=1;
 }
-static void OSCancelAlarms(CPUState* cpu) {
-    (void)cpu;
+}
+void coreinit_alarm_shutdown() {
+    auto& s=alarm_service();
+    {std::lock_guard lock(s.mutex);s.stopping=true;s.pending.clear();}
+    s.changed.notify_all();
+    if(s.worker.joinable()) {
+        if(s.worker.get_id()==std::this_thread::get_id())s.worker.detach();else s.worker.join();
+    }
+    {std::lock_guard lock(s.mutex);s.started=false;}
 }
 
-// --- GHS C++ runtime stubs ---
+static void OSCreateAlarm(CPUState* cpu) {
+    if (!ARG0 || !rbrew_memory_accessible(MEM, ARG0, kOSAlarmSize)) return;
+    { std::lock_guard lock(alarm_service().mutex); alarm_service().pending.erase(ARG0); }
+    memset(MEM + ARG0, 0, kOSAlarmSize);
+    rbrew_write32(MEM, ARG0, kOSAlarmTag);
+}
+// OSSetAlarm(alarm, u64 delay, handler): r5:r6 delay ticks, r7 handler.
+static void OSSetAlarm(CPUState* cpu) {
+    const uint64_t delay = uint64_t(cpu->r[5]) << 32 | cpu->r[6];
+    if(int64_t(delay)<=0){RET=1;return;}
+    schedule_alarm(cpu,ARG0,rbrew_alarm_add(alarm_now(),delay),0,cpu->r[7]);
+}
+// OSSetPeriodicAlarm(alarm, u64 start, u64 period, handler): r5:r6, r7:r8, r9.
+static void OSSetPeriodicAlarm(CPUState* cpu) {
+    const uint64_t start = uint64_t(cpu->r[5]) << 32 | cpu->r[6], period = uint64_t(cpu->r[7]) << 32 | cpu->r[8];
+    if(int64_t(period)<=0){RET=1;return;}
+    schedule_alarm(cpu, ARG0, rbrew_alarm_first_periodic(start,period,alarm_now()), period, cpu->r[9]);
+}
+static void OSCancelAlarm(CPUState* cpu) {
+    std::lock_guard lock(alarm_service().mutex);
+    RET = alarm_service().pending.erase(ARG0) ? 1u : 0u;
+}
+// OSCancelAlarms(group): every pending alarm whose group (+0x10) matches.
+static void OSCancelAlarms(CPUState* cpu) {
+    if(ARG0==0 || ARG0==~0u)return;
+    std::lock_guard lock(alarm_service().mutex);
+    auto& pending = alarm_service().pending;
+    for (auto it = pending.begin(); it != pending.end();)
+        it = rbrew_read32(MEM, it->first + kOSAlarmGroup) == ARG0 ? pending.erase(it) : std::next(it);
+}
+static void OSSetAlarmUserData(CPUState* cpu) {
+    if (ARG0 && rbrew_memory_accessible(MEM, ARG0, kOSAlarmSize)) rbrew_write32(MEM, ARG0 + kOSAlarmUserData, ARG1);
+}
+static void OSGetAlarmUserData(CPUState* cpu) {
+    RET = ARG0 && rbrew_memory_accessible(MEM, ARG0, kOSAlarmSize) ? rbrew_read32(MEM, ARG0 + kOSAlarmUserData) : 0u;
+}
+
+// --- GHS C library locks ---
+// __ghsLock guards the C library's shared state (atexit table, stdio...);
+// __ghs_mtx_* are its per-object mutexes, keyed by the guest address the
+// library passes (Cemu: an OSMutex behind that pointer). They were no-ops.
+namespace {
+GuestRecursiveLock& ghs_global_lock() { static auto* l = new GuestRecursiveLock; return *l; }
+std::mutex s_ghs_mutexes_lock;
+std::unordered_map<uint32_t, GuestRecursiveLock*> s_ghs_mutexes;   // never freed: a late unlock stays valid
+GuestRecursiveLock& ghs_mutex(uint32_t address) {
+    std::lock_guard lock(s_ghs_mutexes_lock);
+    auto& m = s_ghs_mutexes[address];
+    if (!m) m = new GuestRecursiveLock;
+    return *m;
+}
+void ghs_unlock_checked(GuestRecursiveLock& l, uint32_t address) {
+    if (!l.unlock()) RBREW_LOGF(stderr, "[ghs] unlock of %08X by a thread that does not hold it\n", address);
+}
+}
 static void __ghs_mtx_init(CPUState* cpu) {
-    (void)cpu;
+    ghs_mutex(ARG0);
+    if (ARG0 && rbrew_memory_accessible(MEM, ARG0, 4)) rbrew_write32(MEM, ARG0, ARG0);   // non-null handle
 }
-static void __ghs_mtx_dst(CPUState* cpu) {
-    (void)cpu;
-}
-static void __ghs_mtx_lock(CPUState* cpu) {
-    (void)cpu;
-}
-static void __ghs_mtx_unlock(CPUState* cpu) {
-    (void)cpu;
-}
-static void __ghs_flock_file(CPUState* cpu) {
-    (void)cpu;
-}
-static void __ghs_flock_ptr(CPUState* cpu) {
-    (void)cpu;
-}
-static void __ghs_funlock_file(CPUState* cpu) {
-    (void)cpu;
-}
-static void __ghsLock(CPUState* cpu) {
-    (void)cpu;
-}
-static void __ghsUnlock(CPUState* cpu) {
-    (void)cpu;
-}
-static void __gh_set_errno(CPUState* cpu) {
-    (void)cpu;
-}
+static void __ghs_mtx_dst(CPUState* cpu)    { (void)cpu; }
+static void __ghs_mtx_lock(CPUState* cpu)   { ghs_mutex(ARG0).lock(); }
+static void __ghs_mtx_unlock(CPUState* cpu) { ghs_unlock_checked(ghs_mutex(ARG0), ARG0); }
+static void __ghs_flock_file(CPUState* cpu)   { (void)cpu; }
+static void __ghs_flock_ptr(CPUState* cpu)    { (void)cpu; }
+static void __ghs_funlock_file(CPUState* cpu) { (void)cpu; }
+static void __ghsLock(CPUState* cpu)   { (void)cpu; ghs_global_lock().lock(); }
+static void __ghsUnlock(CPUState* cpu) { (void)cpu; ghs_unlock_checked(ghs_global_lock(), 0); }
+static void __gh_set_errno(CPUState* cpu) { (void)cpu; }
 
 // --- MCP (system settings) ---
 static void MCP_Open(CPUState* cpu) {
@@ -503,6 +625,9 @@ void coreinit_misc_register(CPUState* cpu) {
     REG(OSSetAlarm);
     REG(OSCancelAlarm);
     REG(OSCancelAlarms);
+    REG(OSSetPeriodicAlarm);
+    REG(OSSetAlarmUserData);
+    REG(OSGetAlarmUserData);
     // OSFastMutex_* are registered in coreinit_sync.cpp
     REG(__ghs_mtx_init);
     REG(__ghs_mtx_dst);
@@ -522,3 +647,4 @@ void coreinit_misc_register(CPUState* cpu) {
     REG(OSIsAddressRangeDCValid);
 #undef REG
 }
+

@@ -7,8 +7,8 @@
 // Native nn::act provider for one offline console account in slot 1.
 // Behavior follows the selected local reference profile (Cemu's default
 // offline account): no NNID, principal/simple-address id 0, country "NN",
-// and the deterministic default Mii. Network, token and UUID exports are not
-// provided here and stay unregistered by this module.
+// and the deterministic default Mii. Revision 288 also has a deterministic
+// local UUID. This provider does not import a console identity or account.
 constexpr uint32_t RBREW_ACT_SLOT_COUNT = 12;
 constexpr uint8_t RBREW_ACT_SLOT_CURRENT = 0xFE;
 constexpr uint32_t RBREW_ACT_RESULT_ACCOUNT_DOES_NOT_EXIST = 0xA071F480u;

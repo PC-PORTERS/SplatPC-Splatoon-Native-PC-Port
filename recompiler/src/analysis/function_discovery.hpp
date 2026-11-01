@@ -33,23 +33,26 @@ public:
         bool accepted;
     };
     struct Config {
-        bool follow_calls;
-        bool follow_branch_targets;
-        bool analyze_symbol_table;
-        bool analyze_exports;
-        bool analyze_imports;
-        uint32_t max_function_size;
-        std::vector<FunctionHint> hints;
-        // Function starts reported by an external analyzer (e.g. Ghidra). Used
-        // only as corroboration: an entry is added when it is also referenced
-        // and follows a no-fallthrough separator.
-        std::set<uint32_t> analyzer_entries;
-        // Optional observation only; never changes candidate decisions.
-        std::function<void(const FrameAudit&)> frame_audit;
-        std::function<void(const ThunkAudit&)> thunk_audit;
-        Config() noexcept
-            : follow_calls(true), follow_branch_targets(true), analyze_symbol_table(true), analyze_exports(true),
-              analyze_imports(true), max_function_size(1024 * 1024) {}
+      bool follow_calls;
+      bool follow_branch_targets;
+      bool analyze_symbol_table;
+      bool analyze_exports;
+      bool analyze_imports;
+      uint32_t max_function_size;
+      std::vector<FunctionHint> hints;
+      // Function starts reported by an external analyzer (e.g. Ghidra). Used
+      // only as corroboration: an entry is added when it is also referenced
+      // and follows a no-fallthrough separator.
+      std::set<uint32_t> analyzer_entries;
+      // Opt-in: apply the same reference/separator proof to all address-taken entries.
+      bool discover_referenced_entries{false};
+      // Optional observation only; never changes candidate decisions.
+      std::function<void(const FrameAudit&)> frame_audit;
+      std::function<void(const ThunkAudit&)> thunk_audit;
+      Config() noexcept
+          : follow_calls(true), follow_branch_targets(true)
+          , analyze_symbol_table(true), analyze_exports(true)
+          , analyze_imports(true), max_function_size(1024*1024) {}
     };
 
     explicit FunctionDiscovery(const rpx::RpxModule& module, const linker::Linker& linker, Config cfg = {});

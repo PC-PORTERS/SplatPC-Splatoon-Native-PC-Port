@@ -1,10 +1,24 @@
 #include "cfg_builder.hpp"
 #include "../ppc/semantics/ppc_semantics.hpp"
 #include <cstdio>
+#include <algorithm>
 
 namespace rebrewu::analysis {
 
-CFGBuilder::CFGBuilder(const rpx::RpxModule& module, Config cfg) : m_module(module), m_cfg(std::move(cfg)) {}
+CFGBuilder::CFGBuilder(const rpx::RpxModule& module, Config cfg)
+    : m_module(module), m_cfg(std::move(cfg)) {
+    for (const auto& section : module.sections) {
+        if (!section.is_executable()) continue;
+        for (uint32_t offset=0; uint64_t(offset)+4<=section.data.size(); offset+=4) {
+            const uint32_t pc=section.address+offset;
+            auto word=module.read_word(pc);
+            if (!word || (*word>>26!=18 && *word>>26!=16)) continue;
+            auto branch=ppc::decode(*word,pc);
+            if (branch) m_direct_branches.emplace_back(branch->target,pc);
+        }
+    }
+    std::sort(m_direct_branches.begin(),m_direct_branches.end());
+}
 
 std::optional<ir::IRFunction> CFGBuilder::build(uint32_t entry_addr, std::string_view name) {
     if (!is_code_addr(entry_addr)) {
@@ -76,9 +90,47 @@ CFGBuilder::InlineTableAudit CFGBuilder::audit_inline_branch(uint32_t pc) const 
         compare_distance = 28;
         producer_start = pc - 20;
     }
-    bool return_guard = guard->mnemonic == Mnemonic::BCLR;
-    if ((!return_guard && guard->mnemonic != Mnemonic::BC) || (guard->bo & ~1u) != 12 || guard->lk)
-        return {{}, "guard_condition"};
+    // A guarded path can jump over a bounded constant fallback into the same
+    // producer. Prove both predecessors, and reject any direct branch that
+    // enters after the fallback assignment or bypasses the unsigned guard.
+    if (guard->mnemonic!=Mnemonic::BC && guard->mnemonic!=Mnemonic::BCLR && !combined) {
+        bool proved=false;
+        for (uint32_t back=12; back<=28 && producer_start>=back+4; back+=4) {
+            const uint32_t guard_pc=producer_start-back;
+            auto test=instruction(guard_pc-4), conditional=instruction(guard_pc);
+            auto skip=instruction(guard_pc+4), fallback=instruction(guard_pc+8);
+            if (!test || !conditional || !skip || !fallback ||
+                test->mnemonic!=Mnemonic::CMPLI || test->rA!=scale->rA ||
+                test->uimm>=256 || (test->rD&3u)!=0 ||
+                conditional->mnemonic!=Mnemonic::BC || (conditional->bo&~1u)!=12 || conditional->lk ||
+                conditional->bi!=(test->rD>>2)*4u+1u ||
+                skip->mnemonic!=Mnemonic::B || skip->lk || skip->target!=producer_start ||
+                fallback->mnemonic!=Mnemonic::LI || fallback->rD!=scale->rA ||
+                fallback->imm<0 || uint32_t(fallback->imm)>test->uimm) continue;
+            bool safe=true;
+            for (uint32_t at=guard_pc+12; at<producer_start; at+=4) {
+                auto operation=instruction(at);
+                if (!operation) { safe=false;break; }
+                const bool store=operation->mnemonic==Mnemonic::STW ||
+                    operation->mnemonic==Mnemonic::STH || operation->mnemonic==Mnemonic::STB;
+                const bool load=(operation->mnemonic==Mnemonic::LWZ || operation->mnemonic==Mnemonic::LBZ ||
+                    operation->mnemonic==Mnemonic::LHZ || operation->mnemonic==Mnemonic::LHA) &&
+                    operation->rD!=scale->rA;
+                if (!store && !load) { safe=false;break; }
+            }
+            if (!safe) continue;
+            auto incoming=std::lower_bound(m_direct_branches.begin(),m_direct_branches.end(),
+                std::pair<uint32_t,uint32_t>{guard_pc+12,0});
+            for (; incoming!=m_direct_branches.end() && incoming->first<=producer_start; ++incoming)
+                if (incoming->first!=producer_start || incoming->second!=guard_pc+4) {safe=false;break;}
+            if (!safe) continue;
+            guard=conditional; compare_distance=pc-(guard_pc-4);proved=true;break;
+        }
+        if (!proved) return {{},"guarded_merge_unproven"};
+    }
+    bool return_guard=guard->mnemonic==Mnemonic::BCLR;
+    if ((!return_guard && guard->mnemonic!=Mnemonic::BC) ||
+        (guard->bo&~1u)!=12 || guard->lk) return {{},"guard_condition"};
     uint32_t table = (static_cast<uint32_t>(high->imm) << 16) + static_cast<uint32_t>(low->imm);
     if (table != pc + 4 || scale->rA == 0) return {{}, "table_base_or_index"};
 

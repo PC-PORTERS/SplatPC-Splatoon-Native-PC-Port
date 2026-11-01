@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [ '**' ]
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -17,14 +20,14 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Validate shell scripts syntax
         run: |
           bash -n setup.sh build.sh
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
 
@@ -57,7 +60,7 @@ jobs:
 
       - name: Cache dependencies profile
         id: cache-deps
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             build/deps
@@ -70,6 +73,7 @@ jobs:
           if [ ! -f "build/deps/VulkanHeaders/share/cmake/VulkanHeaders/VulkanHeadersConfig.cmake" ]; then
             mkdir -p build/downloads build/vulkan-headers-src build/vulkan-headers-build
             curl -fL --retry 3 https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/vulkan-sdk-1.4.304.0.tar.gz -o build/downloads/vulkan-headers.tar.gz
+            [ "$(gzip -dc build/downloads/vulkan-headers.tar.gz | sha256sum | cut -d' ' -f1 | tr a-f A-F)" = "36953C8F8EAD389DB17E5F4B32C5CB41AD80F7D13DC336C7A1DC67CBF0C6C984" ] || { echo 'checksum mismatch: Vulkan-Headers'; exit 1; }
             tar -xzf build/downloads/vulkan-headers.tar.gz -C build/vulkan-headers-src --strip-components=1
             cmake -S build/vulkan-headers-src -B build/vulkan-headers-build -G Ninja \
               -DCMAKE_INSTALL_PREFIX="$PWD/build/deps/VulkanHeaders"
@@ -81,6 +85,7 @@ jobs:
           if [ ! -f "build/deps/volk/lib/cmake/volk/volkConfig.cmake" ]; then
             mkdir -p build/downloads build/volk-source build/volk-build
             curl -fL --retry 3 https://github.com/zeux/volk/archive/refs/tags/vulkan-sdk-1.4.363.0.tar.gz -o build/downloads/volk.tar.gz
+            [ "$(gzip -dc build/downloads/volk.tar.gz | sha256sum | cut -d' ' -f1 | tr a-f A-F)" = "B277DD60D647A4DC685778A88089DD3AE8F1AC3C1075ABF97331C3D9C5F97672" ] || { echo 'checksum mismatch: volk'; exit 1; }
             tar -xzf build/downloads/volk.tar.gz -C build/volk-source --strip-components=1
             cmake -S build/volk-source -B build/volk-build -G Ninja \
               -DCMAKE_BUILD_TYPE=Release \
@@ -94,9 +99,11 @@ jobs:
           mkdir -p build/downloads
           if [ ! -f "build/downloads/SDL2-2.32.10.zip" ]; then
             curl -fL --retry 3 https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-2.32.10.zip -o build/downloads/SDL2-2.32.10.zip
+            [ "$(sha256sum build/downloads/SDL2-2.32.10.zip | cut -d' ' -f1 | tr a-f A-F)" = "12B2DC2EB8F2836100A7916B5D394A0C82F1F7E32693F95F98305403AF242F08" ] || { echo 'checksum mismatch: SDL2'; rm -f build/downloads/SDL2-2.32.10.zip; exit 1; }
           fi
           if [ ! -f "build/downloads/glslang-16.4.0.tar.gz" ]; then
             curl -fL --retry 3 https://github.com/KhronosGroup/glslang/archive/refs/tags/16.4.0.tar.gz -o build/downloads/glslang-16.4.0.tar.gz
+            [ "$(gzip -dc build/downloads/glslang-16.4.0.tar.gz | sha256sum | cut -d' ' -f1 | tr a-f A-F)" = "157A6B0A50C1D91474D6C0007C62F01B3DCBBC7BA0A2A1B2C8AB22554288851C" ] || { echo 'checksum mismatch: glslang'; rm -f build/downloads/glslang-16.4.0.tar.gz; exit 1; }
           fi
           if [ ! -d "build/downloads/SDL2-2.32.10" ]; then
             python3 -c 'import zipfile; zipfile.ZipFile("build/downloads/SDL2-2.32.10.zip").extractall("build/downloads")'

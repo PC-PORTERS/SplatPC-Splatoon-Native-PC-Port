@@ -1,0 +1,11 @@
+# Native optional plaza frame-rate hook (EUR title version 288).
+0242A8F8
+# Message broadcast (dispatcher 0285C3D0): native copy with a loop guard (GamePad touch freeze).
+0285C3D0
+# Network error manager probe (nsysnet.cpp err_probe, with RBREW_NET_TRACE): setters, poll, cSilentError.
+02B38E98
+02B38ED4
+02B38D70
+027B09A4
+# Idle (AFK) detector of the match (02753D9C): skipped by the duo test launchers only (RBREW_DUO_NO_AFK).
+02753D9C

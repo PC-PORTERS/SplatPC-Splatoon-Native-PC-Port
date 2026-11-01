@@ -1,0 +1,14 @@
+{
+  "_readme": "Copy this file to server.json and edit it, then: py -3.12 tools\\nexlab\\nexserver.py --config server.json. Every key is optional; without a config file the server behaves exactly like the lab one (127.0.0.1, auth 60000, secure 60001, NAT check on the loopback aliases, identities from online_identity.ini next to the game).",
+  "_readme_public": "Public server: mode=public, listen=0.0.0.0, advertise=<the IP players reach>, natcheck=true with TWO different public IPs (nncs1/nncs2, each on UDP 10025 and 10125; one IP is not enough, Pretendo says the same), or natcheck=false until those two IPs exist. Registration is CLOSED by default: use \"registration\": \"token\" behind a TLS reverse proxy. Players register once: py -3.12 tools\\nexlab\\register.py --server https://<server> --token <secret>",
+  "mode": "lab",
+  "listen": "127.0.0.1",
+  "auth_port": 60000,
+  "secure_port": 60001,
+  "natcheck": true,
+  "natcheck_addresses": ["127.0.0.1", "127.0.0.2"],
+  "accounts_db": "nexlab-accounts.sqlite3",
+  "registration": "closed",
+  "registration_port": 60002,
+  "fill_timeout": 20
+}

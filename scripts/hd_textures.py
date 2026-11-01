@@ -36,18 +36,21 @@ MODEL_PATH = ROOT / 'build' / 'upscale' / 'models' / 'RealESRGAN_x4plus.pth'
 
 def ensure_packages():
     missing = []
+    # Compatible ranges, not 'latest': a new major version cannot slip in unnoticed.
+    wanted = {'numpy': 'numpy>=2,<3', 'PIL': 'pillow>=10,<13', 'torch': 'torch>=2.2,<3'}
     for name in ('numpy', 'PIL', 'torch'):
         try:
             __import__(name)
         except ImportError:
-            missing.append({'PIL': 'pillow'}.get(name, name))
+            missing.append(wanted[name])
     if not missing:
         return
     print('Missing Python packages:', ' '.join(missing))
     answer = input('Install them now with pip (internet, about 200 MB-2 GB)? [y/N] ').strip().lower()
     if answer not in ('y', 'yes', 'j', 'ja'):
         sys.exit('Install them with:  python -m pip install ' + ' '.join(missing))
-    subprocess.check_call([sys.executable, '-m', 'pip', 'install', *missing])
+    # --only-binary: ready-made wheels only; a source package would run its build script on this PC.
+    subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--only-binary=:all:', *missing])
 
 
 ensure_packages()

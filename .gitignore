@@ -48,7 +48,13 @@ __pycache__/
 /frame_dumps*/
 /gameplay_dumps/
 /validation_results/
-/tools/
+/tools/*
+!/tools/nexlab/
+!/tools/tests/
+!/tools/boss/
+__pycache__/
+online_identity.ini
+server.json
 /*.png
 /*.log
 /link_cmd.txt
@@ -64,3 +70,25 @@ __pycache__/
 !/scripts/install-hooks.sh
 !/scripts/git-hooks/
 !/scripts/git-hooks/*
+
+# v288 update tooling (tracked on purpose)
+!/scripts/Build-Update.ps1
+!/scripts/Launch-Update.ps1
+!/scripts/Install-Update.ps1
+!/scripts/tests/
+!/scripts/tests/**
+
+# Multiplayer launchers
+!/scripts/Splatoon-Login.ps1
+!/scripts/Launch-Duo-Public.ps1
+!/scripts/Launch-Duo.ps1
+!/scripts/Launch-Duo-LAN.ps1
+!/scripts/Launch-Duo-VPN.ps1
+!/scripts/Launch-Online.ps1
+!/scripts/Update-Check.ps1
+!/scripts/Update-Apply.ps1
+!/scripts/allowed_signers
+!/scripts/server.public.txt
+
+# The launcher shortcut that Setup may put in the install folder
+*.lnk

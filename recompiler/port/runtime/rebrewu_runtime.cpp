@@ -342,15 +342,47 @@ namespace {
 // RBREW_IMPORT_TRACE=<file> (release builds too): calls per import slot with
 // the first/last call time, rewritten every 2 s, to find what a stalled
 // game polls. Slots are 0x02D00000-based PLT addresses.
-const char* const import_trace_path = [] {
-    const char* p = std::getenv("RBREW_IMPORT_TRACE");
-    return p && *p ? p : nullptr;
-}();
+const char* const import_trace_path = [] { const char* p = std::getenv("RBREW_IMPORT_TRACE"); return p && *p ? p : nullptr; }();
+// RBREW_DISPATCH_RING=<file>: the last kRingSize guest virtual calls (target, caller lr, thread,
+// milliseconds), kept in memory and written to <file>.<n> by rbrew_dispatch_ring_dump (called
+// when a socket closes) to find which call chain decided to end a session.
+const char* const ring_path = [] { const char* p = std::getenv("RBREW_DISPATCH_RING"); return p && *p ? p : nullptr; }();
+constexpr uint32_t kRingSize = 1u << 20;
+struct RingEntry { uint32_t target, lr, thread, ms; };
+RingEntry* const ring = ring_path ? new RingEntry[kRingSize]() : nullptr;
+std::atomic<uint32_t> ring_next{0};
+const auto ring_start = std::chrono::steady_clock::now();
+uint32_t ring_ms() { return uint32_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - ring_start).count()); }
 const bool dispatch_instrumented = [] {
     const char* trace = rbrew_diagnostic_env("RBREW_ENTRY_TRACE");
     const char* profile = rbrew_diagnostic_env("RBREW_IMPORT_PROFILE");
-    return (trace && *trace) || (profile && *profile && *profile != '0') || import_trace_path;
+    return (trace && *trace) || (profile && *profile && *profile != '0') || import_trace_path || ring_path;
 }();
+// First sighting of every target: when, by which thread, from which caller, and how often since.
+// A function that only runs on an unusual path (an error, a teardown) shows up here at the moment
+// it first runs, however long the ring has since moved on.
+constexpr uint32_t kSeenSize = 1u << 16;
+struct SeenTarget { std::atomic<uint32_t> target{0}, count{0}; uint32_t first_ms = 0, first_lr = 0, first_thread = 0; std::atomic<uint32_t> last_ms{0}; };
+SeenTarget* const seen_targets = ring_path ? new SeenTarget[kSeenSize] : nullptr;
+void ring_record(CPUState* cpu, uint32_t guest_addr) {
+    static std::atomic<uint32_t> next_thread{1};
+    thread_local const uint32_t thread = next_thread.fetch_add(1);
+    const uint32_t now = ring_ms();
+    ring[ring_next.fetch_add(1, std::memory_order_relaxed) & (kRingSize - 1)] = {guest_addr, cpu->lr, thread, now};
+    for (uint32_t slot = (guest_addr >> 2) * 2654435761u >> 16, probes = 0; probes < kSeenSize; slot = (slot + 1) & (kSeenSize - 1), ++probes) {
+        SeenTarget& entry = seen_targets[slot];
+        uint32_t current = entry.target.load(std::memory_order_acquire);
+        if (current == 0 && entry.target.compare_exchange_strong(current, guest_addr)) {
+            entry.first_ms = now; entry.first_lr = cpu->lr; entry.first_thread = thread;
+            current = guest_addr;
+        }
+        if (current == guest_addr) {
+            entry.count.fetch_add(1, std::memory_order_relaxed);
+            entry.last_ms.store(now, std::memory_order_relaxed);
+            return;
+        }
+    }
+}
 void import_trace(CPUState* cpu, uint32_t guest_addr) {
     if (!import_trace_path || guest_addr < 0x02D00000u || guest_addr >= 0x02E00000u) return;
     struct Slot {
@@ -408,6 +440,7 @@ void rbrew_dispatch(CPUState* cpu, uint32_t guest_addr) {
             RBREW_LOG_INFO("entry", "reached %08X lr=%08X r3=%08X r4=%08X\n", guest_addr, cpu->lr, cpu->r[3],
                            cpu->r[4]);
     }
+    if (ring) ring_record(cpu, guest_addr);
     import_trace(cpu, guest_addr);
     InsideImport inside_import;
     if (ImportProfile* profile = import_profile_start()) {
@@ -508,6 +541,30 @@ void rbrew_dispatch_linked(CPUState* cpu, uint32_t guest_addr) {
     }
 #endif
     rbrew_dispatch(cpu, guest_addr);
+}
+
+extern "C" void rbrew_dispatch_ring_dump() {
+    if (!ring) return;
+    static unsigned dump_index = 0;
+    const uint32_t next = ring_next.load(), count = next < kRingSize ? next : kRingSize;
+    const std::string path = std::string(ring_path) + "." + std::to_string(dump_index++);
+    if (FILE* f = std::fopen(path.c_str(), "wb")) {
+        const uint32_t header[4] = {0x52494E47u, count, ring_ms(), 0};
+        std::fwrite(header, sizeof header, 1, f);
+        for (uint32_t i = next - count; i != next; ++i) std::fwrite(&ring[i & (kRingSize - 1)], sizeof(RingEntry), 1, f);
+        std::fclose(f);
+    }
+    // <file>.<n>.txt: every target seen so far, oldest first sighting first.
+    std::vector<const SeenTarget*> sorted;
+    for (uint32_t i = 0; i < kSeenSize; ++i)
+        if (seen_targets[i].target.load()) sorted.push_back(&seen_targets[i]);
+    std::sort(sorted.begin(), sorted.end(), [](const SeenTarget* a, const SeenTarget* b) { return a->first_ms < b->first_ms; });
+    if (FILE* f = std::fopen((path + ".txt").c_str(), "w")) {
+        std::fprintf(f, "dump_ms %u\nfirst_ms last_ms count thread target caller_lr\n", ring_ms());
+        for (const SeenTarget* s : sorted)
+            std::fprintf(f, "%u %u %u %u %08X %08X\n", s->first_ms, s->last_ms.load(), s->count.load(), s->first_thread, s->target.load(), s->first_lr);
+        std::fclose(f);
+    }
 }
 
 void rbrew_call_indirect(CPUState* cpu, uint32_t guest_addr) {

@@ -72,9 +72,11 @@ struct MainCameraIdentity {
 void frame(uint8_t* mem, uint64_t swap_count);
 // Before guest code runs: the camera field of view hook.
 void register_hooks();
-// Free fly camera (testing; F7 or the ESC menu's Tools & hacks page).
+// Free fly camera (testing; F7 or the ESC menu's Tools & hacks page). Never in online
+// mode (online_server= set): no free camera or spawn hacks next to other players.
 void set_fly_camera(bool on);
 bool fly_camera();
+bool online_mode();
 // Fly spots (this session): save the current view, fly back to it later.
 // save returns false outside the plaza; go turns the fly camera on.
 // Game thread (VPADRead): PC controls of the fly camera while it is on -

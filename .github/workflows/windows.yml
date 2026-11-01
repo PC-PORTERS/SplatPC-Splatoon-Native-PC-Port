@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [ '**' ]
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -17,18 +20,18 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up MSVC environment
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
 
       - name: Cache vcpkg binary artifacts
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ${{ runner.temp }}/vcpkg_cache
           key: windows-vcpkg-${{ hashFiles('scripts/Setup.ps1') }}
@@ -42,7 +45,7 @@ jobs:
           vcpkg install zlib curl volk vulkan-headers --triplet x64-windows --disable-metrics
 
       - name: Cache dependencies profile
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             build/deps
@@ -69,9 +72,14 @@ jobs:
           if (-not (Test-Path -LiteralPath $sdlZip)) {
             Invoke-WebRequest -Uri "https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-2.32.10.zip" -OutFile $sdlZip
           }
+          if ((Get-FileHash -Algorithm SHA256 -LiteralPath $sdlZip).Hash -ne "12B2DC2EB8F2836100A7916B5D394A0C82F1F7E32693F95F98305403AF242F08") { throw "checksum mismatch: SDL2" }
           if (-not (Test-Path -LiteralPath $glslangTar)) {
             Invoke-WebRequest -Uri "https://github.com/KhronosGroup/glslang/archive/refs/tags/16.4.0.tar.gz" -OutFile $glslangTar
           }
+          # hash of the UNCOMPRESSED tar: GitHub may change how it compresses an archive, not what is in it
+          $stream = [IO.File]::OpenRead((Resolve-Path -LiteralPath $glslangTar))
+          try { $gz = New-Object IO.Compression.GZipStream($stream, [IO.Compression.CompressionMode]::Decompress); $tarHash = ([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($gz)) -replace "-", "") } finally { $stream.Dispose() }
+          if ($tarHash -ne "157A6B0A50C1D91474D6C0007C62F01B3DCBBC7BA0A2A1B2C8AB22554288851C") { throw "checksum mismatch: glslang" }
           if (-not (Test-Path -LiteralPath "$downloads/SDL2-2.32.10")) {
             Expand-Archive -Path $sdlZip -DestinationPath $downloads -Force
           }

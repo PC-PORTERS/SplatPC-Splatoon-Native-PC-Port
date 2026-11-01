@@ -296,6 +296,13 @@ VkClearColorValue zero_color() {
 // ---------------------------------------------------------------------------
 // Formats (gx2_wire_format)
 // ---------------------------------------------------------------------------
+// An integer colour target whose texels are compressed blocks of block_bytes.
+static bool block_encoder_target(uint32_t target_format, uint32_t block_bytes) {
+    if (block_bytes == 16) return target_format == 0x122u || target_format == 0x322u;
+    if (block_bytes == 8) return target_format == 0x11Fu;
+    return false;
+}
+
 Format gx2r::gx2_vk_format(uint32_t f) {
     Format r;
     auto set = [&](VkFormat format, uint32_t bpp, uint32_t internal, uint32_t wire_format, uint32_t wire_type) {
@@ -1838,35 +1845,32 @@ void gx2_render_upload_texture(uint32_t tex_addr, uint32_t slot, uint8_t* mem, c
     const bool dest32 = fmt == 0x122u || fmt == 0x322u || fmt == 0x823u;
     if (entry.color_revision != S.color_view_revision) {
         entry.color_candidates.clear();
-        if (target == wire::TEXTURE_2D)
-            for (const auto& candidate : image_views(S.cb_map, img_ptr)) {
-                const auto& [key, cb] = candidate;
-                const bool source32 = key[1] == 0x122u || key[1] == 0x322u || key[1] == 0x823u;
-                const bool blocks = compressed.compressed && compressed.block == 16 &&
-                                    (key[1] == 0x122u || key[1] == 0x322u) && cb.width == (w + 3) / 4 &&
-                                    cb.height == (h + 3) / 4 && key[4] == descriptor_word(data, GX2SURF_PITCH) &&
-                                    key[5] == descriptor_word(data, GX2TEX_VIEW_MIP) && key[6] == first_slice &&
-                                    key[8] == descriptor_word(data, GX2SURF_AA);
-                if (blocks || texture_view_matches(key, data) ||
-                    (source32 && dest32 && texture_view_matches(key, data, true)))
-                    entry.color_candidates.push_back(&candidate);
-            }
+        if (target == wire::TEXTURE_2D) for (const auto& candidate : image_views(S.cb_map, img_ptr)) {
+            const auto& [key, cb] = candidate;
+            const bool source32 = key[1] == 0x122u || key[1] == 0x322u || key[1] == 0x823u;
+            const bool blocks = compressed.compressed && block_encoder_target(key[1], compressed.block) && cb.width == (w + 3) / 4 && cb.height == (h + 3) / 4 &&
+                key[4] == descriptor_word(data, GX2SURF_PITCH) && key[5] == descriptor_word(data, GX2TEX_VIEW_MIP) &&
+                key[6] == first_slice && key[8] == descriptor_word(data, GX2SURF_AA);
+            if (blocks || texture_view_matches(key, data) ||
+                (source32 && dest32 && texture_view_matches(key, data, true)))
+                entry.color_candidates.push_back(&candidate);
+        }
         entry.color_revision = S.color_view_revision;
     }
     for (const auto* candidate : entry.color_candidates) {
         const auto& [key, cbc] = *candidate;
         auto& cb = const_cast<ColorTarget&>(cbc);
         ++C.alias_probes;
-        if (target == wire::TEXTURE_2D && compressed.compressed && compressed.block == 16 &&
-            (key[1] == 0x122u || key[1] == 0x322u) && key[0] == img_ptr && cb.width == (w + 3) / 4 &&
-            cb.height == (h + 3) / 4 && key[4] == descriptor_word(data, GX2SURF_PITCH) &&
-            key[5] == descriptor_word(data, GX2TEX_VIEW_MIP) && key[6] == first_slice &&
-            key[8] == descriptor_word(data, GX2SURF_AA)) {
+        if (target == wire::TEXTURE_2D && compressed.compressed && block_encoder_target(key[1], compressed.block) && key[0] == img_ptr && cb.width == (w + 3) / 4 && cb.height == (h + 3) / 4 &&
+            key[4] == descriptor_word(data, GX2SURF_PITCH) && key[5] == descriptor_word(data, GX2TEX_VIEW_MIP) &&
+            key[6] == first_slice && key[8] == descriptor_word(data, GX2SURF_AA)) {
             // Native GPU block encoders write compressed blocks through an
             // integer color target: copy its live words into the compressed
             // view (the GPU back-end reads them back and re-uploads them).
-            if (ensure_texture_storage(entry, wire::TEXTURE_2D, compressed.format, w, h, 1, 1, false) &&
-                live_copy_needed(entry, cb)) {
+            // 16-byte blocks (BC2/3/5) come from R32G32B32A32 targets, 8-byte
+            // blocks (BC1/4) from R16G16B16A16_UINT (0x11F): the map name
+            // banner of the stage intro (400x30 blocks, 1600x120).
+            if (ensure_texture_storage(entry, wire::TEXTURE_2D, compressed.format, w, h, 1, 1, false) && live_copy_needed(entry, cb)) {
                 end_rendering();
                 VkCommandBuffer cbuf = gx2vk::cmd();
                 gx2vk::barrier_if_dirty();
@@ -1882,7 +1886,7 @@ void gx2_render_upload_texture(uint32_t tex_addr, uint32_t slot, uint8_t* mem, c
                 }();
                 if (!direct && (w % 4 || h % 4)) {
                     static gx2vk::Buffer s_block_staging;
-                    const VkDeviceSize bytes = VkDeviceSize(cb.width) * cb.height * 16;
+                    const VkDeviceSize bytes = VkDeviceSize(cb.width) * cb.height * compressed.block;
                     if (s_block_staging.size < bytes) {
                         const VkBuffer old_staging = s_block_staging.buffer;
                         gx2vk::destroy_buffer(s_block_staging);

@@ -1,236 +1,152 @@
-# Splatoon 1 🦑 PC Port
-[![contributions - welcome](https://img.shields.io/badge/contributions-welcome-blue)](/CODE_OF_CONDUCT.md "Go to contributions doc")  [![OS - Linux](https://img.shields.io/badge/OS-Linux-blue?logo=linux&logoColor=white)](https://www.linux.org/ "Go to Linux homepage") [![OS - Windows](https://img.shields.io/badge/OS-Windows-blue?logo=windows&logoColor=white)](https://www.microsoft.com/ "Go to Microsoft homepage") [![Licence - Mozilla Public License 2.0](https://img.shields.io/badge/Licence-Mozilla_Public_License_2.0-2ea44f)](https://) [![Youtube - Demo](https://img.shields.io/badge/Youtube-Demo-FF0000?logo=youtube)](https://www.youtube.com/watch?v=TY3kYmz3RQM)
-## The original repo is https://github.com/ApfelTeeSaft/RebrewU , Our Splatoon 1 PC Port is simply a continuation of ApfelTeeSaft's RebrewU Project
+# Splatoon 1 PC Port - Online Edition
 
-> IF YOU WANT TO HELP US DM `sussy_0897` IN DISCORD OR START A FORK (PREFERABLY DM ME ON DISCORD SINCE U MIGHT GET ADDED TO OUR TEAM), **Follow Code of conduct.md**
-> IF YOU POST ANYTHING RELATED TO OUR PORT ON TIKTOK TAG @nevesboy67 @77emul AND @splatoon1multiplayer
+An unofficial native PC port of **Splatoon (Wii U)** for Windows, made by statically recompiling the game's code
+into a native program with a Vulkan renderer. It continues [RebrewU](https://github.com/ApfelTeeSaft/RebrewU) by ApfelTeeSaft.
+This branch (`SplatPc-ONLINE`) adds the **revision 288 update** and **online play on a community server**.
 
-An unofficial native PC port of **Splatoon (Wii U)** for **Windows and Linux**, made by statically recompiling the game's code into a native program, with a Vulkan renderer.
+> **No Nintendo code, assets or game files are in this repository.** You need your own copy of the game, dumped from
+> your own Wii U (game + update 288, EUR). The port is built on your PC from your files.
+> *Splatoon is a trademark of Nintendo. This project is not affiliated with or endorsed by Nintendo.*
 
-> **This project contains no Nintendo code, assets or game files.** You need your own copy of the game, dumped from your own Wii U. The setup builds the port on your PC from your files.
+> **Work in progress.** Expect glitches, stutter and crashes. A recent NVIDIA GPU (Vulkan 1.3), 16 GB of RAM
+> (32 GB better) and about 40 GB of free disk during setup are recommended.
 
-> ⚠️ **Work in progress.** Expect graphical glitches, missing effects, stutter and crashes. You need **strong hardware** (see below). If something goes wrong, please [open an issue](https://github.com/NEVESYA/SPLATOON-1-PC-PORT/issues). Include your PC specs and the text from the setup window or a screenshot. **AMD GPUs are not supported**, only NVIDIA
+## Install
 
-## Features
+Follow **[INSTALL.md](INSTALL.md)** (en francais : [INSTALL-FR.md](INSTALL-FR.md)). In short:
 
-**Realistic graphics (experimental, off by default)**
+1. Download this branch as a ZIP and extract it to a short path (for example `C:\SplatoonPort`).
+2. Run `Setup.bat`, pick your **game** dump, then your **update 288** dump. The first build takes 30-90 minutes.
+3. Start the game with the **Splatoon PC Port** shortcut: choose a pseudo and a language, then **PLAY**.
 
-Turn it on in the settings menu with *Graphics preset* (Balanced, Realistic or Cinematic); *Original* keeps the clean game at 60 FPS.
-- The game's own lights follow a **time of day**: sunrise, golden hour, sunset and night with moon and stars, or the PC clock
-- **Weather**: clear, overcast, rain, thunderstorm with lightning, after the rain (wet ground), or *Live*, where it changes by itself
-- A physically based **sky** with **volumetric clouds**, two towering cumulus clouds, silver linings and **light shafts** through cloud gaps
-- **Contact shadows**, ambient occlusion, bloom, edge smoothing (FXAA + TAA), motion blur, focus blur and colour controls (saturation, contrast, warmth, vignette, saved looks)
-- Runs in the **plaza, Octo Valley and the tutorial**; story levels keep their own sky and lights and get the picture effects only
+The launcher checks for updates when it starts and rebuilds only what changed.
 
-**Camera, cinema mode and PC controls**
-- Field of view, camera distance and height, and a hand-held camera wiggle
-- **Cinema mode**: no HUD and a free camera to fly anywhere for screenshots; **F12** saves a photo without menus
-- Direct **PC mouse aiming** (1:1, like a PC shooter) and a key for every GamePad input
-- Camera spots and character spawn points for testing
-
-**HD textures (optional, built on your PC)**
-- `HD-Textures` upscales the textures you saw while playing with Real-ESRGAN into `Game\textures`; nothing is downloaded or shared
-
-**Releases for Windows and Linux**
-- Each version tag publishes a Windows .zip and a Linux .tar.gz on the [Releases page](https://github.com/NEVESYA/SPLATOON-1-PC-PORT/releases) (source and setup only; you build the game from your own dump)
-
-**Settings menu (Esc / controller touchpad)**
-- Render resolution, Plaza 60 FPS on/off, frame rate (30 / 60 / 120 / 180), G-Sync / FreeSync, fullscreen, performance overlay
-- **Graphics preset (experimental):** Original (the clean game at 60 FPS, the default), Balanced, Realistic, Cinematic; pages for graphics, weather & time, camera & mouse, and cinema/photo/hacks, with a help line for every option
-- Gyro on/off, gyro and mouse sensitivity, invert gyro, volume
-- Rebind every button for keyboard/mouse and controller
-- HOME moved from Esc to H
-
-**Performance**
-- Plaza runs at 60 FPS with normal game speed (keeps NPCs)
-- New frame rates in the menu (experimental): 120 and 180 FPS with real extra frames between game steps (180 outside the plaza), 30 FPS for weak PCs; game speed stays normal in all
-- Fewer shader stutters, faster rendering in levels
-
----
-
-## Requirements
-
-- **Windows 10 or 11, 64-bit**, or a **64-bit Linux distribution**
-- **Linux build tools** (the setup uses CMake end to end): CMake ≥ 3.20, Ninja or Make, GCC or Clang, Python ≥ 3.12, plus the `zlib`, `libcurl` and `vulkan-headers` development packages — Arch example: `sudo pacman -S --needed cmake ninja python gcc zlib curl vulkan-headers`. X11/Wayland headers are recommended so the game can open a window.
-- **GPU with Vulkan 1.3** and an up-to-date driver (developed on an RTX 5060 Ti; a modern NVIDIA is recommended)
-- **CPU:** modern 6–8 cores or more · **RAM:** 16 GB minimum, 32 GB recommended (building the game uses a lot of memory)
-- **Disk:** about 40 GB free during setup FINAL BUILD IS 6GB COUNTING THE SHADER CACHES
-- **Your own game dump:** Supported Splatoon version (see VersionDb.md), with the folders `code`, `content` and `meta` (for example made with *Dumpling* on your Wii U).
-
-## Installation (Windows)
-
-1. Click **Code → Download ZIP** on this page and extract it to a short path, for example `C:\SplatoonPort`.
-2. Double-click **`Setup.bat`**.
-   - If Visual Studio Build Tools, Python 3.12 or Git are missing, the setup offers to install them for you. Afterwards, close the window and run `Setup.bat` again.
-3. When asked, select your **Splatoon dump folder** (the one containing `code`, `content` and `meta`). **The dump folder can have any name**; spaces and brackets such as `Splatoon [AGMP01]` are supported. Select the parent folder, rather than `code` or `content` inside it. Setup creates the Wii U folders automatically; there is no system-folder selection.
-4. Wait. The first setup takes **30–90 minutes**: it builds the tools and recompiles your game.
-5. Play: **`Game\Splatoon.exe`** (the setup can also create a desktop shortcut).
-
-Setup creates the Wii U `mlc01` directory layout and the port's empty save folders automatically, like Cemu's initial setup. It uses existing local system fonts when available, or downloads Cemu's open-source Noto replacement fonts automatically (about 26 MB, with pinned checksums and their SIL OFL license). It never imports game saves, Mii save databases or console accounts. A fresh installation starts with no progress, and the game creates its save while you play.
-
-Existing Mii graphics resources are detected automatically beside your game dump/repository, in `wiiu-system/mlc`, or in Cemu's default/configured MLC. These are optional to setup: missing resources produce a warning and may affect Mii graphics. Setup does not generate or download Nintendo's Mii graphics. Developers can optionally use `-Mlc "D:\My system dump"` to add a resource location; players are never prompted for it.
-
-**Updating:** download the new version, then run `Setup.bat` again. Your save (`Game/save`) and shader cache are kept.
-
-Options: `Setup.bat -Clean` rebuilds everything, and `-Output D:\Splatoon` picks a different game folder.
-
-You can also pass folders directly, with quotes around paths that contain spaces:
-
-```bat
-Setup.bat -GameDump "D:\My Wii U games\Splatoon [AGMP01]"
-```
-
-## Installation (Linux)
-
-1. Install the build tools (see [Requirements](#requirements)), for example on Arch:
-   ```bash
-   sudo pacman -S --needed cmake ninja python gcc zlib curl vulkan-headers
-   ```
-2. Extract the repository (or `git clone` it) anywhere and run the setup with your dump folder:
-   ```bash
-   ./setup.sh --dump "/path/to/SplatoonDump"
-   ```
-   The dump must contain `code`, `content` and `meta`. Without `--dump`, the setup looks in `~/Downloads` and `./dump`, then asks for the folder. It creates the Wii U `mlc01` layout, downloads the Noto replacement fonts (checksum-pinned), builds the dependencies, the recompiler and the game. The first run takes **30–90 minutes**.
-3. Play: **`./Game/Splatoon`**.
-
-Options: `./setup.sh --clean` rebuilds everything, `--output ~/Games/Splatoon` picks a different game folder, `--mlc PATH` adds a system-resource location, `--jobs N` sets the compile parallelism. Re-running the setup keeps your save (`Game/save`) and shader cache; run it again after pulling updates.
-
-**Updating:** download the new version, then run `Setup.sh` again. Your save (`Game/save`) and shader cache are kept.
-
----
-
-### Optional: HD textures
-
-The game starts; visit the places you want in HD and close it. The textures it showed are then upscaled (Real-ESRGAN) into the `textures` folder next to the game and load at the next start. Everything happens on your PC from your own copy of the game; the HD textures are never uploaded or shared, because they are derived from the game's files.
-
-- **Windows:** double-click `HD-Textures.bat`.
-- **Linux:** run `./HD-Textures.sh` from the project folder (after `./setup.sh`).
-
-Both need Python 3; the script offers to install `torch`, `numpy` and `pillow` with pip (on Linux you may need `python3-pip` from your distribution first). An NVIDIA graphics card with CUDA makes it many times faster than the CPU. Finished textures are kept, so you can stop and run it again later.
-
-> **macOS** is not supported yet: the setup and the renderer have no macOS path (no MoltenVK build), so there is no macOS package or script.
-
-### Building with CMake directly
-
-`setup.sh` is a thin orchestrator over two CMake projects — `recompiler/` (the RebrewU tool) and `recompiler/port/` (the runtime and the game). The equivalent manual flow is:
-
-```bash
-# 1. RebrewU recompiler
-cmake -S recompiler -B build/rebrewu -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build/rebrewu --target rebrewu
-
-# 2. Recompile your dump into C++ (writes build/generated/Gambit).
-#    The RPX selects its manifest from Manifest/*.manifest automatically.
-build/rebrewu/bin/rebrewu recompile \
-    --rpx "/path/to/dump/code/Gambit.rpx" --output build/generated/Gambit \
-    --analyzer-entries profiles/agmp-v16.entries --hooks profiles/agmp-v16.hooks
-
-# 3. Game (after ./setup.sh has built the SDL2/glslang dependency profile)
-cmake -S recompiler/port -B build/game -G Ninja -DCMAKE_BUILD_TYPE=Release \
-    -DRBREW_GRAPHICS_BACKEND=Vulkan -DRBREW_BUILD_GAME=ON \
-    -DGAMBIT_GENERATED_DIR="$PWD/build/generated/Gambit" \
-    -DSDL2_DIR=... -Dglslang_DIR=... -DCMAKE_PREFIX_PATH=...
-cmake --build build/game --target Gambit
-```
-
-For incremental rebuilds just run **`./build.sh`** — it reuses the configured build trees and CMake re-runs itself when any `CMakeLists.txt` or `*.cmake` file changed.
-
-## Controls
-
-**Esc** (or the touchpad button of a PlayStation controller) opens the port's settings menu (ImGui): render resolution (applies at the next start), the graphics preset, plaza 60 FPS on/off, frame rate, G-Sync / FreeSync, fullscreen, performance overlay, controller gyro on/off, gyro sensitivity, inverted gyro up/down, mouse sensitivity, volume and quit. Two pages show and rebind every GamePad input for keyboard & mouse and for the controller: select a row, press Enter/Cross, then the new key or button (a key already in use swaps with the old one; Delete/Square clears; "Reset to defaults" restores the layout below). The game keeps running but gets no input while the menu is open. Choices are saved in `settings.ini` next to the game executable (`Splatoon.exe` / `Splatoon`); an environment variable that is set (for example `RBREW_PLAZA_60FPS`, `RBREW_GYRO`, `RBREW_RENDER_RESOLUTION`) still wins over the file.
-
-**Graphics (experimental).** The default is the original look at 60 FPS. The *Graphics preset* turns on the new lighting: the game's own lights follow a time of day (sunrise, sunset, night with moon and stars) and the weather (clear, overcast, rain, thunderstorm, after the rain, or live), a physically based sky with volumetric clouds and light shafts, contact shadows, ambient occlusion, bloom, edge smoothing and colour controls. This runs in the plaza, Octo Valley and the tutorial; story levels keep their own sky and lights and get the picture effects only. The *Camera & mouse* page has direct PC mouse aiming (needs the game's Motion Controls on), field of view, camera distance/height and a camera wiggle. *Cinema, photo & hacks* hides the HUD and frees the camera (mouse to look, WASD to fly, Space/Ctrl up/down, Shift faster, F7 back), takes photos (**F12**, saved to `Screenshots`), and saves/restores camera spots and character spawn points. Every new effect has an environment switch back to the original behaviour (see `docs/performance.md`).
-
-The game starts in borderless fullscreen; **F11** switches to a 1280×720 window and back. The TV scene renders internally at the console's **1280×720** (light on the GPU) and is scaled to the window. For a sharper image set `RBREW_RENDER_RESOLUTION` before starting: `native` (your desktop resolution), `1080p`, `1440p` or any `WIDTHxHEIGHT`. The game's camera and UI keep their original layout.
-
-Controllers (Xbox, PlayStation or any SDL2 controller): buttons are mapped by position, like on the Wii U GamePad. The right stick controls the camera.
-
-The tutorial keeps its original camera behavior, controlled with the **right stick or mouse**. Outside the tutorial, including the plaza, the port applies **neutral camera sensitivity (0)** automatically and uses the motion-control setting stored in your save (change it in the game options). It saves only the sensitivity and the updated checksum; progress, character data, camera inversion and other settings are preserved. The first edited save is backed up as `save.dat.before-control-defaults`. A new save is still created by the game normally.
-
-Keyboard and mouse (default layout, rebindable in the menu):
+## Playing
 
 | Input | Action |
 |---|---|
-| W A S D | Move |
-| Mouse | Aim / camera |
-| Left click | Shoot (ZR) |
-| Right click | Squid form (ZL) |
-| Space | Jump (B) |
-| Q | Sub weapon |
-| E | Special |
-| F | Map (+) |
-| G | Options (−) |
-| Esc | Settings menu |
-| H | Home |
-| Tab | GamePad view (the mouse becomes the touch screen) NOT WORKING YET|
-| F3 | Show/hide the debug overlay (ImGui windows: FPS, frame time, 1% low, frame-time graph, waits, RAM, shader compiles and diagnostics). |
-| F8 / F9 | Start/stop an extended diagnostic recording / save a diagnostic snapshot to `Game/Diagnostics` |
+| W A S D / Mouse | Move / aim |
+| Left click / Right click | Shoot (ZR) / Squid form (ZL) |
+| Space, Q, E | Jump, sub weapon, special |
+| F, G | Map (+), Options (-) |
+| Esc | Settings menu (graphics, controls, volume) |
+| F4 | Friends window (add a friend by pseudo) |
+| F11 / F12 | Window / photo |
 
-## Runtime switches
+Controllers work too (buttons mapped like the Wii U GamePad). Every key can be rebound in the Esc menu.
 
-| Category / Variable | Options / Default | Description |
-| --- | --- | --- |
-| **`RBREW_PAIRED_INLINE`** | `0` *(Default: compile-time decode)* | Restores interpreted paired-single instructions for A/B comparisons. |
-| **`RBREW_QUERY_ASYNC`** | `0` | Forces all queued occlusion-query reads to wait. |
-| **`RBREW_SCAN_COPY`** | `0` | Controls scan copy behavior. |
-| **`RBREW_STICK_GYRO_YAW`** | `1` | Enables gyro yaw tied to the stick. |
-| **`RBREW_AC_CONNECT`** | `ok` | Simulates the legacy online connection attempt at boot. |
-| **`RBREW_BLEND_COMBINE_OLD`** | `1` | Uses the legacy blend combine method. |
-| **`RBREW_SCAN_SLICE_MATCH`** | `0` | Disables scan slice matching. |
-| **`RBREW_STREAMOUT_FLUSH_PUBLISH`** | `1` | Enables immediate stream-out flush publishing. |
-| **`RBREW_FRAME_PACING`** | `0`, `auto`, `vsync` | Configures frame pacing: `0` (no flip pacing), `auto` (holds 30 FPS in heavy scenes), `vsync` (console-strict). |
-| **`RBREW_AX_FILTERS`** | `0` | Disables AX audio filters. |
-| **`RBREW_GYRO_INVERT_PITCH`** | `1` | Inverts gyro pitch control. |
-| **`RBREW_GYRO_INVERT_YAW`** | `1` | Inverts gyro yaw control. |
-| **`RBREW_STREAMOUT_EAGER`** | `1` | Uses legacy per-draw stream-out readback. |
-| **`RBREW_IDLE_LOOKAROUND`** | `1` | Plays the inkling's look-around idle animation |
-| **`RBREW_FPS_OVERLAY`** | `0` | Disables the FPS counter overlay. |
-| **`RBREW_ASYNC_SHADERS`** | `0` | Waits for every shader compile instead of skipping the draw call. |
-| **`RBREW_PLAZA_60FPS`** | `0`, `1` | Plaza frame rate mode: `0` (console-native 30 FPS), `1` (locked 60 FPS mode). |
-| **`RBREW_FRAME_RATE`** | `30`, `60` | Frame rate (menu) |
-| **`RBREW_FPS120`** | `interp` | 120 FPS mode (menu), beta |
-| **`RBREW_STICK_GYRO_PITCH`** | `1` | Restores stick tilt |
-| **`RBREW_GYRO`** | `0` | Disable DualSense Gyro |
-| **`RBREW_QUERY_ASSUME_VISIBLE`** | `0` | Forces the plaza to wait for occlusion query results. |
-| **`RBREW_CONTEXT_STATE_SYNC`** | `1` | Synchronizes context state. |
-| **`RBREW_SUBMIT_EVERY_DRAWS`** | `0` | Disables submission on every draw call. |
-| **`SPLATOON_DIAGNOSTICS`** | `off` | Disables automatic stutter report generation. |
-| **`RBREW_INPUT_RECORD`** | `<file>` | Records every frame's GamePad input (buttons, sticks, touch, controller gyro, motion time step) along with scene-change markers to the specified file. |
-| **`RBREW_INPUT_REPLAY`** | `<file>` | Replays a recorded input file, pausing at each scene change and loading screen until the game catches up, returning control upon completion or manual input. |
-| **`RBREW_SAVE_DIR`** | `<dir>` | Specifies a custom save directory instead of `save`, allowing replays to start from the exact save file recorded with. |
+## Online play
 
-## Why this project is legal
+- PLAY connects to a **community server**. It is run by volunteers, has **no guarantee** and may stop at any time.
+- Your account is created automatically at the first PLAY and stays linked to your PC (`Game\online_identity.ini`: keep it,
+  never share it). There is no password to remember.
+- **Friends:** press **F4**, type a friend's pseudo, Enter. They must add you too (your pseudos are unique). You then see each other
+  in the game's friend list and can join each other's rooms. Your friend list stays on your PC.
+- **Privacy:** the server stores an account number, a derived key (never your password), your pseudo, and the creation and
+  last-seen dates; while you play, whether you are online and your game mode are shown only to friends who added you back. Your IP address appears in its logs (kept in 3 rotating files) and is used only for sign-up limits and bans.
+  During a match, other players' game connects to yours directly (peer to peer), as on the Wii U, so they can see your IP address.
+- To run your own server: [docs/SERVEUR.md](docs/SERVEUR.md).
 
-This project follows the same approach as other recompilation and decompilation projects:
+## Community
 
-- **No Nintendo material is in this repository.** There is no game code, no generated code, no textures, models, sounds, fonts, keys or firmware. It contains only original source code (the recompiler and the runtime) and open-source libraries under their own licenses (see `LICENSES/`).
-- **You supply the game.** The port only works with a copy that you dumped yourself from a console and a game you own. The setup refuses unknown files.
-- **The conversion happens on your own PC.** The recompiled code is created locally from your dump and is never uploaded or shared by this project.
-- **Interoperability.** The runtime re-implements the Wii U system services (Cafe OS) in original code, so your game runs natively on your PC. This is the same kind of interoperability work that emulators like Cemu do.
+Upstream project: **PC-PORTERS / NEVESYA**. To help, DM `sussy_0897` on Discord and read [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+TikTok: [@splatoon1multiplayer](https://www.tiktok.com/@splatoon1multiplayer). If you post about the port, tag @nevesboy67 @77emul and @splatoon1multiplayer.
 
-Do not share your game files or the generated `build` folder. This explanation is not legal advice, and laws differ between countries. Only use games you legally own.
+## Known issues
 
-## How the port works
+- Mii faces show as a **white square** in the friend list unless the Mii resources of your own Wii U are present
+  (`FFLResHigh.dat` and the 3 other `FFLRes*.dat` files, dumped from your console, in `Game\mlc01\sys\title\0005001b\10056000\content`).
+  Setup copies them by itself when it finds them next to your dump. It is only cosmetic.
+- Adding a friend works both ways: you each add the other's pseudo (F4).
+- The online mode has only been tested between players on the same network so far; between two different networks it is the next test.
 
-```mermaid
-graph LR
+## Why this is legal
 
-GAMEORIGINAL[Original game ROM] --> STATIC(Static Recompilation, fork of RebrewU in C++) --> TARGET[Final, native build]
+This project contains only original source code and open-source libraries (see [LICENSES/](LICENSES/)). You supply the game
+from your own console, the conversion happens on your PC, and nothing generated is shared. The runtime re-implements Wii U
+system services in original code, like other emulators. This is not legal advice; laws differ between countries.
+Never share game files, dumps, saves or the `build` folder.
 
-CustomRuntime[Native Cafe OS runtime.] --> STATIC
+## Credits
 
-Renderer[Custom Render, GX2 to Vulkan] --> STATIC
+RebrewU, [Cemu](https://github.com/cemu-project/Cemu) (shader decompiler, MPL-2.0, and replacement fonts, SIL OFL 1.1), SDL2,
+glslang, volk, Vulkan-Headers, zlib, curl, miniaudio, nlohmann/json and Dear ImGui. Full upstream documentation (Linux build,
+runtime switches): see the `main` branch.
 
-ShaderCache[Shader cache] --> Renderer
 
-CemuShader[Cemu Shader converter] --> Renderer
+---
 
-CemuShader --> ShaderCache
+# Splatoon 1 PC Port - Édition en ligne
 
-```
+Un portage PC **non officiel** de **Splatoon (Wii U)** pour Windows : le code du jeu est recompilé en programme natif,
+avec un rendu Vulkan. Il poursuit [RebrewU](https://github.com/ApfelTeeSaft/RebrewU) d'ApfelTeeSaft.
+Cette branche (`SplatPc-ONLINE`) ajoute la **mise à jour 288** et le **jeu en ligne sur un serveur communautaire**.
 
-## Credits and licenses
+> **Aucun code, aucune ressource ni aucun fichier de Nintendo dans ce dépôt.** Il faut ta propre copie du jeu, extraite de ta
+> propre Wii U (jeu + mise à jour 288, EUR). Le portage est construit sur ton PC à partir de tes fichiers.
+> *Splatoon est une marque de Nintendo. Ce projet n'est ni affilié ni approuvé par Nintendo.*
 
-Built with RebrewU (static recompiler), a Latte shader decompiler adapted from [Cemu](https://github.com/cemu-project/Cemu) (MPL-2.0), SDL2, glslang, volk, Vulkan-Headers, zlib, curl, miniaudio and nlohmann/json. Automatic replacement fonts are Noto Sans JP/SC/KR/TC Medium by Adobe, distributed with Cemu under SIL OFL 1.1. License texts are in `LICENSES/` and next to their sources.
+> **Travail en cours.** Des bugs, saccades et plantages sont à prévoir. Recommandé : carte NVIDIA récente (Vulkan 1.3),
+> 16 Go de RAM (32 Go c'est mieux) et environ 40 Go libres pendant l'installation.
 
-*Splatoon is a trademark of Nintendo. This project is not affiliated with or endorsed by Nintendo.*
+## Installation
+
+Suis **[INSTALL-FR.md](INSTALL-FR.md)** (English: [INSTALL.md](INSTALL.md)). En bref :
+
+1. Télécharge cette branche en ZIP et extrais-la dans un chemin court (par exemple `C:\SplatoonPort`).
+2. Lance `Setup.bat`, choisis le dump du **jeu**, puis celui de la **mise à jour 288**. La première construction dure 30 à 90 minutes.
+3. Lance le jeu avec le raccourci **Splatoon PC Port** : choisis un pseudo et une langue, puis **JOUER**.
+
+Le lanceur cherche les mises à jour au démarrage et ne reconstruit que ce qui a changé.
+
+## Jouer
+
+| Entrée | Action |
+|---|---|
+| W A S D / Souris | Déplacement / visée |
+| Clic gauche / Clic droit | Tirer (ZR) / Forme calamar (ZL) |
+| Espace, Q, E | Saut, arme secondaire, spécial |
+| F, G | Carte (+), Options (-) |
+| Échap | Menu des réglages (graphismes, touches, volume) |
+| F4 | Fenêtre des amis (ajouter un ami par son pseudo) |
+| F11 / F12 | Fenêtre / photo |
+
+Les manettes fonctionnent aussi (boutons placés comme sur le GamePad). Toutes les touches se changent dans le menu Échap.
+
+## Jeu en ligne
+
+- JOUER se connecte à un **serveur communautaire**, tenu par des bénévoles, **sans garantie**, qui peut s'arrêter à tout moment.
+- Ton compte est créé automatiquement au premier JOUER et reste lié à ton PC (`Game\online_identity.ini` : garde-le,
+  ne le partage jamais). Aucun mot de passe à retenir.
+- **Amis :** appuie sur **F4**, tape le pseudo d'un ami, Entrée. Il doit t'ajouter aussi (les pseudos sont uniques). Vous vous voyez alors
+  dans la liste d'amis du jeu et pouvez rejoindre vos salons. Ta liste d'amis reste sur ton PC.
+- **Vie privée :** le serveur garde un numéro de compte, une clé dérivée (jamais ton mot de passe), ton pseudo et les dates de création et de
+  dernière connexion ; pendant que tu joues, ton état en ligne et ton mode de jeu ne sont montrés qu'aux amis qui t'ont ajouté en retour. Ton adresse IP apparaît dans ses journaux (3 fichiers tournants) et ne sert qu'aux limites d'inscription et aux bannissements.
+  Pendant un match, le jeu des autres joueurs se connecte directement au tien (pair à pair), comme sur Wii U : ils peuvent voir ton adresse IP.
+- Pour héberger ton propre serveur : [docs/SERVEUR.md](docs/SERVEUR.md).
+
+## Communauté
+
+Projet d'origine : **PC-PORTERS / NEVESYA**. Pour aider, envoie un message privé à `sussy_0897` sur Discord et lis [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+TikTok : [@splatoon1multiplayer](https://www.tiktok.com/@splatoon1multiplayer). Si tu publies à propos du portage, identifie @nevesboy67 @77emul et @splatoon1multiplayer.
+
+## Problèmes connus
+
+- Les visages de Mii apparaissent en **carré blanc** dans la liste d'amis, sauf si les ressources Mii de ta propre Wii U sont présentes
+  (`FFLResHigh.dat` et les 3 autres fichiers `FFLRes*.dat`, extraits de ta console, dans `Game\mlc01\sys\title\0005001b\10056000\content`).
+  Setup les copie tout seul quand il les trouve à côté de ton dump. C'est purement cosmétique.
+- L'ajout d'un ami se fait des deux côtés : chacun ajoute le pseudo de l'autre (F4).
+- Le mode en ligne n'a été testé jusqu'ici qu'entre joueurs d'un même réseau ; entre deux réseaux différents, c'est le prochain test.
+
+## Pourquoi c'est légal
+
+Ce projet ne contient que du code source original et des bibliothèques libres (voir [LICENSES/](LICENSES/)). Tu fournis le jeu
+depuis ta propre console, la conversion se fait sur ton PC et rien de généré n'est partagé. Le runtime réimplémente les services
+système de la Wii U avec du code original, comme les émulateurs. Ce n'est pas un avis juridique ; les lois diffèrent selon les pays.
+Ne partage jamais de fichiers du jeu, de dumps, de sauvegardes ni le dossier `build`.
+
+## Crédits
+
+RebrewU, [Cemu](https://github.com/cemu-project/Cemu) (décompilateur de shaders, MPL-2.0, et polices de remplacement, SIL OFL 1.1), SDL2,
+glslang, volk, Vulkan-Headers, zlib, curl, miniaudio, nlohmann/json et Dear ImGui. Documentation complète d'origine (build Linux,
+variables d'exécution) : voir la branche `main`.

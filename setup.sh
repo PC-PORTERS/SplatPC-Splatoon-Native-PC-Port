@@ -32,6 +32,11 @@ MINIMUM_FUNCTION_COUNT=96300
 SDL_URL='https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-2.32.10.zip'
 GLSLANG_URL='https://github.com/KhronosGroup/glslang/archive/refs/tags/16.4.0.tar.gz'
 VOLK_URL='https://github.com/zeux/volk/archive/refs/tags/vulkan-sdk-1.4.363.0.tar.gz'
+# Checksums of the downloads. The zip is a release asset (hash of the file); GitHub-generated tarballs are hashed
+# UNCOMPRESSED (a change of GitHub's compression does not change the tar).
+SDL_SHA256='12B2DC2EB8F2836100A7916B5D394A0C82F1F7E32693F95F98305403AF242F08'
+GLSLANG_TAR_SHA256='157A6B0A50C1D91474D6C0007C62F01B3DCBBC7BA0A2A1B2C8AB22554288851C'
+VOLK_TAR_SHA256='B277DD60D647A4DC685778A88089DD3AE8F1AC3C1075ABF97331C3D9C5F97672'
 
 # Cemu's shared fonts are Noto Sans replacements under SIL OFL 1.1, not
 # Nintendo's fonts. Pin the exact upstream bytes for unattended setup.
@@ -90,12 +95,25 @@ select_manifest() { # <rpx>
         --rpx "$1" --manifest-dir "$MANIFEST_DIR"
 }
 
-download() { # <url> <destination>
-    local url="$1" dest="$2"
+download_hash() { # <file> <file|tar.gz>: SHA-256 of the file, or of the uncompressed tar
+    if [ "$2" = tar.gz ]; then gzip -dc -- "$1" | sha256sum | awk '{print toupper($1)}'
+    else sha256sum -- "$1" | awk '{print toupper($1)}'; fi
+}
+
+download() { # <url> <destination> [sha256] [file|tar.gz]
+    local url="$1" dest="$2" want="${3:-}" kind="${4:-file}"
+    if [ -n "$want" ] && [ -f "$dest" ] && [ "$(download_hash "$dest" "$kind")" != "$want" ]; then
+        warn "$(basename "$dest") does not match its expected checksum: downloading it again."
+        rm -f -- "$dest"
+    fi
     [ -f "$dest" ] && return 0
     info "Downloading $(basename "$dest") ..."
     curl -fL --retry 3 --retry-delay 2 --connect-timeout 20 -o "$dest.part" "$url" \
         || fail "Could not download $url (internet/DNS/firewall?). Run setup.sh again to retry."
+    if [ -n "$want" ] && [ "$(download_hash "$dest.part" "$kind")" != "$want" ]; then
+        rm -f -- "$dest.part"
+        fail "$(basename "$dest") does not match the checksum this setup expects ($want). It is not the file the port was built for: nothing was installed."
+    fi
     mv -f "$dest.part" "$dest"
 }
 
@@ -281,7 +299,7 @@ printf '============================================================\n'
 
 # ---------------------------------------------------------------------------
 step 'Checking the tools needed to build'
-for tool in cmake python3 curl sha256sum tar; do
+for tool in cmake python3 curl sha256sum tar gzip; do
     command -v "$tool" >/dev/null 2>&1 || fail "'$tool' is missing. Install it with your package manager and run setup.sh again."
 done
 command -v g++ >/dev/null 2>&1 || command -v clang++ >/dev/null 2>&1 \
@@ -387,8 +405,8 @@ stage_done '2. Game validation & resources'
 step 'Building the window and shader-compiler libraries (SDL2, glslang)'
 SDL_ZIP="$DOWNLOADS/SDL2-2.32.10.zip"
 GLSLANG_ARCHIVE="$DOWNLOADS/glslang-16.4.0.tar.gz"
-download "$SDL_URL" "$SDL_ZIP"
-download "$GLSLANG_URL" "$GLSLANG_ARCHIVE"
+download "$SDL_URL" "$SDL_ZIP" "$SDL_SHA256"
+download "$GLSLANG_URL" "$GLSLANG_ARCHIVE" "$GLSLANG_TAR_SHA256" tar.gz
 SDL_SOURCE="$DOWNLOADS/SDL2-2.32.10"
 if [ ! -d "$SDL_SOURCE" ]; then
     info 'Extracting SDL2 source archive ...'
@@ -413,7 +431,7 @@ if VOLK_CONFIG="$(find_package_config volk)"; then
     good "volk package found: $VOLK_CONFIG"
 else
     VOLK_TARBALL="$DOWNLOADS/volk-1.4.363.tar.gz"
-    download "$VOLK_URL" "$VOLK_TARBALL"
+    download "$VOLK_URL" "$VOLK_TARBALL" "$VOLK_TAR_SHA256" tar.gz
     VOLK_SOURCE="$WORK/volk-source"
     if [ ! -f "$VOLK_SOURCE/CMakeLists.txt" ]; then
         rm -rf -- "$VOLK_SOURCE"
