@@ -29,6 +29,7 @@
 #include "../../runtime/benchmark_input.h"
 #include "../../runtime/native_control_defaults.h"
 #include "../../runtime/discord_rpc.h"
+#include "../nn_nfp/nn_nfp.h"
 #include <cstdlib>
 #include <string>
 #include <stdio.h>
@@ -1084,6 +1085,7 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
         bool fullscreen = false;
         if (gx2_imgui::consume_fullscreen_request(fullscreen)) set_window_fullscreen(fullscreen);
         if (gx2_imgui::consume_quit_request()) gx2_close_requested();
+        if (rbrew_nfp::consume_search_started()) gx2_imgui::open_amiibo_picker();
         if (gx2_imgui::consume_menu_changed()) sync_overlay_mouse_mode();
         gx2_imgui::note_fullscreen(window_fullscreen());
         // The overlay window's close button flips visibility on the render

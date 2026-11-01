@@ -589,6 +589,26 @@ void coreinit_save_make_dir(CPUState* cpu) {
     RET = error ? uint32_t(FS_STATUS_ACCESS_ERROR) : uint32_t(FS_STATUS_OK);
 }
 
+// SAVERemove(client, block, slot, path, errorMask): a file or an empty
+// directory. Gambit FUN_028129EC tests status == 0 and passes mask 0xA8A, so
+// a missing entry comes back as NOT_FOUND. The blank stub returned the client
+// pointer, which the game took as a failed removal after the amiibo save.
+void coreinit_save_remove(CPUState* cpu) {
+    std::lock_guard lock(s_fs_mutex);
+    std::filesystem::path path;
+    if (!save_path(cpu, ARG2, ARG3, path)) {
+        RET = uint32_t(FS_STATUS_PERMISSION_ERROR);
+        return;
+    }
+    std::error_code error;
+    if (!std::filesystem::exists(path, error)) {
+        RET = uint32_t(error ? FS_STATUS_ACCESS_ERROR : FS_STATUS_NOT_FOUND);
+        return;
+    }
+    std::filesystem::remove(path, error);
+    RET = error ? uint32_t(FS_STATUS_ACCESS_ERROR) : uint32_t(FS_STATUS_OK);
+}
+
 void coreinit_save_get_stat(CPUState* cpu) {
     std::lock_guard lock(s_fs_mutex);
     std::filesystem::path path;

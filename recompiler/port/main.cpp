@@ -13,6 +13,7 @@
 #include "runtime/rebrewu_runtime.h"
 #include "runtime/host_process.h"
 #include "runtime/discord_rpc.h"
+#include "runtime/splatoon_diagnostics.h"
 #include "runtime/port_settings.h"
 #include "os/erreula/erreula.h"
 #include "os/coreinit/coreinit_overlay.h"
@@ -137,7 +138,7 @@ static void start_hang_sampler(const CPUState* cpu) {
 }
 // Diagnostic (RBREW_PROFILE=<start s>:<duration s>:<file>): sampling
 // profiler. Every ~2 ms suspend each other thread and count its stack: up to
-// four Gambit return addresses (RVAs, innermost first; symbolize with the
+// twelve Gambit return addresses (RVAs, innermost first; symbolize with the
 // linker map), prefixed by "module|" when the thread is in a system DLL or
 // driver (time in ntdll/KernelBase is mostly waiting). Writes
 // "tid count [module|]rva<rva<...". With RBREW_PROFILE_TRIGGER=<path> the
@@ -149,12 +150,13 @@ static void start_hang_sampler(const CPUState* cpu) {
 #ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
 #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
 #endif
-// Up to four Gambit return addresses (RVAs) from a resumed thread's context.
+constexpr unsigned kProfileDepth = 12;
+// Up to kProfileDepth Gambit return addresses (RVAs) from a resumed thread's context.
 // Its stack may change underneath: faults end the walk instead of the game.
-static unsigned profile_unwind(CONTEXT walk, uintptr_t exe, uintptr_t exe_end, uintptr_t (&chain)[4]) {
+static unsigned profile_unwind(CONTEXT walk, uintptr_t exe, uintptr_t exe_end, uintptr_t (&chain)[kProfileDepth]) {
     unsigned found = 0;
     __try {
-        for (int depth = 0; depth < 64 && walk.Rip && found < 4; ++depth) {
+        for (int depth = 0; depth < 64 && walk.Rip && found < kProfileDepth; ++depth) {
             if (walk.Rip >= exe && walk.Rip < exe_end) chain[found++] = uintptr_t(walk.Rip) - exe;
             DWORD64 image = 0;
             auto* function = RtlLookupFunctionEntry(walk.Rip, &image, nullptr);
@@ -170,7 +172,107 @@ static unsigned profile_unwind(CONTEXT walk, uintptr_t exe, uintptr_t exe_end, u
     } __except (EXCEPTION_EXECUTE_HANDLER) {}
     return found;
 }
+// Samples every other thread for `seconds` and writes the stack counts.
+static void profile_threads(unsigned seconds, const std::string& path) {
+    rbrew_benchmark::profiling.store(true, std::memory_order_relaxed);
+    const uint32_t first_frame = rbrew_benchmark::frame.load(std::memory_order_relaxed);
+    const auto exe = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    MODULEINFO info{};
+    GetModuleInformation(GetCurrentProcess(), GetModuleHandleW(nullptr), &info, sizeof(info));
+    const uintptr_t exe_end = exe + info.SizeOfImage;
+    auto in_exe = [&](DWORD64 rip) { return rip >= exe && rip < exe_end; };
+    const DWORD self = GetCurrentThreadId(), pid = GetCurrentProcessId();
+    std::map<std::pair<DWORD, std::string>, unsigned> hits;
+    std::map<uintptr_t, std::string> module_names;
+    std::map<DWORD, HANDLE> threads;
+    HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    const ULONGLONG stop = GetTickCount64() + seconds * 1000ull;
+    ULONGLONG refreshed = 0;
+    unsigned rounds = 0;
+    while (GetTickCount64() < stop) {
+        if (GetTickCount64() - refreshed >= 500) { // thread list changes rarely
+            refreshed = GetTickCount64();
+            HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+            THREADENTRY32 entry{};
+            entry.dwSize = sizeof(entry);
+            for (BOOL ok = Thread32First(snap, &entry); ok; ok = Thread32Next(snap, &entry)) {
+                if (entry.th32OwnerProcessID != pid || entry.th32ThreadID == self || threads.count(entry.th32ThreadID))
+                    continue;
+                if (HANDLE thread = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE, entry.th32ThreadID))
+                    threads[entry.th32ThreadID] = thread;
+            }
+            CloseHandle(snap);
+        }
+        for (const auto& [tid, thread] : threads) {
+            CONTEXT context{};
+            context.ContextFlags = CONTEXT_FULL;
+            if (SuspendThread(thread) == DWORD(-1)) continue;
+            const bool got = GetThreadContext(thread, &context);
+            // Resume before unwinding: RtlLookupFunctionEntry can take
+            // locks the suspended thread holds, which hung the profiler
+            // (no output file). The first Gambit frames say who is running
+            // or waiting; a racy walk is guarded and only drops a sample.
+            ResumeThread(thread);
+            if (!got) continue;
+            uintptr_t chain[kProfileDepth]{};
+            unsigned depth_found = profile_unwind(context, exe, exe_end, chain);
+            std::string key;
+            if (!in_exe(context.Rip)) {
+                HMODULE module = nullptr;
+                key = "?";
+                if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                           GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                       reinterpret_cast<LPCWSTR>(context.Rip), &module)) {
+                    auto& cached = module_names[reinterpret_cast<uintptr_t>(module)];
+                    if (cached.empty()) {
+                        char file[MAX_PATH]{};
+                        GetModuleBaseNameA(GetCurrentProcess(), module, file, MAX_PATH);
+                        cached = file;
+                    }
+                    key = cached;
+                }
+                key += '|';
+            }
+            for (unsigned i = 0; i < depth_found; ++i) {
+                char rva[24];
+                snprintf(rva, sizeof(rva), i ? "<%llX" : "%llX", (unsigned long long)chain[i]);
+                key += rva;
+            }
+            ++hits[{tid, key}];
+        }
+        ++rounds;
+        if (timer) {
+            LARGE_INTEGER due{};
+            due.QuadPart = -20000; // 2 ms
+            SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
+            WaitForSingleObject(timer, INFINITE);
+        } else {
+            Sleep(1);
+        }
+    }
+    for (const auto& [tid, thread] : threads) CloseHandle(thread);
+    if (timer) CloseHandle(timer);
+    if (FILE* f = fopen(path.c_str(), "w")) {
+        std::fprintf(f, "# rounds %u seconds %u\n", rounds, seconds);
+        std::fprintf(f, "# frames %u %u\n", first_frame, rbrew_benchmark::frame.load(std::memory_order_relaxed));
+        for (const auto& [key, n] : hits) std::fprintf(f, "%lu %u %s\n", key.first, n, key.second.c_str());
+        fclose(f);
+    } else
+        RBREW_LOG_ERROR("profile", "cannot write %s\n", path.c_str());
+    RBREW_LOG_INFO("profile", "finished %u rounds\n", rounds);
+    rbrew_benchmark::profiling.store(false, std::memory_order_relaxed);
+}
 static void start_profiler() {
+    // F9 (ManualCapture) also profiles 4 s into the snapshot folder: a stuck
+    // scene then shows what each thread runs, without any setup.
+    SplatoonDiagnostics::SetManualProfiler([](const std::string& path) {
+        static std::atomic<bool> busy{false};
+        if (busy.exchange(true)) return;
+        std::thread([path] {
+            profile_threads(4, path);
+            busy = false;
+        }).detach();
+    });
     // Sampling must work on the normal release too: enabling every per-draw
     // diagnostic changes the workload being investigated. No thread or timer
     // is created unless the user explicitly requests this profile.
@@ -187,96 +289,7 @@ static void start_profiler() {
             while (GetFileAttributesA(trigger.c_str()) == INVALID_FILE_ATTRIBUTES) Sleep(250);
         RBREW_LOG_INFO("profile", "sampling %u s -> %s\n", seconds, path.c_str());
         Sleep(start * 1000);
-        rbrew_benchmark::profiling.store(true, std::memory_order_relaxed);
-        const uint32_t first_frame = rbrew_benchmark::frame.load(std::memory_order_relaxed);
-        const auto exe = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
-        MODULEINFO info{};
-        GetModuleInformation(GetCurrentProcess(), GetModuleHandleW(nullptr), &info, sizeof(info));
-        const uintptr_t exe_end = exe + info.SizeOfImage;
-        auto in_exe = [&](DWORD64 rip) { return rip >= exe && rip < exe_end; };
-        const DWORD self = GetCurrentThreadId(), pid = GetCurrentProcessId();
-        std::map<std::pair<DWORD, std::string>, unsigned> hits;
-        std::map<uintptr_t, std::string> module_names;
-        std::map<DWORD, HANDLE> threads;
-        HANDLE timer =
-            CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
-        const ULONGLONG stop = GetTickCount64() + seconds * 1000ull;
-        ULONGLONG refreshed = 0;
-        unsigned rounds = 0;
-        while (GetTickCount64() < stop) {
-            if (GetTickCount64() - refreshed >= 500) { // thread list changes rarely
-                refreshed = GetTickCount64();
-                HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-                THREADENTRY32 entry{};
-                entry.dwSize = sizeof(entry);
-                for (BOOL ok = Thread32First(snap, &entry); ok; ok = Thread32Next(snap, &entry)) {
-                    if (entry.th32OwnerProcessID != pid || entry.th32ThreadID == self ||
-                        threads.count(entry.th32ThreadID))
-                        continue;
-                    if (HANDLE thread =
-                            OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE, entry.th32ThreadID))
-                        threads[entry.th32ThreadID] = thread;
-                }
-                CloseHandle(snap);
-            }
-            for (const auto& [tid, thread] : threads) {
-                CONTEXT context{};
-                context.ContextFlags = CONTEXT_FULL;
-                if (SuspendThread(thread) == DWORD(-1)) continue;
-                const bool got = GetThreadContext(thread, &context);
-                // Resume before unwinding: RtlLookupFunctionEntry can take
-                // locks the suspended thread holds, which hung the profiler
-                // (no output file). The first Gambit frames say who is running
-                // or waiting; a racy walk is guarded and only drops a sample.
-                ResumeThread(thread);
-                if (!got) continue;
-                uintptr_t chain[4]{};
-                unsigned depth_found = profile_unwind(context, exe, exe_end, chain);
-                std::string key;
-                if (!in_exe(context.Rip)) {
-                    HMODULE module = nullptr;
-                    key = "?";
-                    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                                               GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                                           reinterpret_cast<LPCWSTR>(context.Rip), &module)) {
-                        auto& cached = module_names[reinterpret_cast<uintptr_t>(module)];
-                        if (cached.empty()) {
-                            char file[MAX_PATH]{};
-                            GetModuleBaseNameA(GetCurrentProcess(), module, file, MAX_PATH);
-                            cached = file;
-                        }
-                        key = cached;
-                    }
-                    key += '|';
-                }
-                for (unsigned i = 0; i < depth_found; ++i) {
-                    char rva[24];
-                    snprintf(rva, sizeof(rva), i ? "<%llX" : "%llX", (unsigned long long)chain[i]);
-                    key += rva;
-                }
-                ++hits[{tid, key}];
-            }
-            ++rounds;
-            if (timer) {
-                LARGE_INTEGER due{};
-                due.QuadPart = -20000; // 2 ms
-                SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
-                WaitForSingleObject(timer, INFINITE);
-            } else {
-                Sleep(1);
-            }
-        }
-        for (const auto& [tid, thread] : threads) CloseHandle(thread);
-        if (timer) CloseHandle(timer);
-        if (FILE* f = fopen(path.c_str(), "w")) {
-            std::fprintf(f, "# rounds %u seconds %u\n", rounds, seconds);
-            std::fprintf(f, "# frames %u %u\n", first_frame, rbrew_benchmark::frame.load(std::memory_order_relaxed));
-            for (const auto& [key, n] : hits) std::fprintf(f, "%lu %u %s\n", key.first, n, key.second.c_str());
-            fclose(f);
-        } else
-            RBREW_LOG_ERROR("profile", "cannot write %s\n", path.c_str());
-        RBREW_LOG_INFO("profile", "finished %u rounds\n", rounds);
-        rbrew_benchmark::profiling.store(false, std::memory_order_relaxed);
+        profile_threads(seconds, path);
     }).detach();
 }
 #else
@@ -326,17 +339,21 @@ static void free_arena(uint8_t* p, size_t sz) {
 // ---------------------------------------------------------------------------
 void gambit_plt_auto_register(CPUState* cpu); // pre-registers STUB for all 610 PLT stubs
 
-// RBREW_STUB_REPORT diagnostics: one trampoline per blank import slot logs
-// its first call (import address and caller LR) and otherwise does nothing,
-// exactly like the blank STUB it replaces.
+// One trampoline per blank import slot reports its first call (import address
+// and caller LR) to the log and the diagnostics event log (events.jsonl), and
+// otherwise does nothing, exactly like the blank STUB it replaces.
 namespace {
 constexpr size_t kBlankLoggerSlots = 640;
 uint32_t g_blank_import_addr[kBlankLoggerSlots];
 std::atomic<bool> g_blank_import_seen[kBlankLoggerSlots];
 template <size_t I> void blank_import_trampoline(CPUState* cpu) {
-    if (!g_blank_import_seen[I].exchange(true))
-        RBREW_LOG_INFO("IMPORT", "first call to blank import %08X lr=%08X r3=%08X\n", g_blank_import_addr[I], cpu->lr,
-                       cpu->r[3]);
+    if (g_blank_import_seen[I].load(std::memory_order_relaxed) || g_blank_import_seen[I].exchange(true)) return;
+    RBREW_LOG_INFO("IMPORT", "first call to blank import %08X lr=%08X r3=%08X\n", g_blank_import_addr[I], cpu->lr,
+                   cpu->r[3]);
+    char message[48];
+    std::snprintf(message, sizeof(message), "blank import %08X lr=%08X", g_blank_import_addr[I], cpu->lr);
+    SplatoonDiagnostics::RecordEvent(SplatoonDiagnostics::EventCategory::System,
+                                     SplatoonDiagnostics::EventSeverity::Warning, 0, message);
 }
 template <size_t... I> constexpr std::array<HostFunc, sizeof...(I)> make_blank_loggers(std::index_sequence<I...>) {
     return {&blank_import_trampoline<I>...};
@@ -376,6 +393,7 @@ void padscore_register(CPUState* cpu);
 void stubs_register(CPUState* cpu);
 void nsysnet_register(CPUState* cpu);
 void nn_act_register(CPUState* cpu);
+void nn_nfp_register(CPUState* cpu);
 void sysapp_title_register(CPUState* cpu);
 
 // ---------------------------------------------------------------------------
@@ -543,6 +561,7 @@ int main(int argc, char** argv) {
     stubs_register(&cpu_reg);
     nsysnet_register(&cpu_reg);
     nn_act_register(&cpu_reg);
+    nn_nfp_register(&cpu_reg);
     sysapp_title_register(&cpu_reg);
     // Register all recompiled game functions so rbrew_dispatch can find them
     Gambit_game_register(&cpu_reg);
@@ -551,21 +570,22 @@ int main(int argc, char** argv) {
     erreula_register(&cpu_reg);
 
     RBREW_LOG_INFO("IMPORT", "OS modules and game dispatch registered\n");
-    if (const char* report = rbrew_diagnostic_env("RBREW_STUB_REPORT"); report && *report) {
+    {
         // PLT trampolines occupy 0x02D051A0..0x02D0E098 in Gambit.
-        // Each blank slot is rebound to a logging trampoline with the same
-        // do-nothing behavior, so the first call to it is reported.
-        if (FILE* out = fopen(report, "w")) {
-            unsigned blank = 0;
-            for (uint32_t addr = 0x02D05000u; addr < 0x02D10000u; addr += 4)
-                if (cpu_reg.dispatch_table[addr >> 2] == blank_stub) {
-                    RBREW_LOGF(out, "%08X\n", addr);
-                    if (HostFunc logger = blank_import_logger(blank, addr)) cpu_reg.dispatch_table[addr >> 2] = logger;
-                    ++blank;
-                }
-            fclose(out);
-            RBREW_LOG_INFO("IMPORT", "%u PLT imports still bound to the blank STUB -> %s\n", blank, report);
-        }
+        // Each blank slot is rebound to a reporting trampoline with the same
+        // do-nothing behavior, so the first call to it is recorded.
+        // RBREW_STUB_REPORT=<file> also lists the blank slots.
+        const char* report = rbrew_diagnostic_env("RBREW_STUB_REPORT");
+        FILE* out = report && *report ? fopen(report, "w") : nullptr;
+        unsigned blank = 0;
+        for (uint32_t addr = 0x02D05000u; addr < 0x02D10000u; addr += 4)
+            if (cpu_reg.dispatch_table[addr >> 2] == blank_stub) {
+                if (out) RBREW_LOGF(out, "%08X\n", addr);
+                if (HostFunc logger = blank_import_logger(blank, addr)) cpu_reg.dispatch_table[addr >> 2] = logger;
+                ++blank;
+            }
+        if (out) fclose(out);
+        RBREW_LOG_INFO("IMPORT", "%u PLT imports still bound to the blank STUB\n", blank);
     }
 
     start_hang_sampler(&cpu_reg);

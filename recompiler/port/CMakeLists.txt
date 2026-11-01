@@ -136,6 +136,7 @@ add_library(gambit_runtime STATIC
     os/coreinit/coreinit_user_config.cpp
     os/erreula/erreula.cpp
     os/nn_act/nn_act.cpp
+    os/nn_nfp/nn_nfp.cpp
     os/sysapp/sysapp_title.cpp
     os/coreinit/coreinit_fs.cpp
     os/gx2/gx2_context.cpp
@@ -374,6 +375,10 @@ if(RBREW_BUILD_TESTS)
     target_link_libraries(gambit_texture_pack_tests PRIVATE gambit_runtime)
     target_include_directories(gambit_texture_pack_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME native_texture_pack COMMAND gambit_texture_pack_tests)
+    add_executable(gambit_nfp_tests ../tests/test_nn_nfp.cpp)
+    target_link_libraries(gambit_nfp_tests PRIVATE gambit_runtime)
+    target_include_directories(gambit_nfp_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME native_nn_nfp COMMAND gambit_nfp_tests)
     # Local developer tests/tools below are optional (not in the public tree).
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../tests/test_frame_pacing.cpp")
         add_executable(gambit_frame_pacing_tests ../tests/test_frame_pacing.cpp)
