@@ -179,7 +179,6 @@ add_library(gambit_runtime STATIC
     os/snd_core/snd_core.cpp
     os/vpad/game_controllers.cpp
     os/vpad/vpad.cpp
-    os/vpad/write_probe.cpp
     os/padscore/padscore.cpp
     os/stubs/stubs.cpp
     os/stubs/zlib_bridge.cpp

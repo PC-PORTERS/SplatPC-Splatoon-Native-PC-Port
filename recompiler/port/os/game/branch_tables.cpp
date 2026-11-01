@@ -9,6 +9,7 @@
 // the block it branches to. Address metadata only. Before the first generation that includes the
 // hints, gambit_tables_register falls back to a no-op and the slots stay unregistered, as before.
 #include "../../runtime/rebrewu_runtime.h"
+#include "rebrewu/logger.hpp"
 #include "../vpad/vpad_addrs.h"
 #include <cstdio>
 #include <vector>
@@ -48,7 +49,7 @@ void branch_tables_install(CPUState* cpu) {
             }
         }
     }
-    std::fprintf(stderr, "[branch-tables] %u table slots linked to their case blocks\n", linked);
+    RBREW_LOG_INFO("branch-tables", "%u table slots linked to their case blocks\n", linked);
 #else
     (void)cpu;
 #endif

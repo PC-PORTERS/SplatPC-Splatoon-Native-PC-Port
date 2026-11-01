@@ -138,7 +138,7 @@ void GetFriendPresence(CPUState* cpu) {
 void UpdateGameMode(CPUState* cpu) {
     if (guest_ok(cpu, ARG0, kGameModeSize)) {
         for (uint32_t i = 0; i < kGameModeSize; ++i) s_mode[i] = rbrew_read8(MEM, ARG0 + i);
-        std::fprintf(stderr, "[fp_lab] UpdateGameMode flags=%08x type=%08x game=%08x mode=%08x host=%08x group=%08x\n",
+        RBREW_LOG_INFO("fp_lab", "UpdateGameMode flags=%08x type=%08x game=%08x mode=%08x host=%08x group=%08x\n",
                      rbrew_read32(MEM, ARG0), rbrew_read32(MEM, ARG0 + 4), rbrew_read32(MEM, ARG0 + 8),
                      rbrew_read32(MEM, ARG0 + 12), rbrew_read32(MEM, ARG0 + 16), rbrew_read32(MEM, ARG0 + 20));
         publish();
@@ -162,5 +162,5 @@ void fp_lab_register(CPUState* cpu) {
     rbrew_register_func(cpu, ADDR_GetFriendApprovalTime__Q2_2nn2fpFPQ3_2nn2fp8DateTimePCUiUi, GetFriendApprovalTime);
     rbrew_register_func(cpu, ADDR_GetFriendPresence__Q2_2nn2fpFPQ3_2nn2fp14FriendPresencePCUiUi, GetFriendPresence);
     rbrew_register_func(cpu, ADDR_UpdateGameMode__Q2_2nn2fpFPCQ3_2nn2fp8GameModePCwUi, UpdateGameMode);
-    std::fprintf(stderr, "[fp_lab] friends folder %s, pid %08x\n", dir, rbrew_online::identity().pid);
+    RBREW_LOG_INFO("fp_lab", "friends folder %s, pid %08x\n", dir, rbrew_online::identity().pid);
 }

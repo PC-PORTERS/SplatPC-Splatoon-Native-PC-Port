@@ -87,7 +87,7 @@ static void lock_watched(CPUState* cpu, MutexImpl* md, uint32_t address) {
             if (!reported && std::chrono::steady_clock::now() - start > std::chrono::seconds(3)) {
                 reported = true;
                 uint32_t mine[6]; guest_stack(cpu, mine, 6); const auto owner=md->owner_stack.snapshot();
-                std::fprintf(stderr, "[mutex] %08X blocked 3s; waiter %08X %08X %08X %08X %08X %08X; last locker %08X %08X %08X %08X %08X %08X\n",
+                RBREW_LOG_WARN("mutex", "%08X blocked 3s; waiter %08X %08X %08X %08X %08X %08X; last locker %08X %08X %08X %08X %08X %08X\n",
                              address, mine[0], mine[1], mine[2], mine[3], mine[4], mine[5],
                              owner[0], owner[1], owner[2],
                              owner[3], owner[4], owner[5]);

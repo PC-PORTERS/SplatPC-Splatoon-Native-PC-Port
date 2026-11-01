@@ -21,7 +21,8 @@ Every key is optional. `_`-prefixed keys are ignored, so an example file can car
       "accounts_db": "nexlab-accounts.sqlite3",   # public mode: accounts.py store
       "registration": "open",           # public: open | token | closed (default: closed)
       "registration_port": 60002,       # default: auth_port + 2 (0 when closed)
-      "registration_token": ""          # required when registration is "token"
+      "registration_token": "",         # required when registration is "token"
+      "admin_token": ""                 # operator routes (/admin/*) with open registration
     }
 """
 import ipaddress
@@ -36,7 +37,7 @@ FIELDS = ("mode", "listen", "advertise", "auth_port", "secure_port", "natcheck",
           "natcheck_addresses", "identities", "identity_roots",
           "accounts_db", "registration", "registration_port", "registration_token",
           "fill_timeout", "natcheck_single_ip", "natcheck_same_socket", "registration_proxy",
-          "min_client_version", "random_session_key")
+          "min_client_version", "random_session_key", "admin_token")
 
 
 class ConfigError(ValueError):
@@ -127,6 +128,9 @@ class ServerConfig:
         self.registration = values.get("registration")
         self.registration_port = values.get("registration_port")
         self.registration_token = values.get("registration_token")
+        # Operator token for /admin/* when registration is open (the admin panel uses it).
+        # Empty: the admin routes keep using registration_token, or do not exist.
+        self.admin_token = str(values.get("admin_token") or "") or None
         self.fill_timeout = values.get("fill_timeout", 20.0)
         self._normalize()
         self.validate()

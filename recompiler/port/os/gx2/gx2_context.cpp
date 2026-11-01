@@ -849,7 +849,7 @@ void install_plaza_60fps(CPUState* cpu) {
     installed = true;
     s_plaza_sync_original = cpu->dispatch_table[kSync >> 2];
     cpu->dispatch_table[kSync >> 2] = plaza_mode_sync;
-    std::fprintf(stderr, "[gx2] plaza 60 FPS mode sync installed\n");
+    RBREW_LOG_INFO("gx2", "plaza 60 FPS mode sync installed\n");
 #endif
 }
 } // namespace

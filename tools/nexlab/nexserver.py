@@ -607,7 +607,8 @@ async def run(a, config):
                 config.registration_port,
                 config.registration_token if config.registration == "token" else None,
                 behind_proxy=config.registration_proxy,
-                min_client_version=config.min_client_version)
+                min_client_version=config.min_client_version,
+                admin_token=config.admin_token)
         log.info("accounts: %d in %s (registration %s, port %d)", accounts.count(),
                  config.accounts_db, config.registration, config.registration_port)
     try:

@@ -63,11 +63,12 @@ class BoundedHTTPServer(ThreadingHTTPServer):
 
 class RegistrationServer:
     def __init__(self, accounts, host="127.0.0.1", port=60002, token=None, behind_proxy=False,
-                 min_client_version=None):
+                 min_client_version=None, admin_token=None):
         self.accounts = accounts
         self.social = social_module.Social(accounts) if accounts is not None else None
         self.min_client_version = min_client_version
         self.token = token
+        self.admin_token = admin_token or token
         self.behind_proxy = behind_proxy
         self.host = host
         self.port = port
@@ -134,7 +135,7 @@ def _make_handler(server):
 
         def _admin_ok(self):
             """Operator routes need the shared token; without one they do not exist."""
-            return server.token is not None and token_ok(server.token, self.headers, {})
+            return server.admin_token is not None and token_ok(server.admin_token, self.headers, {})
 
         def do_GET(self):
             parts = urllib.parse.urlsplit(self.path)
@@ -169,8 +170,12 @@ def _make_handler(server):
                         sessions.append({"id": gid, "host": f"{session.host:08x}",
                                          "members": len(matchmake.SESSIONS.members.get(gid, [])),
                                          "closed": gid in matchmake.SESSIONS.closed_at})
+                    players = matchmake.active_players()
+                    hosts = [session.host for session in matchmake.SESSIONS.by_gid.values()]
+                    known = server.accounts.pseudos_for(set(players) | set(hosts)) if server.accounts else {}
                     self._reply(200, {"sessions": sessions,
-                                      "players": [f"{pid:08x}" for pid in matchmake.active_players()]})
+                                      "players": [f"{pid:08x}" for pid in players],
+                                      "pseudos": {f"{pid:08x}": name for pid, name in known.items()}})
                     return
                 query = urllib.parse.parse_qs(parts.query)
                 try:

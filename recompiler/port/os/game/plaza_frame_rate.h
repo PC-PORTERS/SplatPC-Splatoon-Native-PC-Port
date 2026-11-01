@@ -58,6 +58,7 @@ struct PlazaGovernor {
 
 #if RBREW_GAME_REVISION == 288
 #include "../../runtime/rebrewu_runtime.h"
+#include "rebrewu/logger.hpp"
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -87,9 +88,9 @@ inline void half_rate(CPUState* cpu, uint32_t address, HostFunc original) {
 inline void plaza_frame_rate_register() {
     if (plaza_mode() == 0) return;
     if (!rbrew_set_guest_hook(kPlazaHalfRateFunction, plaza_regulator_detail::half_rate))
-        std::fprintf(stderr, "[timing] plaza frame regulator: hook registration failed\n");
+        RBREW_LOG_ERROR("timing", "plaza frame regulator: hook registration failed\n");
     else
-        std::fprintf(stderr, "[timing] plaza frame regulator installed\n");
+        RBREW_LOG_INFO("timing", "plaza frame regulator installed\n");
 }
 
 inline void plaza_frame_rate_update(uint8_t* mem, float work_ms) {

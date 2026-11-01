@@ -16,6 +16,7 @@
 // per call site, and the game goes on (one message not delivered to everyone).
 // RBREW_BROADCAST_GUARD=0 runs the original code instead.
 #include "../../runtime/rebrewu_runtime.h"
+#include "rebrewu/logger.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -38,16 +39,16 @@ void report(CPUState* cpu, uint32_t caller, uint32_t obj, uint32_t key, uint32_t
     static uint32_t s_reported = 0;
     if (s_reported >= 8) return;
     ++s_reported;
-    std::fprintf(stderr, "[broadcast] loop stopped after %u steps: caller lr=%08X obj=%08X key=%u msg=%08X/%08X/%08X "
+    RBREW_LOG_WARN_BEGIN("broadcast", "loop stopped after %u steps: caller lr=%08X obj=%08X key=%u msg=%08X/%08X/%08X "
                  "group head=%08X handler head=%08X offset=%X at=%08X handlers:",
                  kMaxSteps, caller, obj, rd(cpu, key), rd(cpu, msg), rd(cpu, msg + 4), rd(cpu, msg + 8), head, inner, offset, x);
     uint32_t node = rd(cpu, inner + 4);
     for (int i = 0; i < 16 && node && node != inner && ok(cpu, node, 8); ++i) {
         const uint32_t h = node - offset;
-        std::fprintf(stderr, " %08X(vt %08X flag %u)", h, ok(cpu, h, 0x20) ? rd(cpu, h + 4) : 0, ok(cpu, h, 0x20) ? rd(cpu, h + 0x1C) : 0);
+        RBREW_LOG_RAW(" %08X(vt %08X flag %u)", h, ok(cpu, h, 0x20) ? rd(cpu, h + 4) : 0, ok(cpu, h, 0x20) ? rd(cpu, h + 0x1C) : 0);
         node = rd(cpu, node + 4);
     }
-    std::fprintf(stderr, node == inner ? " (end)\n" : " ...\n");
+    RBREW_LOG_RAW(node == inner ? " (end)\n" : " ...\n");
     std::fflush(stderr);
 }
 
@@ -105,6 +106,6 @@ void broadcast_guard_install() {
 #if RBREW_GAME_REVISION == 288
     if (const char* v = std::getenv("RBREW_BROADCAST_GUARD"); v && std::strcmp(v, "0") == 0) return;
     if (!rbrew_set_guest_hook(kBroadcast, broadcast))
-        std::fprintf(stderr, "[broadcast] could not register the hook\n");
+        RBREW_LOG_ERROR("broadcast", "could not register the hook\n");
 #endif
 }

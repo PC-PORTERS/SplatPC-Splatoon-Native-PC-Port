@@ -152,6 +152,22 @@ class AdminEndpointTests(unittest.TestCase):
         self.assertEqual((status, payload["kick"]), (200, "00001001"))
         self.assertIn(0x1001, matchmake.KICKS)
 
+    def test_admin_token_works_with_open_registration(self):
+        open_server = register_server.RegistrationServer(self.accounts, "127.0.0.1", free_tcp_port(),
+                                                         None, admin_token="panel")
+        open_server.start()
+        try:
+            url = f"http://127.0.0.1:{open_server.port}/admin/sessions"
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(url, timeout=5)
+            self.assertEqual(caught.exception.code, 401)
+            request = urllib.request.Request(url, headers={"Authorization": "Bearer panel"})
+            with urllib.request.urlopen(request, timeout=5) as response:
+                payload = json.loads(response.read())
+            self.assertEqual((payload["players"], payload["pseudos"]), ([], {}))
+        finally:
+            open_server.stop()
+
 
 class KickApplyTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):

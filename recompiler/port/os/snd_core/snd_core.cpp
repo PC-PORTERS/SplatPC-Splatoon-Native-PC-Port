@@ -658,7 +658,7 @@ static void AXInit(CPUState* cpu) {
         // timing so profiling is representative. No system volume changes.
         if (const char* mute = std::getenv("RBREW_AUDIO_MUTE"); mute && std::strcmp(mute, "1") == 0) {
             if (ma_device_set_master_volume(&s_ma_device, 0.0f) == MA_SUCCESS)
-                std::fprintf(stderr, "[snd_core] Test playback muted (mixer active)\n");
+                RBREW_LOG_INFO("snd_core", "Test playback muted (mixer active)\n");
         }
         if (ma_device_start(&s_ma_device) != MA_SUCCESS) {
             RBREW_LOGF(stderr, "[snd_core] miniaudio: failed to start playback device\n");
