@@ -58,6 +58,7 @@ TikTok: [@splatoon1multiplayer](https://www.tiktok.com/@splatoon1multiplayer). I
   (`FFLResHigh.dat` and the 3 other `FFLRes*.dat` files, dumped from your console, in `Game\mlc01\sys\title\0005001b\10056000\content`).
   Setup copies them by itself when it finds them next to your dump. It is only cosmetic.
 - Adding a friend works both ways: you each add the other's pseudo (F4).
+- **macOS is not supported for now** (no Mac setup, no Mac renderer). Windows is the supported system for this online edition.
 - The online mode has only been tested between players on the same network so far; between two different networks it is the next test.
 
 ## Why this is legal
@@ -136,6 +137,7 @@ TikTok : [@splatoon1multiplayer](https://www.tiktok.com/@splatoon1multiplayer). 
   (`FFLResHigh.dat` et les 3 autres fichiers `FFLRes*.dat`, extraits de ta console, dans `Game\mlc01\sys\title\0005001b\10056000\content`).
   Setup les copie tout seul quand il les trouve à côté de ton dump. C'est purement cosmétique.
 - L'ajout d'un ami se fait des deux côtés : chacun ajoute le pseudo de l'autre (F4).
+- **macOS n'est pas pris en charge pour l'instant** (pas d'installation ni de rendu pour Mac). Windows est le système pris en charge par cette édition en ligne.
 - Le mode en ligne n'a été testé jusqu'ici qu'entre joueurs d'un même réseau ; entre deux réseaux différents, c'est le prochain test.
 
 ## Pourquoi c'est légal

@@ -444,7 +444,11 @@ static std::vector<double> g_old, g_prev_old;         // their value at the last
 // RBREW_CAM_SCAN_INT=1: read the words as signed 32-bit integers (fixed-point angles) instead of floats.
 static const bool g_int = [] { const char* p = std::getenv("RBREW_CAM_SCAN_INT"); return p && *p == '1'; }();
 static double from_raw(uint32_t be) {
+#if defined(_MSC_VER)
     const uint32_t w = _byteswap_ulong(be);
+#else
+    const uint32_t w = __builtin_bswap32(be);
+#endif
     if (g_int) return double(int32_t(w));
     float f;
     std::memcpy(&f, &w, 4);

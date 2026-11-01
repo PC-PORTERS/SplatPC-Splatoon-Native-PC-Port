@@ -6,6 +6,13 @@
 // is opened for that one instruction (trap flag) and protected again. Host addresses map to
 // recompiled guest functions through the link map (Gambit_fn_<guest>). "<frame> Q" prints the
 // counts. Never active in normal play.
+#include <cstdint>
+
+#if !defined(_WIN32)
+// The probe needs Windows page-protection faults: elsewhere it does nothing.
+void rbrew_write_probe_arm(uint8_t*, uint32_t) {}
+void rbrew_write_probe_report() {}
+#else
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
@@ -123,3 +130,4 @@ void rbrew_write_probe_report() {
                      static_cast<unsigned long long>(rva_or_zero(g_seen[s].ret1)),
                      static_cast<unsigned long long>(rva_or_zero(g_seen[s].ret2)), g_seen[s].guest, g_seen[s].count);
 }
+#endif // _WIN32
