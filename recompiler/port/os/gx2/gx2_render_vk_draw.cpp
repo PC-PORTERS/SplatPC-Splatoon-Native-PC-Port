@@ -4898,6 +4898,9 @@ bool issue_draw_program(Program* prog, uint8_t* mem, uint32_t prim, uint32_t cou
         applied_epoch = s_tracking_epoch;
         if (pipeline != s_bound_pipeline) {
             vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+            // Discard pipelines omit depth/stencil state, invalidating the
+            // dynamic values even when the guest registers have not changed.
+            if (streamout_only) reset_command_tracking();
             s_bound_pipeline = pipeline;
         }
         std::array<VkWriteDescriptorSet, StageDescriptors::kMaxWrites * 2> writes;
@@ -5761,6 +5764,7 @@ void gx2_render_vk_startup_warmup(void (*progress)(double)) {
 
 #ifdef RBREW_ADVANCED_TESTS
 #include "../../../tests/render_stress.inl"
+#include "../../../tests/discard_state.inl"
 // Authored, guest-free GPU probe of the production pipeline lookup path.
 bool gx2_render_vk_test_pipeline_cache() {
     Program program;
