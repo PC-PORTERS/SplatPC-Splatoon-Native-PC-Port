@@ -70,6 +70,8 @@ Never share game files, dumps, saves or the `build` folder.
 
 ## Credits
 
+This online edition is built on the port made by the [PC-PORTERS](https://github.com/PC-PORTERS) team on GitHub (NEVESYA and contributors). All the base work (the recompilation, the renderer, the game itself running on PC) is theirs; this branch only adds the online service on top.
+
 RebrewU, [Cemu](https://github.com/cemu-project/Cemu) (shader decompiler, MPL-2.0, and replacement fonts, SIL OFL 1.1), SDL2,
 glslang, volk, Vulkan-Headers, zlib, curl, miniaudio, nlohmann/json and Dear ImGui. Full upstream documentation (Linux build,
 runtime switches): see the `main` branch.
@@ -148,6 +150,8 @@ système de la Wii U avec du code original, comme les émulateurs. Ce n'est pas 
 Ne partage jamais de fichiers du jeu, de dumps, de sauvegardes ni le dossier `build`.
 
 ## Crédits
+
+Cette édition en ligne repose sur le portage réalisé par l'équipe [PC-PORTERS](https://github.com/PC-PORTERS) sur GitHub (NEVESYA et contributeurs). Tout le travail de base (la recompilation, le rendu, le jeu qui tourne sur PC) est le leur ; cette branche ajoute seulement le service en ligne par-dessus.
 
 RebrewU, [Cemu](https://github.com/cemu-project/Cemu) (décompilateur de shaders, MPL-2.0, et polices de remplacement, SIL OFL 1.1), SDL2,
 glslang, volk, Vulkan-Headers, zlib, curl, miniaudio, nlohmann/json et Dear ImGui. Documentation complète d'origine (build Linux,
