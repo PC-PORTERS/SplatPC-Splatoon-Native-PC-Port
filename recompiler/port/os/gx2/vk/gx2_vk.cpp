@@ -1,7 +1,9 @@
 #include "../../../runtime/rbrew_diagnostics.h"
 #include "../../../runtime/texture_diagnostics.h"
 #include "../../../runtime/port_settings.h"
+#include "../../../runtime/splatoon_diagnostics.h"
 #include "gx2_vk.h"
+#include "gx2_vk_capture.h"
 #include "gx2_vk_memory.h"
 #include "gx2_imgui_overlay.h"
 #include "gx2_vk_shader.h"
@@ -2451,6 +2453,19 @@ static VkImageView swapchain_view(uint32_t index) {
     return views[index];
 }
 bool present(Image& source, uint32_t width, uint32_t height) {
+    // A present is never part of the 120 FPS replay frame: the in-between
+    // present ran with capture on, so ImGui's draws and its font uploads were
+    // replayed later with buffers ImGui had already freed (driver crash or a
+    // frozen picture once the amiibo picker added glyphs).
+    struct CapturePause {
+        bool was = capture::enabled();
+        CapturePause() {
+            if (was) capture::set_enabled(false);
+        }
+        ~CapturePause() {
+            if (was) capture::set_enabled(true);
+        }
+    } capture_pause;
     if (s_capture_presents) {
         s_last_present.clear();
         s_last_present_w = s_last_present_h = 0;
@@ -2594,6 +2609,15 @@ bool present(Image& source, uint32_t width, uint32_t height) {
     present.pImageIndices = &index;
     result = vkQueuePresentKHR(s_queue, &present);
     ++s_presents;
+    // Heartbeat in the diagnostics event log: shows whether the window still
+    // gets pictures when the screen looks frozen.
+    if (s_presents % 600 == 0 || result != VK_SUCCESS) {
+        char message[48];
+        std::snprintf(message, sizeof(message), "vk present %llu result %d", (unsigned long long)s_presents,
+                      int(result));
+        SplatoonDiagnostics::RecordEvent(SplatoonDiagnostics::EventCategory::Graphics,
+                                         SplatoonDiagnostics::EventSeverity::Info, 0, message);
+    }
     if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
         vkQueueWaitIdle(s_queue);
         create_swapchain();
