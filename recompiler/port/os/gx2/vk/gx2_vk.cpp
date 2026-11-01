@@ -1827,6 +1827,9 @@ VkCommandBuffer cmd() {
     s_recorded = true;
     return s_current;
 }
+bool is_current_command_buffer(VkCommandBuffer command_buffer) {
+    return command_buffer && command_buffer == s_current;
+}
 
 bool has_recorded_commands() {
     return (s_current && s_recorded) || s_prologue;
