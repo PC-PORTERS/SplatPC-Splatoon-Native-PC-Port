@@ -89,6 +89,11 @@ struct TexObject {
     uint64_t content_hash = 0;                         // original CPU texture bytes, before any HD replacement
     bool complete_storage = true;                      // false: GPU would have no level 0
     std::array<float, 2> coordinate_scale{1.0f, 1.0f}; // host texels / guest texels
+    VkImageView cached_view = VK_NULL_HANDLE;
+    uint64_t cached_image_serial = 0;
+    VkFormat cached_view_format = VK_FORMAT_UNDEFINED;
+    uint32_t cached_swizzle = 0, cached_base_level = 0, cached_max_level = 0, cached_levels = 0, cached_layers = 0;
+    uint8_t cached_view_flags = 0xFF;
 };
 
 struct ColorTarget { // CBEntry
@@ -123,6 +128,7 @@ struct Texture { // TexEntry
     std::vector<const std::map<ColorImageKey, ColorTarget>::value_type*> color_candidates;
     std::vector<const std::map<ColorImageKey, DepthTarget>::value_type*> depth_candidates;
     uint64_t color_revision = UINT64_MAX, depth_revision = UINT64_MAX;
+    bool no_color_alias = false, no_depth_alias = false;
 };
 struct ColorView { // glTextureView of a 32-bit-class render target
     TexObject tex;
@@ -186,6 +192,7 @@ struct TextureEntryIndexHash {
 struct StencilFace {
     uint32_t func = wire::ALWAYS, ref = 0, mask = 0xFF, fail = wire::KEEP, zfail = wire::KEEP, zpass = wire::KEEP,
              write_mask = 0xFF;
+    bool operator==(const StencilFace&) const = default;
 };
 struct RasterState {
     bool depth_test = false, depth_write = true;
@@ -263,6 +270,8 @@ struct UniformBlock {
 struct NativeContextSnapshot {
     std::array<ColorTarget*, 8> color_targets{};
     DepthTarget* depth_target = nullptr;
+    std::array<ColorImageKey, 8> color_target_keys{};
+    ColorImageKey depth_target_key{};
     std::array<BoundTexture, 96> bound_textures{};
     std::array<std::array<uint32_t, 3>, 32> attrib_buffers{};
     std::array<std::array<std::array<uint32_t, 2>, 16>, 2> uniform_blocks{};
@@ -276,6 +285,8 @@ struct FetchShaderInfo {
     std::vector<R700FetchAttribute> attributes;
     std::vector<uint8_t> program;
     uint64_t revision = 0;
+    uint64_t exact_hash = 0;
+    uint64_t exact_hash_revision = 0;
 };
 
 // Sampler state of one GX2 sampler slot (stage*18 + slot), as GPU sampler
@@ -299,7 +310,10 @@ struct State {
     ImageViewRanges<ColorTarget> color_ranges;
     ImageViewRanges<DepthTarget> depth_ranges;
     uint64_t color_view_revision = 0, depth_view_revision = 0;
+    uint64_t effective_color_revision() const noexcept { return color_view_revision + cb_map.size(); }
+    uint64_t effective_depth_revision() const noexcept { return depth_view_revision + depth_map.size(); }
     std::array<TextureEntryCache, 96> texture_entries{};
+    std::array<TextureEntryCache, 256> texture_entry_mru{};
     std::unordered_map<TextureEntryIndexKey, Texture*, TextureEntryIndexHash> texture_entry_index;
     // Address index of tex_map image/mip ranges for gx2_render_invalidate_textures,
     // rebuilt when tex_map grows (entries are only added, or all reset).
@@ -315,7 +329,14 @@ struct State {
     std::map<std::array<uint32_t, 3>, ColorView> depth_views; // {depth id, texture target, word4}
     std::array<ColorTarget*, 8> color_targets{};
     DepthTarget* depth_target = nullptr;
+    std::array<ColorImageKey, 8> color_target_keys{};
+    ColorImageKey depth_target_key{};
     std::array<BoundTexture, 96> bound_textures{};
+    struct BoundAliasMemo {
+        uint32_t image = 0;
+        uint64_t color_rev = UINT64_MAX, depth_rev = UINT64_MAX;
+    };
+    std::array<BoundAliasMemo, 96> bound_alias_memo{};
     // GPU texture units: bound object per target (2D, 2D_ARRAY, 3D, CUBE_ARRAY).
     std::array<std::array<TexObject*, 4>, 96> units{};
     std::array<SamplerState, 54> samplers{};
@@ -331,8 +352,36 @@ struct State {
     bool vs_from_regs = false, ps_from_regs = false;
     uint32_t cur_vs = 0, cur_ps = 0, cur_vs_attribs = 0;
     std::unordered_map<uint32_t, FetchShaderInfo> fetch_shaders;
+    uint32_t cached_fetch_addr = UINT32_MAX;
+    FetchShaderInfo* cached_fetch_ptr = nullptr;
+    struct FetchMruSlot {
+        uint32_t addr = UINT32_MAX;
+        FetchShaderInfo* ptr = nullptr;
+    };
+    std::array<FetchMruSlot, 64> fetch_mru{};
     AttribBufferState attrib[32];
     uint32_t active_fetch = 0;
+    void invalidate_fetch_cache() noexcept {
+        cached_fetch_addr = UINT32_MAX;
+        cached_fetch_ptr = nullptr;
+        fetch_mru = {};
+    }
+    FetchShaderInfo* find_fetch_info(uint32_t addr) {
+        if (cached_fetch_addr == addr) return cached_fetch_ptr;
+        auto& slot = fetch_mru[(addr >> 4) & 63];
+        if (slot.addr == addr) {
+            cached_fetch_addr = addr;
+            cached_fetch_ptr = slot.ptr;
+            return slot.ptr;
+        }
+        const auto it = fetch_shaders.find(addr);
+        FetchShaderInfo* ptr = it != fetch_shaders.end() ? &it->second : nullptr;
+        slot = {addr, ptr};
+        cached_fetch_addr = addr;
+        cached_fetch_ptr = ptr;
+        return ptr;
+    }
+    FetchShaderInfo* active_fetch_info() { return find_fetch_info(active_fetch); }
     std::array<int32_t, 1024> uniform_words[2]{};
     UniformBlock uniform_blocks[2][16];
     std::array<gx2vk::Span, 48> ubo_binding_points{}; // GPU UBO binding points (last bound)
@@ -347,6 +396,9 @@ struct State {
     uint32_t draw_instances = 1, draw_first_instance = 0, instance_uniform = 0;
     bool single_instance_fetch = false;
     float sampler_max_anisotropy = 1.0f;
+    uint64_t reg_generation = 1;
+    uint64_t shader_generation = 1;
+    uint64_t uniform_generation[2] = {1, 1};
 };
 State& state();
 inline std::array<float, 2> framebuffer_coordinate_scale() {

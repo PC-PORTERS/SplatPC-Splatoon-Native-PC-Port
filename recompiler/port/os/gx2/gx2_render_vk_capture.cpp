@@ -384,6 +384,9 @@ bool gx2r_capture_draw_if_armed(bool indexed, uint32_t prim, uint32_t count, uin
         }
         return r;
     }();
+    if (!s_trigger_frame && !request.frame && !request.all && !request.tv && s_capture_path.empty()) {
+        return false;
+    }
     std::string path;
     const auto* tv_target = S.color_targets[0];
     const bool full_tv_draw = count == 3 && (prim & 31u) == 4u && (S.target_masks & 15u) == 15u && tv_target &&
@@ -905,7 +908,10 @@ bool gx2_render_replay_capture(const char* path, uint8_t* mem, void (*commit)(ui
             S.uniform_blocks[s][b].address = blocks[s][b][0], S.uniform_blocks[s][b].size = blocks[s][b][1];
     for (unsigned i = 0; i < 32; ++i)
         S.attrib[i].guest_addr = buffers[i][0], S.attrib[i].size = buffers[i][1], S.attrib[i].stride = buffers[i][2];
-    S.fetch_shaders[m.fetch_addr].attributes = attributes;
+    auto& captured_fetch = S.fetch_shaders[m.fetch_addr];
+    captured_fetch.attributes = attributes;
+    captured_fetch.revision = S.next_fetch_revision++;
+    S.invalidate_fetch_cache();
     S.active_fetch = m.fetch_addr;
     S.cur_vs = m.vs_addr;
     S.cur_ps = m.ps_addr;

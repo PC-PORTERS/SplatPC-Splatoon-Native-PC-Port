@@ -57,6 +57,30 @@ static bool is_fp_opcode(Opcode op) {
     }
 }
 
+// Fused compare condition for BranchCmp/ConditionalReturnCmp/ConditionalCallCmp.
+// pred = kind<<4 | cr_bit<<1 | sense. The sense bit inverts the test, which
+// keeps float compares NaN-correct (bge after fcmpu is !(a < b), not a >= b).
+static std::string fused_cmp_condition(const std::string& a, const std::string& b, uint32_t pred) {
+    const uint32_t kind = (pred >> 4) & 3u, bit = (pred >> 1) & 7u, sense = pred & 1u;
+    std::string cmp;
+    if (kind == 0) { // signed
+        if (bit == 3)
+            cmp = "((int32_t)" + a + " < (int32_t)" + b + ")";
+        else if (bit == 2)
+            cmp = "((int32_t)" + a + " > (int32_t)" + b + ")";
+        else
+            cmp = "(" + a + " == " + b + ")";
+    } else { // unsigned or float: C comparison operators match the CR bits
+        if (bit == 3)
+            cmp = "(" + a + " < " + b + ")";
+        else if (bit == 2)
+            cmp = "(" + a + " > " + b + ")";
+        else
+            cmp = "(" + a + " == " + b + ")";
+    }
+    return sense ? cmp : "!(" + cmp + ")";
+}
+
 static std::string block_label_for(const IRFunction& func, uint32_t block_id) {
     const auto* b = func.block_by_id(block_id);
     if (b && b->guest_start) {
@@ -102,6 +126,19 @@ bool CppEmitter::emit(const std::filesystem::path& outdir) {
         }
     }
 
+    // --- inline copies of small guest leaves ---
+    const std::string inline_hdr = m_ir.name + "_inline.h";
+    collect_inline_candidates();
+    if (!m_inline_candidates.empty()) {
+        auto path = outdir / inline_hdr;
+        std::ostringstream f;
+        emit_inline_header(f);
+        if (!write_text_if_changed(path, f.str())) {
+            m_last_error = "Cannot write " + path.string();
+            return false;
+        }
+    }
+
     // --- data file ---
     if (m_cfg.emit_data_sections && !m_ir.data_sections.empty()) {
         auto path = outdir / (m_ir.name + "_data.cpp");
@@ -136,7 +173,7 @@ bool CppEmitter::emit(const std::filesystem::path& outdir) {
         for (const auto& func : m_ir.functions) {
             const std::string fn = m_names.function_name(func.entry_addr, func.name);
             f << "    rbrew_register_func(cpu, 0x" << std::hex << std::uppercase << func.entry_addr << "u, " << fn
-              << ");\n";
+              << "_entry);\n";
         }
         f << "}\n";
         if (!write_text_if_changed(path, f.str())) {
@@ -225,7 +262,9 @@ bool CppEmitter::emit(const std::filesystem::path& outdir) {
         std::ostringstream f;
 
         emit_file_prologue(f);
-        f << "#include \"" << hdr << "\"\n\n";
+        f << "#include \"" << hdr << "\"\n";
+        if (!m_inline_candidates.empty()) f << "#include \"" << inline_hdr << "\"\n";
+        f << "\n";
 
         for (size_t idx : shard_func_indices[part]) {
             emit_function(m_ir.functions[idx], f);
@@ -290,9 +329,12 @@ void CppEmitter::emit_header(std::ostream& out) {
            "#ifdef __cplusplus\nextern \"C\" {\n#endif\n\n";
 
     for (const auto& func : m_ir.functions) {
-        out << "void " << m_names.function_name(func.entry_addr, func.name) << "(CPUState* cpu);\n";
-        if (m_cfg.hooked.contains(func.entry_addr))
-            out << "void " << m_names.function_name(func.entry_addr, func.name) << "_unhooked(CPUState* cpu);\n";
+        const std::string fn = m_names.function_name(func.entry_addr, func.name);
+        // Body takes the arena base explicitly (host alias analysis); the
+        // 1-arg entry is the HostFunc registered in the dispatch table.
+        out << "void " << fn << "(CPUState* cpu, uint8_t* mem);\n";
+        out << "void " << fn << "_entry(CPUState* cpu);\n";
+        if (m_cfg.hooked.contains(func.entry_addr)) out << "void " << fn << "_unhooked(CPUState* cpu);\n";
     }
 
     out << "\n#ifdef __cplusplus\n} // extern \"C\"\n#endif\n";
@@ -426,11 +468,8 @@ void CppEmitter::emit_data(std::ostream& out) {
     out << "}\n";
 }
 
-void CppEmitter::emit_function(const ir::IRFunction& func, std::ostream& out) {
-    m_current_func = &func;
+void CppEmitter::declare_temps(const ir::IRFunction& func, std::ostream& out, int indent) {
     m_fp_temps.clear();
-
-    // Collect temp VRegs; classify int vs float by producing opcode
     std::set<uint32_t> int_temps;
     for (const auto& blk : func.blocks) {
         for (const auto& instr : blk.instrs) {
@@ -442,26 +481,9 @@ void CppEmitter::emit_function(const ir::IRFunction& func, std::ostream& out) {
             }
         }
     }
-
-    if (m_cfg.emit_comments) out << "// " << func.name << " @ 0x" << std::hex << func.entry_addr << "\n";
-
-    std::string fname = m_names.function_name(func.entry_addr, func.name);
-    if (m_cfg.hooked.contains(func.entry_addr)) {
-        // Every caller (direct call or dispatch table) enters this wrapper;
-        // the body keeps its exact code under the _unhooked name.
-        out << "void " << fname << "(CPUState* cpu) {\n"
-            << "    if (const RbrewGuestHook hook = rbrew_guest_hook(0x" << std::hex << func.entry_addr
-            << "u)) { hook(cpu, 0x" << func.entry_addr << "u, " << fname << "_unhooked); return; }\n"
-            << "    " << fname << "_unhooked(cpu);\n}\n";
-        fname += "_unhooked";
-    }
-    out << "void " << fname << "(CPUState* cpu) {\n";
-    if (m_cfg.emit_coverage)
-        out << "#ifdef RBREW_ENABLE_COVERAGE\n    RBREW_COVERAGE_FUNCTION(0x" << std::hex << func.entry_addr
-            << "u);\n#endif\n";
-
+    const std::string pad(static_cast<size_t>(indent) * 4, ' ');
     if (!int_temps.empty()) {
-        out << "    uint32_t ";
+        out << pad << "uint32_t ";
         bool first = true;
         for (uint32_t idx : int_temps) {
             if (!first) out << ", ";
@@ -471,7 +493,7 @@ void CppEmitter::emit_function(const ir::IRFunction& func, std::ostream& out) {
         out << ";\n";
     }
     if (!m_fp_temps.empty()) {
-        out << "    double ";
+        out << pad << "double ";
         bool first = true;
         for (uint32_t idx : m_fp_temps) {
             if (!first) out << ", ";
@@ -481,6 +503,106 @@ void CppEmitter::emit_function(const ir::IRFunction& func, std::ostream& out) {
         out << ";\n";
     }
     if (!int_temps.empty() || !m_fp_temps.empty()) out << "\n";
+}
+
+// Small single-block leaves: inlining one saves the call sequence, the guest
+// prologue/epilogue stack saves and the register spills around the call.
+bool CppEmitter::is_inline_candidate(const ir::IRFunction& func) const {
+    if (func.blocks.size() != 1) return false;
+    const auto& instrs = func.blocks.front().instrs;
+    constexpr size_t kMaxInlineInstrs = 24;
+    if (instrs.empty() || instrs.size() > kMaxInlineInstrs) return false;
+    for (size_t i = 0; i < instrs.size(); ++i) {
+        switch (instrs[i].opcode) {
+        case Opcode::Return:
+            if (i + 1 != instrs.size()) return false;
+            break;
+        case Opcode::Jump:
+        case Opcode::Branch:
+        case Opcode::BranchCmp:
+        case Opcode::IndirectJump:
+        case Opcode::Call:
+        case Opcode::ConditionalCall:
+        case Opcode::ConditionalCallCmp:
+        case Opcode::IndirectCall:
+        case Opcode::ConditionalReturn:
+        case Opcode::ConditionalReturnCmp: return false;
+        default: break;
+        }
+    }
+    return instrs.back().opcode == Opcode::Return;
+}
+
+std::string CppEmitter::inline_name(uint32_t addr) const {
+    auto sym = m_ir.symbol_at(addr);
+    std::string base = sym ? m_names.function_name(addr, *sym) : m_names.function_name(addr);
+    return base + "_inl";
+}
+
+void CppEmitter::collect_inline_candidates() {
+    // Only functions with a direct call site benefit: keep the header lean.
+    std::set<uint32_t> called;
+    for (const auto& func : m_ir.functions)
+        for (const auto& block : func.blocks)
+            for (const auto& instr : block.instrs) {
+                size_t target_idx = 0;
+                if (instr.opcode == Opcode::Call)
+                    target_idx = 0;
+                else if (instr.opcode == Opcode::ConditionalCall)
+                    target_idx = 1;
+                else
+                    continue;
+                if (instr.operands.size() > target_idx)
+                    if (const auto* imm = std::get_if<ImmOp>(&instr.operands[target_idx]))
+                        called.insert(uint32_t(imm->value));
+            }
+    for (const auto& func : m_ir.functions)
+        if (called.contains(func.entry_addr) && is_inline_candidate(func)) m_inline_candidates.insert(func.entry_addr);
+}
+
+void CppEmitter::emit_inline_header(std::ostream& out) {
+    out << "#pragma once\n"
+           "// Generated by RebrewU -- do not edit\n"
+           "// Static inline copies of small guest leaves for direct call sites.\n"
+           "#include <"
+        << m_cfg.runtime_header << ">\n\n";
+    for (const auto& func : m_ir.functions) {
+        if (!m_inline_candidates.contains(func.entry_addr)) continue;
+        out << "static inline void " << inline_name(func.entry_addr)
+            << "(CPUState* __restrict cpu, uint8_t* __restrict mem) {\n";
+        declare_temps(func, out, 1);
+        m_current_func = &func;
+        emit_block(func.blocks.front(), func, out, 1);
+        m_current_func = nullptr;
+        out << "}\n\n";
+    }
+}
+
+void CppEmitter::emit_function(const ir::IRFunction& func, std::ostream& out) {
+    m_current_func = &func;
+
+    if (m_cfg.emit_comments) out << "// " << func.name << " @ 0x" << std::hex << func.entry_addr << "\n";
+
+    std::string fname = m_names.function_name(func.entry_addr, func.name);
+    if (m_cfg.hooked.contains(func.entry_addr)) {
+        // The hook's "call original" target is the 1-arg adapter; the entry
+        // wrapper runs the registered hook or the body directly.
+        out << "void " << fname << "_unhooked(CPUState* cpu) { " << fname << "(cpu, cpu->mem); }\n"
+            << "void " << fname << "_entry(CPUState* cpu) {\n"
+            << "    if (const RbrewGuestHook hook = rbrew_guest_hook(0x" << std::hex << func.entry_addr
+            << "u)) { hook(cpu, 0x" << func.entry_addr << "u, " << fname << "_unhooked); return; }\n"
+            << "    " << fname << "(cpu, cpu->mem);\n}\n";
+    } else {
+        out << "void " << fname << "_entry(CPUState* cpu) { " << fname << "(cpu, cpu->mem); }\n";
+    }
+    // The body receives the arena base explicitly: host compilers then know
+    // guest-memory accesses (through mem) cannot alias CPUState registers
+    // (through cpu) and keep r[]/f[]/cr[] in host registers across them.
+    out << "void " << fname << "(CPUState* __restrict cpu, uint8_t* __restrict mem) {\n";
+    if (m_cfg.emit_coverage)
+        out << "#ifdef RBREW_ENABLE_COVERAGE\n    RBREW_COVERAGE_FUNCTION(0x" << std::hex << func.entry_addr
+            << "u);\n#endif\n";
+    declare_temps(func, out, 1);
 
     // CFG blocks are sorted by address. A backward branch can include a shared
     // body below the function entry; execute the entry's argument setup first.
@@ -576,6 +698,14 @@ void CppEmitter::emit_instr(const ir::IRInstr& instr, std::ostream& out, int ind
     // ---- Integer arithmetic ----
     case Opcode::Add: EMIT(dst << " = " << get_op(0) << " + " << get_op(1) << ";"); return;
     case Opcode::Sub: EMIT(dst << " = " << get_op(0) << " - " << get_op(1) << ";"); return;
+    case Opcode::AddCarryIn:
+        EMIT(dst << " = rbrew_add_ci32(" << get_op(0) << ", " << get_op(1) << ", " << get_op(2) << ");");
+        return;
+    case Opcode::CarryFromAdd:
+        EMIT(dst << " = rbrew_carry_out32(" << get_op(0) << ", " << get_op(1) << ", " << get_op(2) << ");");
+        return;
+    case Opcode::SarResult: EMIT(dst << " = rbrew_sraw_result(" << get_op(0) << ", " << get_op(1) << ");"); return;
+    case Opcode::SarCarryOut: EMIT(dst << " = rbrew_sraw_carry(" << get_op(0) << ", " << get_op(1) << ");"); return;
     case Opcode::Mul:
         EMIT(dst << " = (uint32_t)((int32_t)" << get_op(0) << " * (int32_t)" << get_op(1) << ");");
         return;
@@ -619,35 +749,38 @@ void CppEmitter::emit_instr(const ir::IRInstr& instr, std::ostream& out, int ind
     case Opcode::CmpFloat: EMIT(dst << " = rbrew_cmp_f64(" << get_op(0) << ", " << get_op(1) << ");"); return;
 
     // ---- Loads ----
-    case Opcode::Load8: EMIT(dst << " = rbrew_read8(cpu->mem, " << get_op(0) << ");"); return;
-    case Opcode::Load8S:
-        EMIT(dst << " = (uint32_t)(int32_t)(int8_t)rbrew_read8(cpu->mem, " << get_op(0) << ");");
+    case Opcode::Load8: EMIT(dst << " = rbrew_read8(mem, " << get_op(0) << ");"); return;
+    case Opcode::Load8S: EMIT(dst << " = (uint32_t)(int32_t)(int8_t)rbrew_read8(mem, " << get_op(0) << ");"); return;
+    case Opcode::Load16: EMIT(dst << " = rbrew_read16(mem, " << get_op(0) << ");"); return;
+    case Opcode::Load16S: EMIT(dst << " = (uint32_t)(int32_t)(int16_t)rbrew_read16(mem, " << get_op(0) << ");"); return;
+    case Opcode::Load32: EMIT(dst << " = rbrew_read32(mem, " << get_op(0) << ");"); return;
+    case Opcode::LoadReserve32: EMIT(dst << " = rbrew_lwarx_mem(cpu, mem, " << get_op(0) << ");"); return;
+    case Opcode::Load64: EMIT(dst << " = rbrew_read64(mem, " << get_op(0) << ");"); return;
+    case Opcode::LoadFloat32: EMIT(dst << " = rbrew_read_f32(mem, " << get_op(0) << ");"); return;
+    case Opcode::LoadFloat64: EMIT(dst << " = rbrew_read_f64(mem, " << get_op(0) << ");"); return;
+    case Opcode::Load16Reversed: EMIT(dst << " = rbrew_read16_rev(mem, " << get_op(0) << ");"); return;
+    case Opcode::Load32Reversed: EMIT(dst << " = rbrew_read32_rev(mem, " << get_op(0) << ");"); return;
+    case Opcode::Store8: EMIT("rbrew_write8(mem, " << get_op(1) << ", (uint8_t)" << get_op(0) << ");"); return;
+    case Opcode::Store16: EMIT("rbrew_write16(mem, " << get_op(1) << ", (uint16_t)" << get_op(0) << ");"); return;
+    case Opcode::Store32: EMIT("rbrew_write32(mem, " << get_op(1) << ", " << get_op(0) << ");"); return;
+    case Opcode::StoreConditional32:
+        EMIT("rbrew_stwcx_mem(cpu, mem, " << get_op(1) << ", " << get_op(0) << ");");
         return;
-    case Opcode::Load16: EMIT(dst << " = rbrew_read16(cpu->mem, " << get_op(0) << ");"); return;
-    case Opcode::Load16S:
-        EMIT(dst << " = (uint32_t)(int32_t)(int16_t)rbrew_read16(cpu->mem, " << get_op(0) << ");");
+    case Opcode::Store64: EMIT("rbrew_write64(mem, " << get_op(1) << ", " << get_op(0) << ");"); return;
+    case Opcode::StoreFloat32: EMIT("rbrew_write_f32(mem, " << get_op(1) << ", " << get_op(0) << ");"); return;
+    case Opcode::StoreFloat64: EMIT("rbrew_write_f64(mem, " << get_op(1) << ", " << get_op(0) << ");"); return;
+    case Opcode::Store16Reversed:
+        EMIT("rbrew_write16_rev(mem, " << get_op(1) << ", (uint16_t)" << get_op(0) << ");");
         return;
-    case Opcode::Load32: EMIT(dst << " = rbrew_read32(cpu->mem, " << get_op(0) << ");"); return;
-    case Opcode::LoadReserve32: EMIT(dst << " = rbrew_lwarx(cpu, " << get_op(0) << ");"); return;
-    case Opcode::Load64: EMIT(dst << " = rbrew_read64(cpu->mem, " << get_op(0) << ");"); return;
-    case Opcode::LoadFloat32: EMIT(dst << " = rbrew_read_f32(cpu->mem, " << get_op(0) << ");"); return;
-    case Opcode::LoadFloat64: EMIT(dst << " = rbrew_read_f64(cpu->mem, " << get_op(0) << ");"); return;
-
-    // ---- Stores (op0 = value, op1 = address) ----
-    case Opcode::Store8: EMIT("rbrew_write8(cpu->mem, " << get_op(1) << ", (uint8_t)" << get_op(0) << ");"); return;
-    case Opcode::Store16: EMIT("rbrew_write16(cpu->mem, " << get_op(1) << ", (uint16_t)" << get_op(0) << ");"); return;
-    case Opcode::Store32: EMIT("rbrew_write32(cpu->mem, " << get_op(1) << ", " << get_op(0) << ");"); return;
-    case Opcode::StoreConditional32: EMIT("rbrew_stwcx(cpu, " << get_op(1) << ", " << get_op(0) << ");"); return;
-    case Opcode::Store64: EMIT("rbrew_write64(cpu->mem, " << get_op(1) << ", " << get_op(0) << ");"); return;
-    case Opcode::StoreFloat32: EMIT("rbrew_write_f32(cpu->mem, " << get_op(1) << ", " << get_op(0) << ");"); return;
-    case Opcode::StoreFloat64: EMIT("rbrew_write_f64(cpu->mem, " << get_op(1) << ", " << get_op(0) << ");"); return;
+    case Opcode::Store32Reversed: EMIT("rbrew_write32_rev(mem, " << get_op(1) << ", " << get_op(0) << ");"); return;
+    case Opcode::Zero32Bytes: EMIT("rbrew_zero32(mem, " << get_op(0) << ");"); return;
     case Opcode::StoreFloatInteger32:
-        EMIT("rbrew_write32(cpu->mem, " << get_op(1) << ", rbrew_fpr_low_word(" << get_op(0) << "));");
+        EMIT("rbrew_write32(mem, " << get_op(1) << ", rbrew_fpr_low_word(" << get_op(0) << "));");
         return;
     case Opcode::PairedSingle: {
         char word[16];
         std::snprintf(word, sizeof word, "0x%08Xu", uint32_t(std::get<ImmOp>(instr.operands.at(0)).value));
-        EMIT("rbrew_ps_constant<" << word << ">(cpu);");
+        EMIT("rbrew_ps_constant<" << word << ">(cpu, mem);");
         return;
     }
     case Opcode::Trap: {
@@ -700,9 +833,17 @@ void CppEmitter::emit_instr(const ir::IRInstr& instr, std::ostream& out, int ind
             if (addr == 0) {
                 // Unconditional branch to 0 — hard trap in original; treat as return.
                 EMIT("return; // unconditional addr-0 trap");
+            } else if (const ir::IRFunction* target = m_ir.function_at(addr)) {
+                // Tail branch into a known guest function: direct call, no table.
+                auto sym = m_ir.symbol_at(addr);
+                std::string callee = m_inline_candidates.contains(addr)
+                                         ? inline_name(addr)
+                                         : (sym ? m_names.function_name(addr, *sym) : m_names.function_name(addr));
+                (void)target;
+                EMIT(callee << "(cpu, mem); return;");
             } else {
-                EMIT("rbrew_dispatch(cpu, 0x" << std::hex << std::setw(8) << std::setfill('0') << addr
-                                              << "u); return;");
+                EMIT("rbrew_dispatch_mem(cpu, mem, 0x" << std::hex << std::setw(8) << std::setfill('0') << addr
+                                                       << "u); return;");
             }
         } else {
             EMIT("goto " << tgt << ";");
@@ -726,8 +867,8 @@ void CppEmitter::emit_instr(const ir::IRInstr& instr, std::ostream& out, int ind
                 // Skip — fall through to false target which is the natural continuation.
                 EMIT("if (!(" << cond << ")) goto " << f_tgt << "; // addr-0 trap skipped");
             } else {
-                EMIT("if (" << cond << ") { rbrew_dispatch(cpu, 0x" << std::hex << std::setw(8) << std::setfill('0')
-                            << addr << "u); return; }");
+                EMIT("if (" << cond << ") { rbrew_dispatch_mem(cpu, mem, 0x" << std::hex << std::setw(8)
+                            << std::setfill('0') << addr << "u); return; }");
                 EMIT("goto " << f_tgt << ";");
             }
         } else if (!t_unres && f_unres) {
@@ -737,8 +878,8 @@ void CppEmitter::emit_instr(const ir::IRInstr& instr, std::ostream& out, int ind
                 EMIT("if (" << cond << ") goto " << t_tgt << "; // else: addr-0 trap, fall-through");
             } else {
                 EMIT("if (" << cond << ") goto " << t_tgt << ";");
-                EMIT("rbrew_dispatch(cpu, 0x" << std::hex << std::setw(8) << std::setfill('0') << addr
-                                              << "u); return;");
+                EMIT("rbrew_dispatch_mem(cpu, mem, 0x" << std::hex << std::setw(8) << std::setfill('0') << addr
+                                                       << "u); return;");
             }
         } else {
             // Both unresolved — dispatch conditionally
@@ -749,16 +890,16 @@ void CppEmitter::emit_instr(const ir::IRInstr& instr, std::ostream& out, int ind
                 out << pad << "// both-trap branch at " << apc << " skipped\n";
             } else if (t_addr == 0) {
                 // True path traps — invert: if !cond dispatch false target
-                EMIT("if (!(" << cond << ")) { rbrew_dispatch(cpu, 0x" << std::hex << std::setw(8) << std::setfill('0')
-                              << f_addr << "u); return; }");
+                EMIT("if (!(" << cond << ")) { rbrew_dispatch_mem(cpu, mem, 0x" << std::hex << std::setw(8)
+                              << std::setfill('0') << f_addr << "u); return; }");
             } else if (f_addr == 0) {
                 // False path traps — just do true path dispatch
-                EMIT("if (" << cond << ") { rbrew_dispatch(cpu, 0x" << std::hex << std::setw(8) << std::setfill('0')
-                            << t_addr << "u); return; }");
+                EMIT("if (" << cond << ") { rbrew_dispatch_mem(cpu, mem, 0x" << std::hex << std::setw(8)
+                            << std::setfill('0') << t_addr << "u); return; }");
             } else {
-                EMIT("rbrew_dispatch(cpu, (" << cond << ") ? 0x" << std::hex << std::setw(8) << std::setfill('0')
-                                             << t_addr << "u : 0x" << std::setw(8) << std::setfill('0') << f_addr
-                                             << "u); return;");
+                EMIT("rbrew_dispatch_mem(cpu, mem, (" << cond << ") ? 0x" << std::hex << std::setw(8)
+                                                      << std::setfill('0') << t_addr << "u : 0x" << std::setw(8)
+                                                      << std::setfill('0') << f_addr << "u); return;");
             }
         }
         return;
@@ -773,12 +914,12 @@ void CppEmitter::emit_instr(const ir::IRInstr& instr, std::ostream& out, int ind
                     EMIT("case 0x" << std::hex << target << "u: goto "
                                    << m_names.block_label(m_current_func->entry_addr, target) << ";");
                 }
-                EMIT("default: rbrew_dispatch(cpu, cpu->ctr & ~3u); return;");
+                EMIT("default: rbrew_dispatch_mem(cpu, mem, cpu->ctr & ~3u); return;");
                 EMIT("}");
                 return;
             }
         }
-        EMIT("rbrew_dispatch(cpu, cpu->ctr); return;");
+        EMIT("rbrew_dispatch_mem(cpu, mem, cpu->ctr); return;");
         return;
     }
 
@@ -786,7 +927,7 @@ void CppEmitter::emit_instr(const ir::IRInstr& instr, std::ostream& out, int ind
 
     case Opcode::ConditionalReturn: {
         // operands: cond, fallthrough_addr
-        // if (cond) { rbrew_dispatch(cpu, cpu->lr); return; }
+        // if (cond) { rbrew_dispatch_mem(cpu, mem, cpu->lr); return; }
         std::string cond = get_op(0);
         std::string f_tgt = get_target(1);
         bool f_unres = (f_tgt.rfind("_UNRESOLVED_", 0) == 0);
@@ -797,7 +938,103 @@ void CppEmitter::emit_instr(const ir::IRInstr& instr, std::ostream& out, int ind
             EMIT("goto " << f_tgt << ";");
         } else {
             uint32_t addr = static_cast<uint32_t>(std::stoul(f_tgt.substr(12), nullptr, 16));
-            EMIT("rbrew_dispatch(cpu, 0x" << std::hex << std::setw(8) << std::setfill('0') << addr << "u); return;");
+            EMIT("rbrew_dispatch_mem(cpu, mem, 0x" << std::hex << std::setw(8) << std::setfill('0') << addr
+                                                   << "u); return;");
+        }
+        return;
+    }
+
+    case Opcode::BranchCmp: {
+        std::string cond = fused_cmp_condition(get_op(0), get_op(1), uint32_t(get_imm(4)));
+        std::string t_tgt = get_target(2);
+        std::string f_tgt = get_target(3);
+        bool t_unres = (t_tgt.rfind("_UNRESOLVED_", 0) == 0);
+        bool f_unres = (f_tgt.rfind("_UNRESOLVED_", 0) == 0);
+        if (!t_unres && !f_unres) {
+            EMIT("if (" << cond << ") goto " << t_tgt << "; else goto " << f_tgt << ";");
+        } else if (t_unres && !f_unres) {
+            uint32_t addr = static_cast<uint32_t>(std::stoul(t_tgt.substr(12), nullptr, 16));
+            if (addr == 0) {
+                EMIT("if (!(" << cond << ")) goto " << f_tgt << "; // addr-0 trap skipped");
+            } else if (const ir::IRFunction* target = m_ir.function_at(addr)) {
+                (void)target;
+                auto sym = m_ir.symbol_at(addr);
+                std::string callee = m_inline_candidates.contains(addr)
+                                         ? inline_name(addr)
+                                         : (sym ? m_names.function_name(addr, *sym) : m_names.function_name(addr));
+                EMIT("if (" << cond << ") { " << callee << "(cpu, mem); return; }");
+                EMIT("goto " << f_tgt << ";");
+            } else {
+                EMIT("if (" << cond << ") { rbrew_dispatch_mem(cpu, mem, 0x" << std::hex << std::setw(8)
+                            << std::setfill('0') << addr << "u); return; }");
+                EMIT("goto " << f_tgt << ";");
+            }
+        } else if (!t_unres && f_unres) {
+            uint32_t addr = static_cast<uint32_t>(std::stoul(f_tgt.substr(12), nullptr, 16));
+            if (addr == 0) {
+                EMIT("if (" << cond << ") goto " << t_tgt << "; // else: addr-0 trap, fall-through");
+            } else if (const ir::IRFunction* target = m_ir.function_at(addr)) {
+                (void)target;
+                auto sym = m_ir.symbol_at(addr);
+                std::string callee = m_inline_candidates.contains(addr)
+                                         ? inline_name(addr)
+                                         : (sym ? m_names.function_name(addr, *sym) : m_names.function_name(addr));
+                EMIT("if (" << cond << ") goto " << t_tgt << ";");
+                EMIT(callee << "(cpu, mem); return;");
+            } else {
+                EMIT("if (" << cond << ") goto " << t_tgt << ";");
+                EMIT("rbrew_dispatch_mem(cpu, mem, 0x" << std::hex << std::setw(8) << std::setfill('0') << addr
+                                                       << "u); return;");
+            }
+        } else {
+            uint32_t t_addr = static_cast<uint32_t>(std::stoul(t_tgt.substr(12), nullptr, 16));
+            uint32_t f_addr = static_cast<uint32_t>(std::stoul(f_tgt.substr(12), nullptr, 16));
+            if (t_addr == 0 && f_addr == 0) {
+                // both traps — fall through
+            } else if (t_addr == 0) {
+                EMIT("if (!(" << cond << ")) { rbrew_dispatch_mem(cpu, mem, 0x" << std::hex << std::setw(8)
+                              << std::setfill('0') << f_addr << "u); return; }");
+            } else if (f_addr == 0) {
+                EMIT("if (" << cond << ") { rbrew_dispatch_mem(cpu, mem, 0x" << std::hex << std::setw(8)
+                            << std::setfill('0') << t_addr << "u); return; }");
+            } else {
+                EMIT("rbrew_dispatch_mem(cpu, mem, (" << cond << ") ? 0x" << std::hex << std::setw(8)
+                                                      << std::setfill('0') << t_addr << "u : 0x" << std::setw(8)
+                                                      << std::setfill('0') << f_addr << "u); return;");
+            }
+        }
+        return;
+    }
+
+    case Opcode::ConditionalReturnCmp: {
+        std::string cond = fused_cmp_condition(get_op(0), get_op(1), uint32_t(get_imm(3)));
+        std::string f_tgt = get_target(2);
+        bool f_unres = (f_tgt.rfind("_UNRESOLVED_", 0) == 0);
+        EMIT("if (" << cond << ") return;");
+        if (!f_unres) {
+            EMIT("goto " << f_tgt << ";");
+        } else {
+            uint32_t addr = static_cast<uint32_t>(std::stoul(f_tgt.substr(12), nullptr, 16));
+            EMIT("rbrew_dispatch_mem(cpu, mem, 0x" << std::hex << std::setw(8) << std::setfill('0') << addr
+                                                   << "u); return;");
+        }
+        return;
+    }
+
+    case Opcode::ConditionalCallCmp: {
+        std::string cond = fused_cmp_condition(get_op(0), get_op(1), uint32_t(get_imm(3)));
+        uint32_t target = static_cast<uint32_t>(get_imm(2));
+        EMIT("cpu->lr = 0x" << std::hex << (instr.guest_addr + 4u) << "u;");
+        if (target == instr.guest_addr + 4u) return;
+        if (m_ir.function_at(target) == nullptr) {
+            EMIT("if (" << cond << ") " << (m_cfg.emit_ppc_image ? "rbrew_dispatch_linked_mem" : "rbrew_dispatch_mem")
+                        << "(cpu, mem, 0x" << std::hex << std::setw(8) << std::setfill('0') << target << "u);");
+        } else {
+            auto sym = m_ir.symbol_at(target);
+            std::string callee = m_inline_candidates.contains(target)
+                                     ? inline_name(target)
+                                     : (sym ? m_names.function_name(target, *sym) : m_names.function_name(target));
+            EMIT("if (" << cond << ") " << callee << "(cpu, mem);");
         }
         return;
     }
@@ -809,12 +1046,15 @@ void CppEmitter::emit_instr(const ir::IRInstr& instr, std::ostream& out, int ind
         EMIT("cpu->lr = 0x" << std::hex << (instr.guest_addr + 4u) << "u;");
         if (target == instr.guest_addr + 4u) return;
         if (m_ir.function_at(target) == nullptr) {
-            EMIT("if (" << get_op(0) << ") " << (m_cfg.emit_ppc_image ? "rbrew_dispatch_linked" : "rbrew_dispatch")
-                        << "(cpu, 0x" << std::hex << std::setw(8) << std::setfill('0') << target << "u);");
+            EMIT("if (" << get_op(0) << ") "
+                        << (m_cfg.emit_ppc_image ? "rbrew_dispatch_linked_mem" : "rbrew_dispatch_mem")
+                        << "(cpu, mem, 0x" << std::hex << std::setw(8) << std::setfill('0') << target << "u);");
         } else {
             auto sym = m_ir.symbol_at(target);
-            std::string callee = sym ? m_names.function_name(target, *sym) : m_names.function_name(target);
-            EMIT("if (" << get_op(0) << ") " << callee << "(cpu);");
+            std::string callee = m_inline_candidates.contains(target)
+                                     ? inline_name(target)
+                                     : (sym ? m_names.function_name(target, *sym) : m_names.function_name(target));
+            EMIT("if (" << get_op(0) << ") " << callee << "(cpu, mem);");
         }
         return;
     }
@@ -826,19 +1066,21 @@ void CppEmitter::emit_instr(const ir::IRInstr& instr, std::ostream& out, int ind
         // Use rbrew_dispatch so the registered host thunk is invoked at runtime
         // instead of generating an undefined Gambit_fn_02D0xxxx symbol.
         if (m_ir.function_at(target) == nullptr) {
-            EMIT((m_cfg.emit_ppc_image ? "rbrew_dispatch_linked" : "rbrew_dispatch")
-                 << "(cpu, 0x" << std::hex << std::setw(8) << std::setfill('0') << target << "u);");
+            EMIT((m_cfg.emit_ppc_image ? "rbrew_dispatch_linked_mem" : "rbrew_dispatch_mem")
+                 << "(cpu, mem, 0x" << std::hex << std::setw(8) << std::setfill('0') << target << "u);");
             return;
         }
         auto sym = m_ir.symbol_at(target);
-        std::string callee = sym ? m_names.function_name(target, *sym) : m_names.function_name(target);
-        EMIT(callee << "(cpu);");
+        std::string callee = m_inline_candidates.contains(target)
+                                 ? inline_name(target)
+                                 : (sym ? m_names.function_name(target, *sym) : m_names.function_name(target));
+        EMIT(callee << "(cpu, mem);");
         return;
     }
 
     case Opcode::IndirectCall:
         EMIT("cpu->lr = 0x" << std::hex << (instr.guest_addr + 4u) << "u;");
-        EMIT("rbrew_call_indirect(cpu, cpu->ctr);");
+        EMIT("rbrew_call_indirect_mem(cpu, mem, cpu->ctr);");
         return;
 
     default: out << pad << "// unhandled opcode " << std::dec << static_cast<int>(instr.opcode) << "\n"; return;

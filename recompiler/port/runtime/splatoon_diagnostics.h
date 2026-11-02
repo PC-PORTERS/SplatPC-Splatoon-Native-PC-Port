@@ -103,7 +103,20 @@ void Heartbeat();
 
 // Live metrics for the ImGui performance overlay (F3)
 OverlayMetrics GetOverlayMetrics();
-void ManualCapture(); // F9: Save snapshot now
+
+// Per-thread CPU sensors: each monitored thread samples its own CPU time at
+// its frame boundary (one clock_gettime per frame); the overlay turns the
+// deltas between samples into utilization and CPU-ms per frame. Ungated and
+// allocation-free — usable from any build.
+struct ThreadSensorReading {
+    const char* name; // stable string literal identifying the thread
+    uint64_t cpu_ns;  // cumulative thread CPU time at the sample
+    uint64_t wall_ns; // cumulative wall time at the sample
+};
+void SampleThreadCpu(const char* name);
+size_t GetThreadSensorReadings(ThreadSensorReading* out, size_t max);
+
+void ManualCapture();      // F9: Save snapshot now
 // F9 also runs this (set by the executable's thread profiler) with a
 // "<Diagnostics>/<time>_threads.txt" path.
 void SetManualProfiler(void (*profiler)(const std::string& path));

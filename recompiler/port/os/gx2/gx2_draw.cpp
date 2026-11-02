@@ -23,6 +23,7 @@
 #include <immintrin.h>
 #include <thread>
 #include <mutex>
+#include <condition_variable>
 #include <unordered_map>
 #include <stdio.h>
 #include <stdlib.h>
@@ -50,18 +51,30 @@ static uint32_t gx2_float_integer(double value) {
 static void descriptor_command(CPUState*, Gx2DescriptorFn, uint32_t);
 static uint32_t reg_word(const uint8_t*);
 static void register_words(CPUState* cpu, uint32_t base, const uint32_t* words, unsigned count) {
-    std::vector<Gx2RegisterWrite> writes;
-    for (unsigned i = 0; i < count; ++i) writes.push_back({base + i, words[i]});
-    gx2_render_apply_registers(writes.data(), writes.size());
+    Gx2RegisterWrite stack_writes[16];
+    if (count <= std::size(stack_writes)) {
+        for (unsigned i = 0; i < count; ++i) stack_writes[i] = {base + i, words[i]};
+        gx2_render_apply_registers(stack_writes, count);
+    } else {
+        std::vector<Gx2RegisterWrite> writes(count);
+        for (unsigned i = 0; i < count; ++i) writes[i] = {base + i, words[i]};
+        gx2_render_apply_registers(writes.data(), count);
+    }
     (void)cpu;
 }
 static void descriptor_registers(CPUState* cpu, const uint8_t* descriptor, uint32_t base, unsigned count) {
     const auto* d =
         descriptor ? descriptor : ((ARG0 && rbrew_memory_accessible(MEM, ARG0, count * 4)) ? MEM + ARG0 : nullptr);
     if (!d) return;
-    std::vector<uint32_t> words;
-    for (unsigned i = 0; i < count; ++i) words.push_back(reg_word(d + i * 4));
-    register_words(cpu, base, words.data(), count);
+    Gx2RegisterWrite stack_writes[16];
+    if (count <= std::size(stack_writes)) {
+        for (unsigned i = 0; i < count; ++i) stack_writes[i] = {base + i, reg_word(d + i * 4)};
+        gx2_render_apply_registers(stack_writes, count);
+    } else {
+        std::vector<Gx2RegisterWrite> writes(count);
+        for (unsigned i = 0; i < count; ++i) writes[i] = {base + i, reg_word(d + i * 4)};
+        gx2_render_apply_registers(writes.data(), count);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -160,6 +173,19 @@ struct QueryGeneration {
 };
 std::mutex s_query_generation_mutex;
 std::unordered_map<uint32_t, QueryGeneration> s_query_generations;
+// Render-side query state transitions wake the guest reader waiting for a
+// result: an event-driven wait instead of 50 us polling sleeps (the wake is
+// immediate on publish, the 1 ms timeout only bounds the deadline check).
+std::mutex s_query_seq_mutex;
+std::condition_variable s_query_seq_cv;
+uint64_t s_query_seq = 0;
+void bump_query_seq() {
+    {
+        std::lock_guard lock(s_query_seq_mutex);
+        ++s_query_seq;
+    }
+    s_query_seq_cv.notify_all();
+}
 } // namespace
 void gx2_query_render_begin(uint32_t address) {
     std::lock_guard lock(s_query_generation_mutex);
@@ -167,12 +193,14 @@ void gx2_query_render_begin(uint32_t address) {
     ++g.executed;
     g.ended = false;
     g.serial = UINT64_MAX;
+    bump_query_seq();
 }
 void gx2_query_render_end(uint32_t address, uint64_t serial) {
     std::lock_guard lock(s_query_generation_mutex);
     auto& g = s_query_generations[address];
     g.ended = true;
     g.serial = serial;
+    bump_query_seq();
 }
 void gx2_query_render_published(uint32_t address, uint64_t samples) {
     std::lock_guard lock(s_query_generation_mutex);
@@ -180,6 +208,7 @@ void gx2_query_render_published(uint32_t address, uint64_t samples) {
     g.published = g.executed;
     g.published_samples = samples;
     g.has_samples = true;
+    bump_query_seq();
 }
 #ifdef RBREW_ADVANCED_TESTS
 std::atomic<uint64_t> s_query_fast_reads{0};
@@ -372,6 +401,14 @@ static void GX2QueryGetOcclusionResult(CPUState* cpu) {
                 const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(10);
                 bool exact = false;
                 for (unsigned n = 0;; ++n) {
+                    // Snapshot the transition counter BEFORE reading the state:
+                    // a publish in between is then either already visible in
+                    // the state, or makes the wait below return immediately.
+                    uint64_t seq;
+                    {
+                        std::lock_guard lock(s_query_seq_mutex);
+                        seq = s_query_seq;
+                    }
                     const int now = state();
                     // Published: read it, or drain if its counters were cleared since.
                     if (now == 2) {
@@ -379,10 +416,18 @@ static void GX2QueryGetOcclusionResult(CPUState* cpu) {
                         break;
                     }
                     if (now == 0 || std::chrono::steady_clock::now() > until) break;
-                    if (n > 64)
-                        std::this_thread::yield();
-                    else
+                    // Pause while the result is likely imminent, then wait for
+                    // the render thread's next state transition: an event
+                    // wake (instant on publish) instead of polling sleeps —
+                    // a 50 us sleep poll cost a syscall per chunk during 3D
+                    // frames, and sched_yield before that burned the kernel.
+                    // The 1 ms bound keeps the 10 ms deadline checked.
+                    if (n < 4096) {
                         _mm_pause();
+                        continue;
+                    }
+                    std::unique_lock lock(s_query_seq_mutex);
+                    s_query_seq_cv.wait_for(lock, std::chrono::milliseconds(1), [&] { return s_query_seq != seq; });
                 }
                 gx2_native_query_waiter(false);
                 if (exact) {
@@ -707,18 +752,22 @@ static void GX2SetStencilMaskReg(CPUState* cpu) {
     descriptor_command(cpu, apply_stencil_mask, 8);
 }
 void GX2SetPolygonOffset(CPUState* cpu) {
-    const uint32_t w[] = {float_word(cpu->f[2] * 16), float_word(cpu->f[1]), float_word(cpu->f[4] * 16),
-                          float_word(cpu->f[3])};
-    register_words(cpu, 0xA380, w, 4);
-    const Gx2RegisterWrite clamp{0xA37F, float_word(cpu->f[5])};
-    gx2_render_apply_registers(&clamp, 1);
+    const Gx2RegisterWrite writes[] = {{0xA380, float_word(cpu->f[2] * 16)},
+                                       {0xA381, float_word(cpu->f[1])},
+                                       {0xA382, float_word(cpu->f[4] * 16)},
+                                       {0xA383, float_word(cpu->f[3])},
+                                       {0xA37F, float_word(cpu->f[5])}};
+    gx2_render_apply_registers(writes, std::size(writes));
 }
 static void apply_polygon_offset(CPUState* cpu, const uint8_t* descriptor) {
     const auto* d = descriptor ? descriptor : guest_desc(cpu, ARG0, 20);
     if (!d) return;
-    descriptor_registers(cpu, d, 0xA380, 4);
-    const Gx2RegisterWrite clamp{0xA37F, reg_word(d + 16)};
-    gx2_render_apply_registers(&clamp, 1);
+    const Gx2RegisterWrite writes[] = {{0xA380, reg_word(d)},
+                                       {0xA381, reg_word(d + 4)},
+                                       {0xA382, reg_word(d + 8)},
+                                       {0xA383, reg_word(d + 12)},
+                                       {0xA37F, reg_word(d + 16)}};
+    gx2_render_apply_registers(writes, std::size(writes));
 }
 static void GX2SetPolygonOffsetReg(CPUState* cpu) {
     descriptor_command(cpu, apply_polygon_offset, 20);
@@ -787,7 +836,7 @@ static void GX2Invalidate(CPUState* cpu) {
     TXDIAG(if (txdiag::sample("guest_invalidate", uint64_t(ARG1) << 32 | ARG2, ARG0)) txdiag::event(
         "guest_invalidate", "\"mode\":%u,\"address\":%u,\"size\":%u,\"lr\":%u,\"recording_list\":%s", ARG0, ARG1, ARG2,
         cpu->lr, gx2_dl_list_open() ? "true" : "false"));
-    if (gx2_perf_enabled()) {
+    if (gx2_perf_file()) { // perf-invalidate range log belongs to the RBREW_PERF file
         static unsigned s_seen;
         if (s_seen < 40 || s_seen % 1000 == 0)
             RBREW_LOGF(gx2_perf_file(), "[perf-invalidate] #%u mode=%X addr=%08X size=%08X lr=%08X\n", s_seen, ARG0,
@@ -909,9 +958,11 @@ static void GX2SetViewport(CPUState* cpu) {
 static void apply_viewport(CPUState* cpu, const uint8_t* descriptor) {
     const auto* d = descriptor ? descriptor : guest_desc(cpu, ARG0, 48);
     if (!d) return;
-    descriptor_registers(cpu, d, 0xA10F, 6);
-    descriptor_registers(cpu, d + 24, 0xA303, 4);
-    descriptor_registers(cpu, d + 40, 0xA0B4, 2);
+    Gx2RegisterWrite writes[12];
+    for (unsigned i = 0; i < 6; ++i) writes[i] = {0xA10F + i, reg_word(d + i * 4)};
+    for (unsigned i = 0; i < 4; ++i) writes[6 + i] = {0xA303 + i, reg_word(d + 24 + i * 4)};
+    for (unsigned i = 0; i < 2; ++i) writes[10 + i] = {0xA0B4 + i, reg_word(d + 40 + i * 4)};
+    gx2_render_apply_registers(writes, std::size(writes));
 }
 void GX2SetViewportReg(CPUState* cpu) {
     descriptor_command(cpu, apply_viewport, 48);
@@ -1165,13 +1216,16 @@ static void GX2InitDepthBufferHiZEnable(CPUState* cpu) {
 static void apply_color_buffer(CPUState* cpu, const uint8_t* descriptor) {
     // GX2SetColorBuffer(GX2ColorBuffer* cb, GX2RenderTarget target)
     // r3=cb, r4=target (0 = colour buffer 0)
-    trace_surface("SetColorBuffer target", cpu, descriptor ? descriptor : guest_desc(cpu, ARG0, GX2CB_SIZEOF), ARG1);
+    if (g_gx2_frame_trace_active)
+        trace_surface("SetColorBuffer target", cpu, descriptor ? descriptor : guest_desc(cpu, ARG0, GX2CB_SIZEOF),
+                      ARG1);
     gx2_render_set_color_buffer(ARG0, MEM, descriptor, ARG1);
 }
 
 static void apply_depth_buffer(CPUState* cpu, const uint8_t* descriptor) {
     // GX2SetDepthBuffer(GX2DepthBuffer* db)
-    trace_surface("SetDepthBuffer", cpu, descriptor ? descriptor : guest_desc(cpu, ARG0, GX2DB_SIZEOF), 0);
+    if (g_gx2_frame_trace_active)
+        trace_surface("SetDepthBuffer", cpu, descriptor ? descriptor : guest_desc(cpu, ARG0, GX2DB_SIZEOF), 0);
     gx2_render_set_depth_buffer(ARG0, MEM, descriptor);
 }
 
@@ -1300,7 +1354,8 @@ static void GX2InitTextureRegs(CPUState* cpu) {
 
 static void apply_pixel_texture(CPUState* cpu, const uint8_t* descriptor) {
     // GX2SetPixelTexture(GX2Texture* tex, uint32 slot)
-    trace_surface("PixelTexture slot", cpu, descriptor ? descriptor : guest_desc(cpu, ARG0, GX2TEX_SIZEOF), ARG1);
+    if (g_gx2_frame_trace_active)
+        trace_surface("PixelTexture slot", cpu, descriptor ? descriptor : guest_desc(cpu, ARG0, GX2TEX_SIZEOF), ARG1);
     gx2_render_upload_texture(ARG0, ARG1, MEM, descriptor);
 }
 
@@ -1506,6 +1561,7 @@ static void GX2SetFetchShader(CPUState* cpu) {
     // Look the layout up by the struct's program pointer ([3]), which is the
     // same for the original struct and any copy of it.
     const uint32_t program = ARG0 && rbrew_memory_accessible(MEM, ARG0, 0x10) ? rbrew_read32(MEM, ARG0 + 0x0C) : 0;
+    if (program && gx2_render_active_fetch_shader() == program) return;
     gx2_render_set_active_fetch_shader(program);
     // Pre-built fetch shader (models): no GX2InitFetchShaderEx layout, so
     // decode the program's own fetch microcode ([2] = program size). Leaving a
@@ -1521,15 +1577,29 @@ static void GX2SetFetchShader(CPUState* cpu) {
             divisors[1] = rbrew_read32(MEM, ARG0 + 0x1C);
         }
         if (size && size <= 0x10000 && rbrew_memory_accessible(MEM, program, size)) {
+            if (!stepped && gx2_render_fetch_program_current(program, MEM + program, size)) {
+                return;
+            }
+            uint8_t stack_identity[544];
+            const uint32_t id_size = size + (stepped ? uint32_t(sizeof(divisors)) : 0u);
+            const uint8_t* id_ptr = nullptr;
             static thread_local std::vector<uint8_t> identity;
-            identity.assign(MEM + program, MEM + program + size);
-            if (stepped)
+            if (!stepped) {
+                id_ptr = MEM + program;
+            } else if (id_size <= sizeof(stack_identity)) {
+                std::memcpy(stack_identity, MEM + program, size);
+                std::memcpy(stack_identity + size, divisors, sizeof(divisors));
+                id_ptr = stack_identity;
+            } else {
+                identity.assign(MEM + program, MEM + program + size);
                 identity.insert(identity.end(), reinterpret_cast<const uint8_t*>(divisors),
                                 reinterpret_cast<const uint8_t*>(divisors) + sizeof(divisors));
-            if (!gx2_render_fetch_program_current(program, identity.data(), uint32_t(identity.size()))) {
+                id_ptr = identity.data();
+            }
+            if (!gx2_render_fetch_program_current(program, id_ptr, id_size)) {
                 std::vector<R700FetchAttribute> attributes;
                 gx2_decode_fetch_program(MEM + program, size, attributes, divisors);
-                gx2_render_store_fetch_attributes(program, attributes, identity.data(), uint32_t(identity.size()));
+                gx2_render_store_fetch_attributes(program, attributes, id_ptr, id_size);
                 gx2_render_set_active_fetch_shader(program);
             }
         }
@@ -1591,13 +1661,25 @@ static void GX2InitFetchShaderEx(CPUState* cpu) {
 
 void gx2_draw_register(CPUState* cpu) {
 #if defined(HAVE_SDL2)
-#define REG(name) rbrew_register_func(cpu, ADDR_##name, GX2_NATIVE_CALL(name))
+#define REG(name)                                                                                                      \
+    do {                                                                                                               \
+        rbrew_register_func(cpu, ADDR_##name, GX2_NATIVE_CALL(name));                                                  \
+        gx2_perf_register_name(reinterpret_cast<const void*>(name), #name);                                            \
+    } while (0)
 #else
-#define REG(name) rbrew_register_func(cpu, ADDR_##name, gx2_command_call<name, gx2_is_command(#name)>)
+#define REG(name)                                                                                                      \
+    do {                                                                                                               \
+        rbrew_register_func(cpu, ADDR_##name, gx2_command_call<name, gx2_is_command(#name)>);                          \
+        gx2_perf_register_name(reinterpret_cast<const void*>(name), #name);                                            \
+    } while (0)
 #endif
     REG(GX2DrawEx);
     REG(GX2DrawIndexedEx);
     REG(GX2DrawIndexedEx2);
+    gx2_register_draw_commands(GX2DrawIndexedEx, GX2DrawIndexedEx2, GX2DrawEx);
+    gx2_register_hot_commands({GX2SetAttribBuffer, GX2SetVertexUniformBlock, GX2SetPixelUniformBlock,
+                               GX2SetVertexShader, GX2SetPixelShader, apply_pixel_texture, apply_vertex_texture,
+                               apply_pixel_sampler, apply_vertex_sampler});
     REG(GX2QueryBegin);
     REG(GX2QueryEnd);
     // Caller-side: answers from published counters without waiting, else

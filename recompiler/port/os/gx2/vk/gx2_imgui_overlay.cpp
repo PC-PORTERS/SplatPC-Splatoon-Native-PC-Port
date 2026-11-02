@@ -15,6 +15,7 @@
 #include "../../runtime/port_settings.h"
 #include "../../runtime/splatoon_diagnostics.h"
 #include "../../nn_nfp/nn_nfp.h"
+#include "../gx2_perf.h"
 
 #include <imgui.h>
 #include <imgui_impl_sdl2.h>
@@ -360,6 +361,59 @@ void build_performance_window(const diag::OverlayMetrics& metrics, VkExtent2D ex
     ImGui::Text("Present %.2f ms", metrics.present_wait_ms);
     ImGui::Text("VSync   %.2f ms", metrics.vsync_wait_ms);
     ImGui::Text("Render  %.2f ms", metrics.render_wait_ms);
+    ImGui::Text("Draws   %u / frame", metrics.draw_calls);
+    // Per-thread CPU: each thread samples its own CPU time at its frame
+    // boundary; the delta between two readings gives the utilization and the
+    // CPU milliseconds that thread spends per displayed frame.
+    static diag::ThreadSensorReading s_prev[8];
+    static size_t s_prev_count = 0;
+    diag::ThreadSensorReading now[8];
+    const size_t sensor_count = diag::GetThreadSensorReadings(now, 8);
+    if (sensor_count) {
+        ImGui::Separator();
+        ImGui::TextUnformatted("Thread CPU");
+        for (size_t i = 0; i < sensor_count; ++i) {
+            double utilization = 0.0;
+            for (size_t p = 0; p < s_prev_count; ++p) {
+                if (s_prev[p].name != now[i].name || now[i].wall_ns <= s_prev[p].wall_ns) continue;
+                utilization = double(now[i].cpu_ns - s_prev[p].cpu_ns) / double(now[i].wall_ns - s_prev[p].wall_ns);
+                break;
+            }
+            const float ms_per_frame = metrics.frame_time_ms > 0.0f ? float(utilization) * metrics.frame_time_ms : 0.0f;
+            ImGui::Text("  %-7s %5.1f%%  %6.1f ms/f", now[i].name, utilization * 100.0, ms_per_frame);
+        }
+        for (size_t i = 0; i < sensor_count; ++i) s_prev[i] = now[i];
+        s_prev_count = sensor_count;
+    }
+    // Replay phases of the last presented frame (scopes turn on with this
+    // window): where the render thread spends its time — preparation
+    // (vertex/index/texture/shader), command emission (draw), GPU sync
+    // (submit_wait) and present.
+    {
+        ImGui::Separator();
+        ImGui::TextUnformatted("Render phases (last frame)");
+        static const unsigned phase_slots[] = {kPerfRenderBusy, kPerfDraw,    kPerfVertex,    kPerfIndex,
+                                               kPerfTexture,    kPerfTexHash, kPerfShaderKey, kPerfDisplayList,
+                                               kPerfSubmitWait, kPerfPresent, kPerfPipeline,  kPerfStage};
+        for (const unsigned slot : phase_slots) {
+            const double ms = double(g_gx2_perf_last_ns[slot].load(std::memory_order_relaxed)) / 1e6;
+            ImGui::Text("  %-12s %6.2f ms", kGx2PerfNames[slot], ms);
+        }
+        if (g_gx2_perf_last_top_dl[0].ns > 0) {
+            ImGui::TextDisabled("  Top display list commands:");
+            for (const auto& row : g_gx2_perf_last_top_dl) {
+                if (!row.key || !row.ns) break;
+                const double ms = double(row.ns) / 1e6;
+                const char* name = gx2_perf_function_name(row.key);
+                if (name) {
+                    ImGui::Text("    %-20s %5.2f ms (%llu)", name, ms, (unsigned long long)row.calls);
+                } else {
+                    ImGui::Text("    0x%08llX           %5.2f ms (%llu)", (unsigned long long)row.key, ms,
+                                (unsigned long long)row.calls);
+                }
+            }
+        }
+    }
     ImGui::Separator();
     if (metrics.ram_usage_bytes)
         ImGui::Text("RAM     %u MB", unsigned(metrics.ram_usage_bytes / (1024 * 1024)));
@@ -842,6 +896,9 @@ ImDrawData* begin_frame(VkExtent2D extent) {
     update_shader_activity();
     s_focused_action = -1;
     if (show_menu) build_settings_window();
+    // Phase scopes (gx2_perf.h) record while this window is visible; off they
+    // cost one relaxed load per scope. An RBREW_PERF file keeps them anyway.
+    gx2_set_perf_live(visible());
     if (visible() || show_simple) {
         const auto metrics = diag::GetOverlayMetrics();
         if (visible()) {

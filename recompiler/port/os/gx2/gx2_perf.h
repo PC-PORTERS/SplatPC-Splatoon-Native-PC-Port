@@ -7,6 +7,7 @@
 // whole native call including any wait for the render thread).
 #pragma once
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -40,26 +41,40 @@ enum Gx2PerfSlot {
     kPerfAudioMix,
     kPerfAudioCallbacks,
     kPerfAudioVoiceWait,
+    kPerfPipeline,
+    kPerfStage,
     kPerfSlots
 };
 inline const char* const kGx2PerfNames[kPerfSlots] = {
-    "draw",         "shader",     "vertex",          "uniform",         "texture",     "dlist",           "present",
-    "vsync",        "tex_upload", "tex_readback",    "tex_scan",        "tex_new",     "tex_invalidated", "tex_hash",
-    "shader_key",   "index",      "invalidate",      "submit_wait",     "render_busy", "frame_wait",      "gl_query",
-    "audio_render", "audio_mix",  "audio_callbacks", "audio_voice_wait"};
+    "draw",     "shader",       "vertex",          "uniform",         "texture",
+    "dlist",    "present",      "vsync",           "tex_upload",      "tex_readback",
+    "tex_scan", "tex_new",      "tex_invalidated", "tex_hash",        "shader_key",
+    "index",    "invalidate",   "submit_wait",     "render_busy",     "frame_wait",
+    "gl_query", "audio_render", "audio_mix",       "audio_callbacks", "audio_voice_wait",
+    "pipeline", "stage"};
 enum Gx2PerfBytes { kBytesTexHash, kBytesShaderKey, kBytesVertex, kBytesIndex, kBytesUniformBlock, kBytesSlots };
 inline const char* const kGx2PerfByteNames[kBytesSlots] = {"tex_hash", "shader_key", "vertex", "index", "ubo"};
 inline std::atomic<uint64_t> g_gx2_perf_ns[kPerfSlots];
 inline std::atomic<uint64_t> g_gx2_perf_calls[kPerfSlots];
 inline std::atomic<uint64_t> g_gx2_perf_bytes[kBytesSlots];
+// Last presented frame's phase times (live overlay mode, exchanged per swap).
+inline std::atomic<uint64_t> g_gx2_perf_last_ns[kPerfSlots];
+// Frame epoch for cache validation: content hashes are checked once per
+// presented frame (Cemu's "chronon" model) instead of once per draw. The
+// game's own flush/invalidation events stay the correctness backstop.
+inline std::atomic<uint64_t> g_gx2_frame_epoch{1};
+
+// GPU draws since the last exchange: ungated (one relaxed add per draw) so
+// the ImGui overlay can show the RenderDoc draw count without the profiler.
+inline std::atomic<uint64_t> g_gx2_gpu_draws{0};
+inline void gx2_count_gpu_draw() {
+    g_gx2_gpu_draws.fetch_add(1, std::memory_order_relaxed);
+}
 
 #ifdef RBREW_DISABLE_LOGGING
-// The shipped game has no profiler: every scope and counter folds away.
+// The shipped build keeps only the live overlay path: no RBREW_PERF file.
 inline FILE* gx2_perf_file() {
     return nullptr;
-}
-constexpr bool gx2_perf_enabled() {
-    return false;
 }
 #else
 inline FILE* gx2_perf_file() {
@@ -69,11 +84,22 @@ inline FILE* gx2_perf_file() {
     }();
     return file;
 }
-inline bool gx2_perf_enabled() {
-    static const bool on = gx2_perf_file() != nullptr;
-    return on;
-}
 #endif
+
+// Live phase timings for the ImGui Performance window: the overlay turns this
+// on while visible and every Gx2PerfScope then records (two clock reads);
+// off, each scope pays one relaxed load and skips the clocks. An RBREW_PERF
+// file keeps exclusive ownership of the counters so the two drains cannot
+// fight.
+inline std::atomic<bool> g_gx2_perf_live{false};
+inline void gx2_set_perf_live(bool on) {
+    if (on && gx2_perf_file()) on = false;
+    g_gx2_perf_live.store(on, std::memory_order_relaxed);
+}
+inline bool gx2_perf_enabled() {
+    static const bool has_file = gx2_perf_file() != nullptr;
+    return has_file || g_gx2_perf_live.load(std::memory_order_relaxed);
+}
 inline void gx2_perf_bytes(Gx2PerfBytes slot, uint64_t bytes) {
     if (gx2_perf_enabled()) g_gx2_perf_bytes[slot].fetch_add(bytes, std::memory_order_relaxed);
 }
@@ -87,6 +113,35 @@ struct Gx2PerfFunction {
     std::atomic<uint64_t> ns{0}, calls{0};
 };
 inline Gx2PerfFunction g_gx2_perf_functions[2][256]; // [0] replayed, [1] caller-side
+
+struct Gx2PerfFunctionSnapshot {
+    uintptr_t key = 0;
+    uint64_t ns = 0;
+    uint64_t calls = 0;
+};
+inline std::array<Gx2PerfFunctionSnapshot, 8> g_gx2_perf_last_top_dl{};
+
+struct Gx2PerfNameEntry {
+    uintptr_t fn = 0;
+    const char* name = nullptr;
+};
+inline std::vector<Gx2PerfNameEntry>& gx2_perf_names_registry() {
+    static std::vector<Gx2PerfNameEntry> names;
+    return names;
+}
+inline void gx2_perf_register_name(const void* fn, const char* name) {
+    if (!fn || !name) return;
+    auto& reg = gx2_perf_names_registry();
+    reg.push_back({reinterpret_cast<uintptr_t>(fn), name});
+}
+inline const char* gx2_perf_function_name(uintptr_t key) {
+    if (key == 1) return "UniformWords";
+    const auto& reg = gx2_perf_names_registry();
+    for (const auto& entry : reg) {
+        if (entry.fn == key) return entry.name;
+    }
+    return nullptr;
+}
 inline void gx2_perf_function(unsigned table, const void* fn, uint64_t ns) {
     const auto key = fn ? reinterpret_cast<uintptr_t>(fn) : uintptr_t(1); // 1: uniform snapshot
     for (unsigned probe = 0, i = unsigned(key >> 4) % 256; probe < 256; ++probe, i = (i + 1) % 256) {
@@ -142,8 +197,31 @@ struct Gx2PerfScope {
 
 // Called once per GX2SwapScanBuffers, on the thread that presents.
 inline void gx2_perf_frame() {
-#ifndef RBREW_DISABLE_LOGGING
+    g_gx2_frame_epoch.fetch_add(1, std::memory_order_relaxed); // cache revalidation epoch
     if (!gx2_perf_enabled()) return;
+    if (!gx2_perf_file()) {
+        // Live overlay mode: one exchange per presented frame so the window
+        // shows per-frame phase times (an RBREW_PERF file drains instead).
+        for (unsigned i = 0; i < kPerfSlots; ++i)
+            g_gx2_perf_last_ns[i].store(g_gx2_perf_ns[i].exchange(0, std::memory_order_relaxed),
+                                        std::memory_order_relaxed);
+        std::vector<Gx2PerfFunctionSnapshot> rows;
+        rows.reserve(32);
+        for (auto& e : g_gx2_perf_functions[0]) {
+            if (const uintptr_t key = e.key.load(std::memory_order_relaxed)) {
+                const uint64_t ns = e.ns.exchange(0, std::memory_order_relaxed);
+                const uint64_t calls = e.calls.exchange(0, std::memory_order_relaxed);
+                if (ns > 0) rows.push_back({key, ns, calls});
+            }
+        }
+        std::sort(rows.begin(), rows.end(),
+                  [](const Gx2PerfFunctionSnapshot& a, const Gx2PerfFunctionSnapshot& b) { return a.ns > b.ns; });
+        for (size_t i = 0; i < g_gx2_perf_last_top_dl.size(); ++i) {
+            g_gx2_perf_last_top_dl[i] = (i < rows.size()) ? rows[i] : Gx2PerfFunctionSnapshot{};
+        }
+        return;
+    }
+#ifndef RBREW_DISABLE_LOGGING
     using clock = std::chrono::steady_clock;
     static const clock::time_point first = clock::now();
     static clock::time_point last = first;

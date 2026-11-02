@@ -224,6 +224,14 @@ if(NOT RBREW_DIAGNOSTIC_RUNTIME)
     target_compile_definitions(cemu_shader PRIVATE RBREW_DISABLE_LOGGING)
     set_property(SOURCE main.cpp APPEND PROPERTY COMPILE_DEFINITIONS RBREW_DISABLE_LOGGING)
 endif()
+# HYPER_OPTIMIZE: aggressive CPU path for the recompiled game code. The host
+# aperture covers the whole 32-bit guest address space, so generated loads and
+# stores skip bounds checks and store gating; the compiler gets full inlining
+# and LTCG/LTO. OFF restores the checked memory path and the original flags.
+option(HYPER_OPTIMIZE "Aggressive CPU optimizations for guest code (zero-check memory, LTCG/LTO)" ON)
+if(HYPER_OPTIMIZE)
+    message(STATUS "HYPER_OPTIMIZE enabled: zero-check guest memory, aggressive inlining")
+endif()
 rbrew_gx2_backend(gambit_runtime PUBLIC)
 
 if(HAVE_MINIAUDIO)
@@ -292,12 +300,22 @@ target_compile_definitions(gambit_generated PRIVATE
     RBREW_DISABLE_LOGGING
     HAVE_SDL2
 )
+if(HYPER_OPTIMIZE)
+    target_compile_definitions(gambit_generated PRIVATE RBREW_HYPER_OPTIMIZE=1)
+endif()
 
 if(MSVC)
     if(CMAKE_GENERATOR MATCHES "Visual Studio")
         target_compile_options(gambit_generated PRIVATE /MP)
     endif()
-    target_compile_options(gambit_generated PRIVATE "$<$<CONFIG:Debug>:/Od>" /bigobj /Ob1 /GS- /Gy- /EHs-c- /GR-)
+    target_compile_options(gambit_generated PRIVATE "$<$<CONFIG:Debug>:/Od>" /bigobj /GS- /Gy- /EHs-c- /GR-)
+    if(HYPER_OPTIMIZE)
+        # Full inlining plus whole-program optimization on the generated parts.
+        # /arch:AVX2 (Haswell+) brings MOVBE and BMI2 like -march=native above.
+        target_compile_options(gambit_generated PRIVATE /Ob2 /Oi /GT /GL /arch:AVX2)
+    else()
+        target_compile_options(gambit_generated PRIVATE /Ob1)
+    endif()
     if(EXISTS "${GAMBIT_GENERATED_DIR}/Gambit.h")
         target_precompile_headers(gambit_generated PRIVATE "${GAMBIT_GENERATED_DIR}/Gambit.h")
     endif()
@@ -358,8 +376,18 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         target_compile_options(Gambit PRIVATE "$<$<CONFIG:Debug>:-O0>" -fno-strict-aliasing)
     endif()
     target_compile_options(gambit_runtime PRIVATE -O2)
+    if(HYPER_OPTIMIZE AND TARGET gambit_generated)
+        target_compile_options(gambit_generated PRIVATE -O3)
+        # MOVBE fuses each guest load/store + bswap into one instruction and
+        # BMI2 replaces shift-by-register sequences; -march=native matches the
+        # build machine (do not redistribute such a binary).
+        target_compile_options(gambit_generated PRIVATE -march=native)
+        # GCC/Clang -flto on the generated corpus OOMs the linker (the parts
+        # carry thousands of large functions); MSVC /GL+/LTCG is used there.
+    endif()
     if(TARGET Gambit AND CMAKE_BUILD_TYPE STREQUAL "Release")
-        target_link_options(Gambit PRIVATE -s)
+        # Symbols stay in the local binary: CPU profiling of the recompiled
+        # corpus resolves Gambit_fn_* addresses (a release zip can strip them).
     endif()
 endif()
 
@@ -376,6 +404,10 @@ if(MSVC)
         # (rebrewu_runtime.h); the executable needs no per-access TLS guard.
         target_compile_options(Gambit PRIVATE /Zc:tlsGuards-)
         target_link_options(Gambit PRIVATE "/MAP:$<TARGET_FILE_DIR:Gambit>/Splatoon.map")
+        if(HYPER_OPTIMIZE)
+            # gambit_generated is compiled with /GL; link the whole game with LTCG.
+            target_link_options(Gambit PRIVATE /LTCG)
+        endif()
     endif()
     target_compile_options(gambit_runtime PRIVATE /utf-8 /MP)
 endif()
@@ -487,10 +519,13 @@ if(RBREW_BUILD_TESTS)
     add_executable(gambit_guest_bench ../tests/test_guest_animation.cpp)
     target_link_libraries(gambit_guest_bench PRIVATE gambit_runtime)
     target_include_directories(gambit_guest_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    if(HYPER_OPTIMIZE)
+        target_compile_definitions(gambit_guest_bench PRIVATE RBREW_HYPER_OPTIMIZE=1)
+    endif()
     if(MSVC)
         target_compile_options(gambit_guest_bench PRIVATE /Zc:tlsGuards-) # as the Gambit target
     endif()
-    foreach(case npc_1 npc_10 npc_25 npc_50 npc_100 paired_equivalence)
+    foreach(case npc_1 npc_10 npc_25 npc_50 npc_100 paired_equivalence psq_equivalence)
         add_test(NAME guest_${case} COMMAND gambit_guest_bench ${case})
         set_tests_properties(guest_${case} PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
     endforeach()

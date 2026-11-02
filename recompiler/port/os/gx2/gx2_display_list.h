@@ -109,7 +109,21 @@ template <Gx2CommandFn Function, bool Command> void gx2_command_call(CPUState* c
     Function(cpu);
 }
 
+struct Gx2BakedHotCommands {
+    Gx2CommandFn set_attrib_buffer = nullptr;
+    Gx2CommandFn set_vs_ubo = nullptr;
+    Gx2CommandFn set_ps_ubo = nullptr;
+    Gx2CommandFn set_vs = nullptr;
+    Gx2CommandFn set_ps = nullptr;
+    Gx2DescriptorFn set_ps_tex = nullptr;
+    Gx2DescriptorFn set_vs_tex = nullptr;
+    Gx2DescriptorFn set_ps_sampler = nullptr;
+    Gx2DescriptorFn set_vs_sampler = nullptr;
+};
+
 void gx2_display_list_register(CPUState* cpu);
+void gx2_register_draw_commands(Gx2CommandFn draw_indexed, Gx2CommandFn draw_indexed2, Gx2CommandFn draw_ex);
+void gx2_register_hot_commands(const Gx2BakedHotCommands& hot);
 // Diagnostic count for lossless cold-list archive I/O.
 uint64_t gx2_dl_archive_seek_count();
 // Diagnostic count of context snapshots that reused an identical recording.

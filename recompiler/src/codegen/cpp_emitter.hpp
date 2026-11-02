@@ -58,12 +58,22 @@ private:
     std::string format_operand(const ir::IROperand& op) const;
     std::string format_vreg(const ir::VReg& vr) const;
 
+    // Small single-block leaf functions get a static inline copy in
+    // <module>_inline.h; direct call sites use it so the host compiler can
+    // inline away the call, prologue and guest-register spills.
+    bool is_inline_candidate(const ir::IRFunction& func) const;
+    void collect_inline_candidates();
+    void emit_inline_header(std::ostream& out);
+    std::string inline_name(uint32_t addr) const;
+    void declare_temps(const ir::IRFunction& func, std::ostream& out, int indent);
+
     const ir::IRModule& m_ir;
     const rpx::RpxModule& m_rpx;
     const linker::Linker& m_linker;
     NamingContext m_names;
     EmitConfig m_cfg;
     std::string m_last_error;
+    std::set<uint32_t> m_inline_candidates{};
     // Transient state valid only during emit_function()
     const ir::IRFunction* m_current_func{nullptr};
     std::set<uint32_t> m_fp_temps{};

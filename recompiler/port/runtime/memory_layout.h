@@ -33,3 +33,13 @@ constexpr uint32_t RBREW_SHARED_DATA_BASE = 0xF8000000u;
 constexpr uint32_t RBREW_SHARED_DATA_SIZE = 0x02000000u;
 static_assert(RBREW_MEM1_BASE + RBREW_MEM1_SIZE <= RBREW_SHARED_DATA_BASE);
 constexpr uint32_t RBREW_ARENA_END = RBREW_SHARED_DATA_BASE + RBREW_SHARED_DATA_SIZE;
+
+// Host aperture: the whole 32-bit guest address space plus a small slop, so
+// every guest effective address (and a multi-byte access at the very top of
+// the space) lands inside one flat mapping. Guest addresses are byte offsets
+// from the aperture base; there is no translation stage. This is virtual
+// space, not RAM: pages stay demand-zero until the guest touches them, so
+// the Wii U's own 2 GiB of physical memory is irrelevant here — its virtual
+// map is sparse across 4 GiB just like this aperture.
+constexpr uint64_t RBREW_GUEST_APERTURE_SIZE = 0x100000000ull + 0x10000ull;
+static_assert(RBREW_ARENA_END <= 0x100000000ull);

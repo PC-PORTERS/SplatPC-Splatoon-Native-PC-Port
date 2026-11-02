@@ -9,6 +9,7 @@
 #include "../core/manifest/manifest.hpp"
 #include "../patches/manifest_patches.hpp"
 #include "../analysis/cfg_builder.hpp"
+#include "../ir/ir_optimizer.hpp"
 #include "../codegen/cpp_emitter.hpp"
 #include "../codegen/naming.hpp"
 #include "../config/config.hpp"
@@ -444,6 +445,9 @@ int main(int argc, char** argv) {
     for (const auto& fb : boundaries) {
         auto func = cfg_builder.build(fb.start, fb.name);
         if (func) {
+            // Final optimization phase: fold/CSE/DCE and compare-to-branch
+            // fusion before anything consumes the IR.
+            ir::optimize_function(*func);
             ir_module.functions.push_back(std::move(*func));
             ++built_ok;
         } else {
