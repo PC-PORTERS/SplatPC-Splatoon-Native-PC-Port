@@ -91,8 +91,22 @@ static const char* remap_path(const char* guest, char* out, size_t outsz) {
         if (system_root && *system_root) root_env = "RBREW_SYSTEM_MLC_DIR";
     }
     const char* configured = std::getenv(root_env);
-    std::string path =
-        (std::filesystem::path(configured && *configured ? configured : root_default) / relative).string();
+    auto root = std::filesystem::path(configured && *configured ? configured : root_default).lexically_normal();
+    if (root.has_relative_path() && root.filename().empty()) root = root.parent_path();
+    std::string path = (root / relative).string();
+    // Content overlay: <root>/../mods/content/<relative> replaces a game file
+    // without touching it (tools/mods). Checked per lookup, not cached at startup (B-09), so a
+    // folder created later or a changed RBREW_CONTENT_DIR is honoured; one stat per open.
+    if (std::strcmp(root_env, "RBREW_CONTENT_DIR") == 0) {
+        std::error_code ec;
+        const char* dir = std::getenv("RBREW_CONTENT_DIR");
+        auto content = std::filesystem::path(dir && *dir ? dir : "./content").lexically_normal();
+        if (content.has_relative_path() && content.filename().empty()) content = content.parent_path();
+        if (std::filesystem::is_directory(content.parent_path() / "mods" / "content", ec)) {
+            const auto candidate = root.parent_path() / "mods" / "content" / relative;
+            if (std::filesystem::is_regular_file(candidate, ec)) path = candidate.string();
+        }
+    }
     if (path.size() >= outsz) return nullptr;
     std::memcpy(out, path.c_str(), path.size() + 1);
     return out;

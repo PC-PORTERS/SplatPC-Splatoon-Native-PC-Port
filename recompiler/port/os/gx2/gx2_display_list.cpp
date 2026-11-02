@@ -257,7 +257,12 @@ uint64_t s_resident_bytes = 0;
 // Contains native call arguments/snapshots, never GPU command execution.
 // tmpfile is private and removed on close. If it cannot be written, keep
 // the resident payload rather than discard observable guest state.
-std::unique_ptr<std::FILE, decltype(&std::fclose)> s_archive{nullptr, &std::fclose};
+struct FileDeleter {
+    void operator()(std::FILE* f) const {
+        if (f) std::fclose(f);
+    }
+};
+std::unique_ptr<std::FILE, FileDeleter> s_archive{nullptr};
 uint64_t s_archive_seeks = 0;
 uint64_t s_archive_end = 0;
 bool s_archive_at_end = false; // the file position is s_archive_end (no restore read since)

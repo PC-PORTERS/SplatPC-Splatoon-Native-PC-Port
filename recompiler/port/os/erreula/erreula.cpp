@@ -86,9 +86,8 @@ void get_right(CPUState* cpu) {
     cpu->r[3] = erreula_snapshot(cpu).selected_button == 1;
 }
 void get_cursor(CPUState* cpu) {
-    if (erreula_snapshot(cpu).viewer_state != 0) unsupported("IsSelectCursorActive input");
     cpu->r[3] = 0;
-}
+} // the simulated dialog never shows a cursor
 void change_language(CPUState* cpu) {
     auto& owner = state_owner();
     std::lock_guard lock(owner.mutex);
@@ -110,23 +109,33 @@ void disappear_home(CPUState* cpu) {
     owner.states[cpu->mem].home_nix = false;
 }
 void disappear_error(CPUState* cpu) {
-    if (erreula_snapshot(cpu).viewer_state != 0) unsupported("DisappearError animation");
+    auto& owner = state_owner();
+    std::lock_guard lock(owner.mutex);
+    auto& state = owner.states[cpu->mem];
+    state.viewer_state = 0;
+    state.selected_button = -1; // Hidden, no decision pending
 }
+// The error dialog is simulated (see appear_error): nothing to animate or draw.
 void inactive_calc(CPUState* cpu) {
-    const auto state = erreula_snapshot(cpu);
-    if (state.viewer_state != 0 || state.home_nix) unsupported("Calc/input/fade");
+    if (erreula_snapshot(cpu).home_nix) unsupported("Calc/input/fade");
 }
 void inactive_draw(CPUState* cpu) {
-    const auto state = erreula_snapshot(cpu);
-    if (state.viewer_state != 0 || state.home_nix) unsupported("Draw/render");
+    if (erreula_snapshot(cpu).home_nix) unsupported("Draw/render");
 }
 void appear_error(CPUState* cpu) {
     // Diagnostic: nn::erreula::ErrorArg errorType @+0x00, errorCode @+0x10.
     if (guest_pointer(cpu, cpu->r[3]) && rbrew_memory_accessible(cpu->mem, cpu->r[3], 0x14))
-        RBREW_LOG_ERROR("erreula", "AppearError type=%u code=%d lr=%08X caller_lr=%08X\n",
-                        rbrew_read32(cpu->mem, cpu->r[3]), int32_t(rbrew_read32(cpu->mem, cpu->r[3] + 0x10)), cpu->lr,
-                        guest_pointer(cpu, cpu->r[1] + 0x14) ? rbrew_read32(cpu->mem, cpu->r[1] + 0x14) : 0u);
-    unsupported("AppearError");
+        RBREW_LOG_INFO("erreula", "AppearError type=%u code=%d lr=%08X caller_lr=%08X\n",
+                       rbrew_read32(cpu->mem, cpu->r[3]), int32_t(rbrew_read32(cpu->mem, cpu->r[3] + 0x10)), cpu->lr,
+                       guest_pointer(cpu, cpu->r[1] + 0x14) ? rbrew_read32(cpu->mem, cpu->r[1] + 0x14) : 0u);
+    // No error UI on PC yet : the dialog is shown and its first
+    // button pressed at once, so the game takes its own "OK" path (system errors
+    // send the player back) instead of the port stopping. State Visible = 2.
+    auto& owner = state_owner();
+    std::lock_guard lock(owner.mutex);
+    auto& state = owner.states[cpu->mem];
+    state.viewer_state = 2;
+    state.selected_button = 0;
 }
 void appear_home(CPUState*) {
     unsupported("AppearHomeNixSign");

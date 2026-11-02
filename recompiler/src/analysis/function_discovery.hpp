@@ -44,6 +44,8 @@ public:
         // only as corroboration: an entry is added when it is also referenced
         // and follows a no-fallthrough separator.
         std::set<uint32_t> analyzer_entries;
+        // Opt-in: apply the same reference/separator proof to all address-taken entries.
+        bool discover_referenced_entries{false};
         // Optional observation only; never changes candidate decisions.
         std::function<void(const FrameAudit&)> frame_audit;
         std::function<void(const ThunkAudit&)> thunk_audit;

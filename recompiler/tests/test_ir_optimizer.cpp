@@ -196,7 +196,7 @@ void test_compare_branch_fusion() {
         IRFunction& func = only_function(module);
         BasicBlock block;
         block.id = 0;
-        const VReg cmp = VReg::temp(1), shifted = VReg::temp(2), bit_val = VReg::temp(3), inverted = VReg::temp(4);
+        const VReg shifted = VReg::temp(2), bit_val = VReg::temp(3), inverted = VReg::temp(4);
         block.append({Opcode::CmpSigned, VReg::cr(0), {reg(VReg::gpr(3)), imm(0)}});
         block.append({Opcode::Shr, shifted, {reg(VReg::cr(0)), imm(tc.bit)}});
         block.append({Opcode::And, bit_val, {reg(shifted), imm(1)}});

@@ -1,4 +1,5 @@
 #pragma once
+#include "game_revision.h"
 #include "rbrew_diagnostics.h"
 // =============================================================================
 // RebrewU Runtime — Wii U → PC
