@@ -40,24 +40,57 @@ $Sdl=Join-Path $DependencyRoot 'build\deps\sdl2-vulkan\cmake'
 $Glslang=Join-Path $DependencyRoot 'build\deps\glslang-vulkan\lib\cmake\glslang'
 foreach($Required in @($Toolchain,$Sdl,$Glslang)){if(-not(Test-Path -LiteralPath $Required)){throw "Missing prepared dependency: $Required"}}
 $env:VCPKG_DOWNLOADS=Join-Path $env:TEMP 'SplatoonPortDownloads'
-Write-Output '[1/5] Build revision-aware recompiler'
+# Steps 1-3 are skipped when their inputs did not change since the last build (stamp files), so an
+# update that only touches the runtime rebuilds in minutes instead of re-translating the whole game.
+function Get-InputsStamp([string[]]$Paths,[string[]]$Extra){
+ $Lines=New-Object System.Collections.Generic.List[string]
+ foreach($Line in $Extra){$Lines.Add($Line)}
+ foreach($Path in $Paths){
+  if(Test-Path -LiteralPath $Path -PathType Container){$Files=Get-ChildItem -LiteralPath $Path -Recurse -File | Sort-Object FullName}
+  elseif(Test-Path -LiteralPath $Path -PathType Leaf){$Files=@(Get-Item -LiteralPath $Path)}
+  else{$Lines.Add("missing $Path");continue}
+  foreach($File in $Files){$Lines.Add($File.FullName.Substring($Root.Length)+' '+(Get-FileHash -LiteralPath $File.FullName -Algorithm SHA256).Hash)}
+ }
+ $Bytes=[Text.Encoding]::UTF8.GetBytes(($Lines -join "`n"))
+ return [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($Bytes)).Replace('-','')
+}
+function Test-Stamp([string]$File,[string]$Value){(Test-Path -LiteralPath $File -PathType Leaf) -and ((Get-Content -LiteralPath $File -Raw).Trim() -eq $Value)}
 $RecompilerBuild=Join-Path $Work 'rebrewu'
-& $Cmake -S (Join-Path $Root 'recompiler') -B $RecompilerBuild -G $Generator -A x64 "-DCMAKE_TOOLCHAIN_FILE=$Toolchain" -DREBREWU_BUILD_TESTS=OFF
-Checked 'Configure recompiler'
-& $Cmake --build $RecompilerBuild --config Release --target rebrewu --parallel -- /p:TrackFileAccess=false
-Checked 'Build recompiler'
-Write-Output '[2/5] Translate update RPX with revision-specific candidates'
 $Generated=Join-Path $Work 'generated-v288'
 $RecompilerExe=Join-Path $RecompilerBuild 'bin\Release\rebrewu.exe'
 # The import addresses of the 288 image come from its manifest.
 $Manifest=Join-Path $Root 'Manifest\Gambit_v288.manifest'
 if(-not(Test-Path -LiteralPath $Manifest -PathType Leaf)){throw "Missing manifest: $Manifest"}
-& $RecompilerExe recompile --rpx (Join-Path $UpdateDump 'code\Gambit.rpx') --output $Generated --manifest $Manifest --analyzer-entries (Join-Path $Root 'profiles\agmp-v288.entries') --discover-referenced-entries --hooks (Join-Path $Root 'profiles\agmp-v288.hooks') --hints-file (Join-Path $Root 'profiles\agmp-v288.tables') -v
-Checked 'Translate update RPX'
-Write-Output '[3/5] Merge owned content into private staging folder'
+$TranslateStamp=Join-Path $Generated '.inputs'
+$TranslateInputs=Get-InputsStamp @((Join-Path $Root 'recompiler\src'),(Join-Path $Root 'recompiler\include'),(Join-Path $Root 'recompiler\cmake'),(Join-Path $Root 'recompiler\CMakeLists.txt'),$Manifest,(Join-Path $Root 'profiles\agmp-v288.entries'),(Join-Path $Root 'profiles\agmp-v288.hooks'),(Join-Path $Root 'profiles\agmp-v288.tables')) @("rpx $($RevisionProfile.rpx_sha256)")
+if((Test-Stamp $TranslateStamp $TranslateInputs) -and (Test-Path -LiteralPath (Join-Path $Generated 'Gambit.h') -PathType Leaf)){
+ Write-Output '[1/5] Recompiler unchanged: skipped'
+ Write-Output '[2/5] Game translation unchanged: skipped'
+}else{
+ Write-Output '[1/5] Build revision-aware recompiler'
+ & $Cmake -S (Join-Path $Root 'recompiler') -B $RecompilerBuild -G $Generator -A x64 "-DCMAKE_TOOLCHAIN_FILE=$Toolchain" -DREBREWU_BUILD_TESTS=OFF
+ Checked 'Configure recompiler'
+ & $Cmake --build $RecompilerBuild --config Release --target rebrewu --parallel -- /p:TrackFileAccess=false
+ Checked 'Build recompiler'
+ Write-Output '[2/5] Translate update RPX with revision-specific candidates'
+ if(Test-Path -LiteralPath $TranslateStamp){Remove-Item -LiteralPath $TranslateStamp -Force}
+ & $RecompilerExe recompile --rpx (Join-Path $UpdateDump 'code\Gambit.rpx') --output $Generated --manifest $Manifest --analyzer-entries (Join-Path $Root 'profiles\agmp-v288.entries') --discover-referenced-entries --hooks (Join-Path $Root 'profiles\agmp-v288.hooks') --hints-file (Join-Path $Root 'profiles\agmp-v288.tables') -v
+ Checked 'Translate update RPX'
+ Set-Content -LiteralPath $TranslateStamp -Value $TranslateInputs -Encoding ASCII
+}
 $Merged=Join-Path $Work 'merged-v288'
-CopyTree $BaseDump $Merged
-CopyTree $UpdateDump $Merged
+$MergeStamp=Join-Path $Merged '.inputs'
+$MergeInputs=Get-InputsStamp @((Join-Path $BaseDump 'meta\meta.xml'),(Join-Path $UpdateDump 'meta\meta.xml')) @("base $((Resolve-Path -LiteralPath $BaseDump).Path)","update $((Resolve-Path -LiteralPath $UpdateDump).Path)")
+$MergeSkipped=(Test-Stamp $MergeStamp $MergeInputs) -and (Test-Path -LiteralPath (Join-Path $Merged 'content') -PathType Container)
+if($MergeSkipped){
+ Write-Output '[3/5] Game content unchanged: skipped'
+}else{
+ Write-Output '[3/5] Merge owned content into private staging folder'
+ if(Test-Path -LiteralPath $MergeStamp){Remove-Item -LiteralPath $MergeStamp -Force}
+ CopyTree $BaseDump $Merged
+ CopyTree $UpdateDump $Merged
+ Set-Content -LiteralPath $MergeStamp -Value $MergeInputs -Encoding ASCII
+}
 Write-Output '[4/5] Build experimental update runtime'
 $GameBuild=Join-Path $Work $(if($Optimize){'game-v288-release'}else{'game-v288-diagnostic'})
 $FastGuest=if($Optimize){'OFF'}else{'ON'}
@@ -75,8 +108,12 @@ foreach($Name in @('Ensure-Folder','Initialize-WiiUFolders')){
  . ([scriptblock]::Create($FunctionAst.Extent.Text))
 }
 Initialize-WiiUFolders $Output
-CopyTree (Join-Path $Merged 'content') (Join-Path $Output 'content')
-CopyTree (Join-Path $Merged 'meta') (Join-Path $Output 'meta')
+$OutputStamp=Join-Path $Output '.content-inputs'
+if(-not($MergeSkipped -and (Test-Stamp $OutputStamp $MergeInputs))){
+ CopyTree (Join-Path $Merged 'content') (Join-Path $Output 'content')
+ CopyTree (Join-Path $Merged 'meta') (Join-Path $Output 'meta')
+ Set-Content -LiteralPath $OutputStamp -Value $MergeInputs -Encoding ASCII
+}
 # The prepared dependencies usually live in this same checkout (DependencyRoot = repository root),
 # so source and destination can be the same folder: there is nothing to copy then.
 $DependencyGame=Join-Path $DependencyRoot 'Game'
