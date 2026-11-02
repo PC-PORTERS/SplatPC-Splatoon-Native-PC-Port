@@ -435,6 +435,7 @@ static void GX2SetContextState(CPUState* cpu) {
         RBREW_LOG_ERROR("gx2", "GX2SetContextState received an invalid state address %08X\n", state);
         return;
     }
+    if (active_context_state == state) return;
     // The GPU shadows register writes into the active context's memory, so
     // reselecting the active context reloads its current state, not the
     // values captured when it was last switched away from.
@@ -806,7 +807,17 @@ void plaza_mode_sync(CPUState* cpu) {
             const uint32_t flags = flags_address && rbrew_memory_accessible(cpu->mem, flags_address, 4)
                                        ? rbrew_read32(cpu->mem, flags_address)
                                        : 0;
-            want_30 = ((flags & 3u) == 3u) || behind_ms >= kStepMs / 2;
+            static unsigned s_thirty_cooldown = 0;
+            if (s_thirty_cooldown > 0) --s_thirty_cooldown;
+            const bool in_second_half = ((flags & 3u) == 3u);
+            if (in_second_half) {
+                want_30 = true;
+            } else if (behind_ms >= 2 * kStepMs && s_thirty_cooldown == 0) {
+                want_30 = true;
+                s_thirty_cooldown = 60;
+            } else {
+                want_30 = false;
+            }
         }
         // Only the plaza is changed; other scenes keep their own request.
         const bool plaza = rbrew_control_defaults::active_scene_type(cpu->mem) == 2;
@@ -1037,9 +1048,11 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
     const float vsync_wait_ms = s_last_vsync_wait_ms.exchange(0.0f, std::memory_order_relaxed);
     const float present_wait_ms = s_last_present_wait_ms.exchange(0.0f, std::memory_order_relaxed);
     const float guest_work_ms = std::max(0.0f, frame_delta_ms - (vsync_wait_ms + present_wait_ms));
+    const uint16_t draws_this_frame = uint16_t(g_gx2_gpu_draws.exchange(0, std::memory_order_relaxed));
+    SplatoonDiagnostics::SampleThreadCpu("game");
 
     SplatoonDiagnostics::RecordFrame(uint32_t(s_swap_count.load()), frame_delta_ms, guest_work_ms, present_wait_ms,
-                                     vsync_wait_ms, cpu_duration_ms, 0, 0, 0, uint8_t(g_screen_mode));
+                                     vsync_wait_ms, cpu_duration_ms, draws_this_frame, 0, 0, uint8_t(g_screen_mode));
 
     static FILE* benchmark_csv = [] {
         const char* path = std::getenv("RBREW_BENCHMARK_CSV");
@@ -1157,6 +1170,9 @@ static void GX2SetupContextStateEx(CPUState* cpu) {
     }
     const uint32_t state = ARG0;
     const uint32_t flags = ARG1;
+    for (auto& s : s_active_context_state) {
+        if (s == state) s = 0;
+    }
     GX2SetDefaultState(cpu);
     snapshot_context_state(cpu, state);
     gx2_render_save_context_state(state);
@@ -1197,6 +1213,11 @@ static bool context_state_sync() {
     return sync;
 }
 static void GX2SetContextStateCall(CPUState* cpu) {
+    if (!ARG0) return;
+    const uint32_t core = rbrew_current_core();
+    if (core < s_active_context_state.size() && s_active_context_state[core] == ARG0) {
+        return;
+    }
     // Synchronous until the game has presented 120 frames: posted switches
     // during boot hung the game before its first frame in rare runs.
     if (!context_state_sync() && s_swap_count.load(std::memory_order_relaxed) >= 120 && !gx2_dl_list_open() &&
@@ -1214,14 +1235,25 @@ static void GX2GetContextStateDisplayListCall(CPUState* cpu) {
 
 void gx2_context_register(CPUState* cpu) {
 #if defined(HAVE_SDL2)
-#define REG(name) rbrew_register_func(cpu, ADDR_##name, GX2_NATIVE_CALL(name))
+#define REG(name)                                                                                                      \
+    do {                                                                                                               \
+        rbrew_register_func(cpu, ADDR_##name, GX2_NATIVE_CALL(name));                                                  \
+        gx2_perf_register_name(reinterpret_cast<const void*>(name), #name);                                            \
+    } while (0)
 #else
-#define REG(name) rbrew_register_func(cpu, ADDR_##name, gx2_command_call<name, gx2_is_command(#name)>)
+#define REG(name)                                                                                                      \
+    do {                                                                                                               \
+        rbrew_register_func(cpu, ADDR_##name, gx2_command_call<name, gx2_is_command(#name)>);                          \
+        gx2_perf_register_name(reinterpret_cast<const void*>(name), #name);                                            \
+    } while (0)
 #endif
     REG(GX2Init);
 #if defined(HAVE_SDL2)
     rbrew_register_func(cpu, ADDR_GX2SetContextState, GX2SetContextStateCall);
+    gx2_perf_register_name(reinterpret_cast<const void*>(GX2SetContextState), "GX2SetContextState");
     rbrew_register_func(cpu, ADDR_GX2GetContextStateDisplayList, GX2GetContextStateDisplayListCall);
+    gx2_perf_register_name(reinterpret_cast<const void*>(GX2GetContextStateDisplayList),
+                           "GX2GetContextStateDisplayList");
 #else
     REG(GX2SetContextState);
     REG(GX2GetContextStateDisplayList);

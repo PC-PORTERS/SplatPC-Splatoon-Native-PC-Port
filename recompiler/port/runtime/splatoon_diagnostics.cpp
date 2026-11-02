@@ -13,6 +13,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <time.h>
 
 #if !defined(_MSC_VER)
 #include <strings.h> // strcasecmp
@@ -748,6 +749,66 @@ bool AnalyzeReport(const std::string& report_dir, std::string& out_summary, std:
     out_report = gs.str();
 
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// Per-thread CPU sensors
+// ---------------------------------------------------------------------------
+namespace {
+struct ThreadSensor {
+    std::atomic<const char*> name{nullptr};
+    std::atomic<uint64_t> cpu_ns{0};
+    std::atomic<uint64_t> wall_ns{0};
+};
+constexpr size_t kMaxThreadSensors = 8;
+ThreadSensor s_thread_sensors[kMaxThreadSensors];
+
+uint64_t thread_cpu_time_ns() {
+#if defined(_WIN32)
+    FILETIME creation{}, exit_time{}, kernel{}, user{};
+    if (!GetThreadTimes(GetCurrentThread(), &creation, &exit_time, &kernel, &user)) return 0;
+    const auto to_ns = [](const FILETIME& t) {
+        return (uint64_t(t.dwHighDateTime) << 32 | uint64_t(t.dwLowDateTime)) * 100ull;
+    };
+    return to_ns(kernel) + to_ns(user);
+#else
+    timespec ts{};
+    if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) != 0) return 0;
+    return uint64_t(ts.tv_sec) * 1000000000ull + uint64_t(ts.tv_nsec);
+#endif
+}
+} // namespace
+
+void SampleThreadCpu(const char* name) {
+    const uint64_t cpu = thread_cpu_time_ns();
+    const uint64_t wall = now_ns();
+    for (auto& s : s_thread_sensors) {
+        const char* seen = s.name.load(std::memory_order_acquire);
+        if (seen == name) {
+            s.cpu_ns.store(cpu, std::memory_order_relaxed);
+            s.wall_ns.store(wall, std::memory_order_relaxed);
+            return;
+        }
+        if (!seen && s.name.compare_exchange_strong(seen, name, std::memory_order_acq_rel)) {
+            s.cpu_ns.store(cpu, std::memory_order_relaxed);
+            s.wall_ns.store(wall, std::memory_order_relaxed);
+            return;
+        }
+    }
+}
+
+size_t GetThreadSensorReadings(ThreadSensorReading* out, size_t max) {
+    size_t n = 0;
+    for (auto& s : s_thread_sensors) {
+        if (n >= max) break;
+        const char* name = s.name.load(std::memory_order_acquire);
+        if (!name) continue;
+        out[n].name = name;
+        out[n].cpu_ns = s.cpu_ns.load(std::memory_order_relaxed);
+        out[n].wall_ns = s.wall_ns.load(std::memory_order_relaxed);
+        ++n;
+    }
+    return n;
 }
 
 } // namespace SplatoonDiagnostics

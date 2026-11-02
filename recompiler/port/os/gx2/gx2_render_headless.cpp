@@ -72,6 +72,9 @@ void gx2_render_request_photo() {}
 void gx2_render_present(void*, bool) {}
 void gx2_render_save_fetch_shader(uint32_t, uint32_t, uint32_t, uint8_t*) {}
 void gx2_render_set_active_fetch_shader(uint32_t) {}
+uint32_t gx2_render_active_fetch_shader() {
+    return 0;
+}
 uint32_t gx2_render_active_fetch_attribute_count() {
     return 0;
 }

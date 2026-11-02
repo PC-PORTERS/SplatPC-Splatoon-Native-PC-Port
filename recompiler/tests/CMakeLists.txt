@@ -13,3 +13,12 @@ target_link_libraries(rebrewu_manifest_patches_tests
 )
 
 add_test(NAME rebrewu_manifest_patches COMMAND rebrewu_manifest_patches_tests)
+
+add_executable(rebrewu_ir_optimizer_tests test_ir_optimizer.cpp)
+
+target_link_libraries(rebrewu_ir_optimizer_tests
+    PRIVATE
+        rebrewu_ir
+)
+
+add_test(NAME rebrewu_ir_optimizer COMMAND rebrewu_ir_optimizer_tests)

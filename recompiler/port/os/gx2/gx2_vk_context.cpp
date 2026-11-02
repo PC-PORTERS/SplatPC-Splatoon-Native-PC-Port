@@ -36,6 +36,7 @@
 #endif
 #include <utility>
 #include <vector>
+#include "../../runtime/splatoon_diagnostics.h"
 
 void gx2_render_vk_flush();
 bool gx2_render_vk_finish();
@@ -160,7 +161,7 @@ void render_thread() {
             if (!queued && gx2interp::deadline_ns()) {
                 while (gx2interp::deadline_ns() && s_pushed.load(std::memory_order_acquire) == seen) {
                     gx2interp::service();
-                    std::this_thread::yield();
+                    _mm_pause(); // yield() here cost a sched_yield syscall per iteration
                 }
                 continue;
             }
@@ -205,8 +206,10 @@ void render_thread() {
             rbrew_thread_core_slot = nullptr;
         }
         busy.stop();
+        gx2_write_watch_end_batch();
         batch.clear();
         gx2_render_query_poll();
+        SplatoonDiagnostics::SampleThreadCpu("render");
     }
     s_running.store(false, std::memory_order_release);
     s_running.notify_all();

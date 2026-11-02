@@ -54,12 +54,15 @@ struct VReg {
 
 struct ImmOp {
     uint64_t value;
+    bool operator==(const ImmOp&) const noexcept = default;
 };
 struct RegOp {
     VReg reg;
+    bool operator==(const RegOp&) const noexcept = default;
 };
 struct LabelOp {
     uint32_t block_id;
+    bool operator==(const LabelOp&) const noexcept = default;
 }; // branch target block
 
 using IROperand = std::variant<ImmOp, RegOp, LabelOp>;
@@ -89,6 +92,13 @@ enum class Opcode : uint16_t {
     IndirectCall,      // bctrl — indirect call through CTR
     Return,            // blr
     ConditionalReturn, // bclr — return to LR if condition, else fall through (cond, fallthrough_addr)
+    // Fused compare-and-branch (cmp result stays in host flags; no CR field
+    // materialisation). operands: a, b, taken, fallthrough/target, pred
+    // pred = kind<<4 | cr_bit<<1 | sense  (kind: 0 signed, 1 unsigned, 2 float;
+    // cr_bit: 3=LT, 2=GT, 1=EQ; sense: 1 = branch when the bit is set).
+    BranchCmp,
+    ConditionalReturnCmp, // (a, b, fallthrough_addr, pred): return when the fused test holds
+    ConditionalCallCmp,   // (a, b, target_addr, pred): call when the fused test holds
 
     // Integer arithmetic
     Add,
@@ -131,6 +141,8 @@ enum class Opcode : uint16_t {
     Load64,
     LoadFloat32,
     LoadFloat64,
+    Load16Reversed, // lhbrx: byte-reversed halfword load
+    Load32Reversed, // lwbrx: byte-reversed word load
     Store8,
     Store16,
     Store32,
@@ -139,7 +151,10 @@ enum class Opcode : uint16_t {
     StoreFloat32,
     StoreFloat64,
     StoreFloatInteger32, // stfiwx: raw low FPR word, not a float store
-    PairedSingle,        // rbrew_ps(cpu, word): paired-single / GQR instruction (imm word)
+    Store16Reversed,     // sthbrx: byte-reversed halfword store
+    Store32Reversed,     // stwbrx: byte-reversed word store
+    Zero32Bytes,         // dcbz: zero a 32-byte cache line at ea
+    PairedSingle,        // rbrew_ps(cpu, mem, word): paired-single / GQR instruction (imm word)
     PairedFill,          // ps1[n] = f[n]: single-precision scalar result fills slot 1 (imm n)
     Trap,                // rbrew_trap(cpu, word, pc): tw/twi, traps when the TO condition holds
 
@@ -147,6 +162,16 @@ enum class Opcode : uint16_t {
     Move,
     ZeroExtend,
     SignExtend,
+
+    // Carrying arithmetic: result = a + b + cin; CarryFromAdd yields the
+    // 0/1 carry-out of the same widened sum (the host compiler folds both).
+    AddCarryIn,
+    CarryFromAdd,
+
+    // sraw/srawi: arithmetic right shift by b (mod 64) and the 0/1 carry-out
+    // of the same shift (XER.CA: value negative and 1-bits shifted out).
+    SarResult,
+    SarCarryOut,
 
     // Floating point
     FSelect, // nonrecord fsel: condition, nonnegative value, negative/NaN value
