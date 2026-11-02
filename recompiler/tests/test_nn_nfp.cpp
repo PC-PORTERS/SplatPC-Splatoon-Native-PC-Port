@@ -4,8 +4,8 @@
 #include "os/nn_act/nn_act.h"
 #include "os/nn_nfp/nn_nfp.h"
 #include "os/stubs/stubs_addrs.h"
+#include "rebrewu/logger.hpp"
 
-#include <cstdio>
 #include <cstdlib>
 #include <vector>
 
@@ -13,7 +13,7 @@ namespace {
 
 void require(bool ok, const char* what) {
     if (ok) return;
-    std::fprintf(stderr, "FAIL: %s\n", what);
+    RBREW_LOG_ERROR("nn_nfp", "FAIL: %s\n", what);
     std::exit(1);
 }
 
@@ -150,12 +150,12 @@ int main(int argc, char** argv) {
         rbrew_nfp::Tag tag;
         std::string error;
         require(rbrew_nfp::load_dump(argv[i], tag, error), "sample dump loads");
-        std::printf("%s: uid", argv[i]);
-        for (uint8_t b : tag.uid) std::printf(" %02X", b);
-        std::printf(" id");
-        for (uint8_t b : tag.id) std::printf(" %02X", b);
-        std::printf(" writes %02X%02X\n", tag.write_counter[0], tag.write_counter[1]);
+        RBREW_LOG_INFO_BEGIN("nn_nfp", "%s: uid", argv[i]);
+        for (uint8_t b : tag.uid) RBREW_LOG_RAW(" %02X", b);
+        RBREW_LOG_RAW(" id");
+        for (uint8_t b : tag.id) RBREW_LOG_RAW(" %02X", b);
+        RBREW_LOG_RAW(" writes %02X%02X\n", tag.write_counter[0], tag.write_counter[1]);
     }
-    std::printf("nn_nfp: ok\n");
+    RBREW_LOG_INFO("nn_nfp", "ok\n");
     return 0;
 }
