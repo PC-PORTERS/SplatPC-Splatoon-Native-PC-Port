@@ -1,5 +1,5 @@
 // Catch-all stubs for remaining Wii U OS modules:
-// nn_save, nn_act, nn_olv, nn_boss, nn_nfp, nn_fp, proc_ui, sysapp,
+// nn_save, nn_act, nn_olv, nn_boss, nn_fp, proc_ui, sysapp,
 // nsysnet, zlib125, nlibcurl, mic, nn_ac, nn_acp, nn_ndm
 //
 // nn_save file operations use the shared coreinit FS provider under ./save/.
@@ -26,6 +26,9 @@ static void SAVEFlushQuota(CPUState* cpu) {
 }
 static void SAVEMakeDir(CPUState* cpu) {
     coreinit_save_make_dir(cpu);
+}
+static void SAVERemove(CPUState* cpu) {
+    coreinit_save_remove(cpu);
 }
 static void SAVEGetStat(CPUState* cpu) {
     coreinit_save_get_stat(cpu);
@@ -161,35 +164,6 @@ static void BOSSDataNameCtor(CPUState* cpu) {
         throw std::runtime_error("nn::boss::DataName::DataName: object outside guest memory");
     memset(MEM + self, 0, 0x20);
     RET = self;
-}
-
-// ---------------------------------------------------------------------------
-// nn_nfp — Amiibo (not present)
-// ---------------------------------------------------------------------------
-
-static void NFPInit(CPUState* cpu) {
-    RET = 0;
-}
-static void NFPInitialize(CPUState* cpu) {
-    RET = 0;
-}
-static void NFPGetNfpState(CPUState* cpu) {
-    RET = 0;
-} // NFP_STATE_INIT
-static void NFPStartDetection(CPUState* cpu) {
-    RET = 0;
-}
-static void NFPStopDetection(CPUState* cpu) {
-    RET = 0;
-}
-static void NFPMount(CPUState* cpu) {
-    RET = (uint32_t)-1;
-}
-static void NFPIsNfcEnabled(CPUState* cpu) {
-    RET = 0;
-}
-static void NFPFinalize(CPUState* cpu) {
-    RET = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -451,6 +425,7 @@ void stubs_register(CPUState* cpu) {
     // REG(SAVECloseDir); // not in this game's PLT
     // REG(SAVEReadDir); // not in this game's PLT
     REG(SAVEGetStat);
+    REG(SAVERemove);
     // REG(SAVEGetFreeSpaceSize); // not in this game's PLT
     // nn_act
     // REG(ACTInit); // not in this game's PLT
@@ -474,13 +449,7 @@ void stubs_register(CPUState* cpu) {
     // REG(BOSSInit); // not in this game's PLT
     // REG(BOSSGetStorageInfo); // not in this game's PLT
     // REG(BOSSGetTaskIdList); // not in this game's PLT
-    // nn_nfp (Amiibo support - stubs returning safe non-ready state)
-    rbrew_register_func(cpu, ADDR_Initialize__Q2_2nn3nfpFv, NFPInitialize);
-    rbrew_register_func(cpu, ADDR_GetNfpState__Q2_2nn3nfpFv, NFPGetNfpState);
-    rbrew_register_func(cpu, ADDR_StartDetection__Q2_2nn3nfpFv, NFPStartDetection);
-    rbrew_register_func(cpu, ADDR_StopDetection__Q2_2nn3nfpFv, NFPStopDetection);
-    rbrew_register_func(cpu, ADDR_Mount__Q2_2nn3nfpFv, NFPMount);
-    rbrew_register_func(cpu, ADDR_GetErrorCode__Q2_2nn3nfpFRCQ2_2nn6Result, NFPInit);
+    // nn_nfp: os/nn_nfp (emulated NFC touchpoint)
     // nn_fp
     // REG(FPInit); // not in this game's PLT
     // REG(FPIsInitialized); // not in this game's PLT
