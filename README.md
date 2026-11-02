@@ -29,9 +29,9 @@ The launcher checks for updates when it starts and rebuilds only what changed.
 | Left click / Right click | Shoot (ZR) / Squid form (ZL) |
 | Space, Q, E | Jump, sub weapon, special |
 | F, G | Map (+), Options (-) |
-| Esc | Settings menu (graphics, controls, volume) |
+| Esc | Settings menu (display, mouse, controls, volume) |
 | F4 | Friends window (add a friend by pseudo) |
-| F11 / F12 | Window / photo |
+| F11 / F12 | Full screen / photo |
 
 Controllers work too (buttons mapped like the Wii U GamePad). Every key can be rebound in the Esc menu.
 
@@ -110,9 +110,9 @@ Le lanceur cherche les mises à jour au démarrage et ne reconstruit que ce qui 
 | Clic gauche / Clic droit | Tirer (ZR) / Forme calamar (ZL) |
 | Espace, Q, E | Saut, arme secondaire, spécial |
 | F, G | Carte (+), Options (-) |
-| Échap | Menu des réglages (graphismes, touches, volume) |
+| Échap | Menu des réglages (affichage, souris, touches, volume) |
 | F4 | Fenêtre des amis (ajouter un ami par son pseudo) |
-| F11 / F12 | Fenêtre / photo |
+| F11 / F12 | Plein écran / photo |
 
 Les manettes fonctionnent aussi (boutons placés comme sur le GamePad). Toutes les touches se changent dans le menu Échap.
 

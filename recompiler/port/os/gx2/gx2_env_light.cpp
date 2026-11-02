@@ -1437,7 +1437,14 @@ void frame(uint8_t* mem, uint64_t swap_count) {
         const char* v = std::getenv("RBREW_ENV_LIGHT");
         return !(v && v[0] == '0');
     }();
-    const auto settings = rbrew_settings::get();
+    auto settings = rbrew_settings::get();
+    if (online_mode()) {   // online plays with the Wii U camera: no FOV/distance/height/wiggle/blur
+        settings.camera_fov = 55;
+        settings.camera_distance = 100;
+        settings.camera_height = 0;
+        settings.camera_motion = false;
+        settings.motion_blur = false;
+    }
     int scene_id = -1;
     const int scene_type = rbrew_control_defaults::active_scene_type(mem, &scene_id);
     {

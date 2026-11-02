@@ -227,6 +227,7 @@ bool build_camera(rs::Values& v) {
     }
     dirty |= slider("Mouse sensitivity", v.mouse_sensitivity, 25, 400, "%d %%",
                     "How far the camera turns per mouse movement.");
+    if (gx2env::online_mode()) return dirty;   // online keeps the Wii U camera (gx2_env_light.cpp)
     dirty |=
         slider("Field of view", v.camera_fov, 40, 90, "%d", "Wider makes the plaza feel bigger. The game's own is 55.");
     dirty |= slider("Camera distance", v.camera_distance, 50, 250, "%d %%",
@@ -336,7 +337,9 @@ Page build_main_rows(rs::Values& v, bool& dirty) {
         if (button("Weather & time (experimental)", "Weather, time of day, day/night cycle and clouds."))
             open = Page::Weather;
     }
-    if (button("Camera & mouse", "Mouse aiming, field of view, camera distance, wiggle.")) open = Page::Camera;
+    if (button("Camera & mouse", gx2env::online_mode() ? "Mouse aiming and sensitivity."
+                                                        : "Mouse aiming, field of view, camera distance, wiggle."))
+        open = Page::Camera;
     if (!gx2env::online_mode()) {   // free camera and spawn hacks: offline only
         ImGui::SameLine();
         if (button("Cinema, photo & hacks (experimental)", "Cinema mode, photos, focus blur, free camera, spawn."))
