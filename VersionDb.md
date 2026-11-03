@@ -8,4 +8,4 @@
 | Version Id | Region | Verdict | Tested Platform |
 | --- | --- | --- | --- |
 | v16 | EUR | Playable | Windows + Linux |
-| v288 | EUR | Experimental | Windows |
+| v288 | EUR | Experimental | Windows + Linux |
