@@ -32,7 +32,10 @@ Turn it on in the settings menu with *Graphics preset* (Balanced, Realistic or C
 - `HD-Textures` upscales the textures you saw while playing with Real-ESRGAN into `Game\textures`; nothing is downloaded or shared
 
 **Releases for Windows and Linux**
-- Each version tag publishes a Windows .zip and a Linux .tar.gz on the [Releases page](https://github.com/NEVESYA/SPLATOON-1-PC-PORT/releases) (source and setup only; you build the game from your own dump)
+- The [Releases page](https://github.com/NEVESYA/SPLATOON-1-PC-PORT/releases) provides standalone graphical builder tools for each release:
+  - **`SplatPC-Builder.exe`** for Windows
+  - **`SplatPC-Builder-x86_64.AppImage`** for Linux
+  Simply download the builder tool from the release, follow the wizard steps, and build your game without dealing with manual scripts.
 
 **Settings menu (Esc / controller touchpad)**
 - Render resolution, Plaza 60 FPS on/off, frame rate (30 / 60 / 120 / 180), G-Sync / FreeSync, fullscreen, performance overlay
@@ -50,117 +53,46 @@ Turn it on in the settings menu with *Graphics preset* (Balanced, Realistic or C
 
 ## Requirements
 
-- **Windows 10 or 11, 64-bit**, or a **64-bit Linux distribution**
-- **Linux build tools** (the setup uses CMake end to end): CMake ≥ 3.20, Ninja or Make, GCC or Clang, Python ≥ 3.12, plus the `zlib`, `libcurl` and `vulkan-headers` development packages — Arch example: `sudo pacman -S --needed cmake ninja python gcc zlib curl vulkan-headers`. X11/Wayland headers are recommended so the game can open a window.
-- **GPU with Vulkan 1.3** and an up-to-date driver (developed on an RTX 5060 Ti; a modern NVIDIA is recommended)
-- **CPU:** modern 6–8 cores or more · **RAM:** 16 GB minimum, 32 GB recommended (building the game uses a lot of memory)
-- **Disk:** about 40 GB free during setup FINAL BUILD IS 6GB COUNTING THE SHADER CACHES
-- **Your own game dump:** Supported Splatoon version (see [VersionDb](/VersionDb.md)), with the folders `code`, `content` and `meta` (for example made with *Dumpling* on your Wii U).
+- **OS:** Windows 10/11 (64-bit) or modern 64-bit Linux
+- **GPU:** Vulkan 1.3 compatible with updated drivers (modern NVIDIA recommended)
+- **CPU & RAM:** Modern 6–8 cores CPU or more · 16 GB RAM minimum (32 GB recommended)
+- **Storage:** ~40 GB free during build (final game install is ~6 GB)
+- **Game Dump:** Supported Splatoon Wii U dump (folders `code`, `content`, `meta` dumped from your console, see [VersionDb](/VersionDb.md))
 
-## Installation (Windows)
+## Installation
 
-1. Click **Code → Download ZIP** on this page and extract it to a short path, for example `C:\SplatoonPort`.
-2. Double-click **`Setup.bat`**.
-   - If Visual Studio Build Tools, Python 3.12 or Git are missing, the setup offers to install them for you. Afterwards, close the window and run `Setup.bat` again.
-3. When asked, select your **Splatoon dump folder** (the one containing `code`, `content` and `meta`). **The dump folder can have any name**; spaces and brackets such as `Splatoon [AGMP01]` are supported. Select the parent folder, rather than `code` or `content` inside it. Setup creates the Wii U folders automatically; there is no system-folder selection.
-4. Wait. The first setup takes **30–90 minutes**: it builds the tools and recompiles your game.
-5. Play: **`Game\Splatoon.exe`** (the setup can also create a desktop shortcut).
+1. Download **SplatPC Builder** from the latest [Release](https://github.com/NEVESYA/SPLATOON-1-PC-PORT/releases):
+   - **Windows:** **`SplatPC-Builder.exe`**
+   - **Linux:** **`SplatPC-Builder-x86_64.AppImage`** (make it executable: `chmod +x SplatPC-Builder-x86_64.AppImage`)
+2. Launch the builder and follow the wizard steps:
+   - **Prerequisites:** Automatically checks for required tools and offers to install anything missing.
+   - **Base ROM:** Select your official Splatoon v16 dump folder (`code`, `content`, `meta`).
+   - **Updates & Mods:** Click **"Add update or mod..."** to layer an official update (e.g. v288) or resource mods.
+   - **Configuration:** Set your initial graphics preset, resolution, and output destination folder.
+   - **Build:** Click **Build** and let the tool compile your game.
+3. Play: Launch **`Splatoon.exe`** (Windows) or **`./Splatoon`** (Linux) in your output directory.
 
-Setup creates the Wii U `mlc01` directory layout and the port's empty save folders automatically, like Cemu's initial setup. It uses existing local system fonts when available, or downloads Cemu's open-source Noto replacement fonts automatically (about 26 MB, with pinned checksums and their SIL OFL license). It never imports game saves, Mii save databases or console accounts. A fresh installation starts with no progress, and the game creates its save while you play.
-
-Existing Mii graphics resources are detected automatically beside your game dump/repository, in `wiiu-system/mlc`, or in Cemu's default/configured MLC. These are optional to setup: missing resources produce a warning and may affect Mii graphics. Setup does not generate or download Nintendo's Mii graphics. Developers can optionally use `-Mlc "D:\My system dump"` to add a resource location; players are never prompted for it.
-
-**Updating:** download the new version, then run `Setup.bat` again. Your save (`Game/save`) and shader cache are kept.
-
-Options: `Setup.bat -Clean` rebuilds everything, and `-Output D:\Splatoon` picks a different game folder.
-
-You can also pass folders directly, with quotes around paths that contain spaces:
-
-```bat
-Setup.bat -GameDump "D:\My Wii U games\Splatoon [AGMP01]"
-```
-
-## Installation (Linux)
-
-1. Install the build tools (see [Requirements](#requirements)), for example on Arch:
-   ```bash
-   sudo pacman -S --needed cmake ninja python gcc zlib curl vulkan-headers
-   ```
-2. Extract the repository (or `git clone` it) anywhere and run the setup with your dump folder:
-   ```bash
-   ./setup.sh --dump "/path/to/SplatoonDump"
-   ```
-   The dump must contain `code`, `content` and `meta`. Without `--dump`, the setup looks in `~/Downloads` and `./dump`, then asks for the folder. It creates the Wii U `mlc01` layout, downloads the Noto replacement fonts (checksum-pinned), builds the dependencies, the recompiler and the game. The first run takes **30–90 minutes**.
-3. Play: **`./Game/Splatoon`**.
-
-Options: `./setup.sh --clean` rebuilds everything, `--output ~/Games/Splatoon` picks a different game folder, `--mlc PATH` adds a system-resource location, `--jobs N` sets the compile parallelism. Re-running the setup keeps your save (`Game/save`) and shader cache; run it again after pulling updates.
-
-**Updating:** download the new version, then run `./setup.sh` again. Your save (`Game/save`) and shader cache are kept.
+> **Updating:** When a new release comes out, simply download the new builder from Releases and run it again. Your saves (`save/`) and shader cache are always preserved.
 
 ---
 
 ### Optional: HD textures
 
-The game starts; visit the places you want in HD and close it. The textures it showed are then upscaled (Real-ESRGAN) into the `textures` folder next to the game and load at the next start. Everything happens on your PC from your own copy of the game; the HD textures are never uploaded or shared, because they are derived from the game's files.
+Upscales textures captured during gameplay using Real-ESRGAN into `textures/`.
+- **SplatPC Builder** detects compatible NVIDIA GPUs and automatically activates HD texturing (CUDA acceleration).
+- You can also run the standalone scripts: `HD-Textures.bat` (Windows) or `./HD-Textures.sh` (Linux).
 
-- **Windows:** double-click `HD-Textures.bat`.
-- **Linux:** run `./HD-Textures.sh` from the project folder (after `./setup.sh`).
+---
 
-Both need Python 3; the script offers to install `torch`, `numpy` and `pillow` with pip (on Linux you may need `python3-pip` from your distribution first). An NVIDIA graphics card with CUDA makes it many times faster than the CPU. Finished textures are kept, so you can stop and run it again later.
+## Updates & Mods
 
-> **macOS** is not supported yet: the setup and the renderer have no macOS path (no MoltenVK build), so there is no macOS package or script.
+Official game updates (such as EUR revision 288) and resource mods are handled directly in **SplatPC Builder**:
 
-### Building with CMake directly
-
-`setup.sh` is a thin orchestrator over two CMake projects — `recompiler/` (the RebrewU tool) and `recompiler/port/` (the runtime and the game). The equivalent manual flow is:
-
-```bash
-# 1. RebrewU recompiler
-cmake -S recompiler -B build/rebrewu -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build/rebrewu --target rebrewu
-
-# 2. Recompile your dump into C++ (writes build/generated/Gambit).
-#    The RPX selects its manifest from Manifest/*.manifest automatically.
-build/rebrewu/bin/rebrewu recompile \
-    --rpx "/path/to/dump/code/Gambit.rpx" --output build/generated/Gambit
-
-# 3. Game (after ./setup.sh has built the SDL2/glslang dependency profile)
-cmake -S recompiler/port -B build/game -G Ninja -DCMAKE_BUILD_TYPE=Release \
-    -DRBREW_GRAPHICS_BACKEND=Vulkan -DRBREW_BUILD_GAME=ON \
-    -DGAMBIT_GENERATED_DIR="$PWD/build/generated/Gambit" \
-    -DSDL2_DIR=... -Dglslang_DIR=... -DCMAKE_PREFIX_PATH=...
-cmake --build build/game --target Gambit
-```
-
-For incremental rebuilds just run **`./build.sh`** — it reuses the configured build trees and CMake re-runs itself when any `CMakeLists.txt` or `*.cmake` file changed.
-
-## Update to 288 (experimental)
-
-The update is installed as a complete merged ROM. **Update-combinator** copies your base v16 dump and overlays the 288 update's Wii U folders (`code`, `content`, `meta`). Setup then builds that folder like a normal game, so the same steps work on Windows and Linux. The merged folder stays private: never share it.
-
-You need the base v16 dump and the update 288 dump, Python 3, the normal setup tools and about 10 GB free. Run these commands from the repository folder. Add `--force` to replace a previous merged folder.
-
-### Windows
-
-1. Merge the dumps:
-   ```bat
-   py -3 scripts\update_combinator.py --base "D:\Owned\Splatoon v16" --update "D:\Owned\Splatoon 288" --output "D:\Owned\Splatoon v288 combined"
-   ```
-2. Run **`Setup.bat`** and select the merged folder when it asks for your game dump. To keep your v16 install, start Setup with a different game folder, for example `Setup.bat -Output D:\Splatoon288`.
-3. Start **`Game\Splatoon.exe`**.
-
-### Linux
-
-1. Merge the dumps:
-   ```bash
-   python3 scripts/update_combinator.py --base "/home/me/Splatoon v16" --update "/home/me/Splatoon 288" --output "/home/me/Splatoon v288 combined"
-   ```
-2. Run **`./setup.sh --dump "/home/me/Splatoon v288 combined"`**. To keep your v16 install, add `--output ~/Games/Splatoon288`.
-3. Start **`./Game/Splatoon`** (or the `--output` path).
-
-Original dumps are never modified. More details: [docs/update-288.md](docs/update-288.md).
-
-If something fails, report the step, your GPU and the exact error text; do not attach game content, dumps, saves or generated files.
+1. In the builder's ROM step, select your base Splatoon v16 dump folder.
+2. Click **"Add update or mod..."**:
+   - **For Updates (e.g. revision 288):** Select your dumped update folder. The builder automatically detects official updates and pairs them with the matching manifest (`Gambit_v288.manifest`).
+   - **For Resource Mods:** Mods modifying game resources (custom textures, audio, models, or UI inside `content/` and `meta/`) can also be added as overlay layers in the exact same way.
+3. Proceed with the wizard and build. The builder layers and merges everything automatically during compilation without modifying your original files.
 
 ## Controls
 

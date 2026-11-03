@@ -3,6 +3,18 @@
 # files).
 /build/
 /Game/
+/Out/
+/dist/
+
+# Builder binaries and packages
+/splatpc-builder
+/splatpc-builder.exe
+/Builder/splatpc-builder
+/Builder/splatpc-builder.exe
+/Builder/*.exe
+*.AppImage
+*.AppDir/
+*.exe
 
 # Auto-fetched third-party headers
 recompiler/third_party/nlohmann/
