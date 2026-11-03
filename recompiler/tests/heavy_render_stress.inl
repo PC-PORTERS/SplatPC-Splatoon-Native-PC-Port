@@ -526,6 +526,79 @@ void gx2_render_vk_test_vertex_plans() {
         sum += value.input.attrs[0].stride + value.input.attrs[1].format + value.offsets[0];
     }
     const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    // The final interleaved UV must survive a binding offset near the end of a stride.
+    Program boundary;
+    boundary.id = 0xFFFFF100;
+    for (auto& info : boundary.info) {
+        info.attribute_locations.fill(-1);
+        info.buffer_bindings.fill(-1);
+        info.vk.uniform_buffer_bindings.fill(-1);
+        info.vk.texture_bindings.fill(-1);
+    }
+    boundary.info[1].vk.pixel_outputs = 1;
+    boundary.vs = gx2vk::shader_module(
+        VK_SHADER_STAGE_VERTEX_BIT, "#version 450\nlayout(location=0)in uvec4 a;layout(location=0)flat out vec2 value;"
+                                    "void main(){vec2 p=vec2((gl_VertexIndex<<1)&2,gl_VertexIndex&2);"
+                                    "gl_Position=vec4(p*2.-1.,0.5,1.);value=uintBitsToFloat(a.xy);}");
+    boundary.ps_source = "#version 450\nlayout(location=0)flat in vec2 value;layout(location=0)out vec4 c;"
+                         "void main(){c=vec4(value,0.,1.);}";
+    require(boundary.vs && create_program_layouts(boundary), "boundary fetch shaders failed");
+    float payload[24]{};
+    for (unsigned i = 0; i < 3; ++i) {
+        payload[i * 8 + 6] = 0.25f;
+        payload[i * 8 + 7] = 0.75f;
+    }
+    ColorTarget target;
+    target.width = target.height = 8;
+    gx2vk::ImageDesc desc;
+    desc.width = desc.height = 8;
+    desc.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    require(gx2vk::create_image(target.image, desc), "boundary fetch target failed");
+    S.framebuffer = {};
+    S.framebuffer.valid = true;
+    S.framebuffer.colors[0] = &target;
+    S.raster = RasterState{};
+    S.raster.viewport[2] = S.raster.viewport[3] = 8;
+    S.raster.depth_test = false;
+    S.raster.cull = false;
+    PipelineRequest request{};
+    request.program = &boundary;
+    request.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    request.input.count = 1;
+    request.input.attrs[0] = {0, VK_FORMAT_R32G32_UINT, 32, 0, 1};
+    request.colors[0] = target.image.desc.format;
+    request.blend[0].colorWriteMask = 15;
+    const auto pipeline = get_pipeline(request);
+    for (const uint64_t generation : {uint64_t(1), kGx2WriteUntracked}) {
+        const uint32_t address = generation == kGx2WriteUntracked ? 65792 : 65536;
+        std::memcpy(mem + address, payload, sizeof(payload));
+        require(cached_vertex_buffer(mem, address, sizeof(payload), generation, 16).buffer,
+                "initial boundary upload failed");
+        const auto vertex = cached_vertex_buffer(mem, address, sizeof(payload), generation, 32);
+        require(vertex.buffer, "boundary fetch upload failed");
+        const auto cached = cached_vertex_buffer(mem, address, sizeof(payload), generation, 32);
+        require(cached.buffer == vertex.buffer, "unchanged padded vertex buffer was uploaded again");
+        require(pipeline && ensure_rendering(), "boundary fetch pipeline failed");
+        const auto cb = gx2vk::cmd();
+        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+        reset_command_tracking();
+        require(apply_dynamic_state(cb, request.topology, false), "boundary fetch state failed");
+        const VkDeviceSize vertex_offset = vertex.offset + 24;
+        vkCmdBindVertexBuffers(cb, 0, 1, &vertex.buffer, &vertex_offset);
+        vkCmdDraw(cb, 3, 1, 0, 0);
+        gx2vk::note_gpu_write(target.image);
+        end_rendering();
+        std::vector<uint8_t> pixels;
+        require(gx2vk::read_image(target.image, VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 8, 8, pixels),
+                "boundary fetch readback failed");
+        require(pixels.size() == 8 * 8 * 4, "boundary fetch image size changed");
+        for (size_t i = 0; i < pixels.size(); i += 4)
+            require(pixels[i] == 64 && pixels[i + 1] == 191 && pixels[i + 2] == 0 && pixels[i + 3] == 255,
+                    "last vertex lost components at the buffer boundary");
+    }
+    S.framebuffer = {};
+    gx2vk::destroy_image(target.image);
+    release_program_layouts(boundary);
     for (auto& a : S.attrib) a = {};
     require(gx2vk::finish(), "vertex plan cleanup failed");
     std::printf(

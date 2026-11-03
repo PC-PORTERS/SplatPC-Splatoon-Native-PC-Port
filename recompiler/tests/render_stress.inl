@@ -355,8 +355,18 @@ void gx2_render_vk_test_lifetime() {
     lifetime = false;
 }
 
+#include "render_discard_state.inl"
+
 void gx2_render_vk_test_binding_contracts() {
     using namespace render_stress;
+    WarmPipelineRecord warm{};
+    warm.colors[0] = VK_FORMAT_R8G8B8A8_UNORM;
+    warm.depth = VK_FORMAT_D32_SFLOAT;
+    require(warm_formats_supported(warm), "portable warm-up formats rejected");
+    if (!gx2vk::format_supports(VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)) {
+        warm.depth = VK_FORMAT_D24_UNORM_S8_UINT;
+        require(!warm_formats_supported(warm), "foreign GPU's unsupported depth format accepted");
+    }
     Program program;
     for (auto& i : program.info) {
         i.attribute_locations.fill(-1);
@@ -480,6 +490,7 @@ void gx2_render_vk_test_binding_contracts() {
     require(gx2vk::finish(), "contract cleanup failed");
     release_program_layouts(program);
     reset_command_tracking();
+    verify_discard_state_transitions();
     std::printf("{\"binding_contracts\":true,\"passed\":true}\n");
 }
 

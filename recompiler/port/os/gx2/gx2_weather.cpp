@@ -180,6 +180,8 @@ bool prepare() {
         !make_image(s_dummy2d, VK_IMAGE_TYPE_2D, rgba16, 1, 1, 1, kStorageSampled) ||
         !make_image(s_dummy3d, VK_IMAGE_TYPE_3D, VK_FORMAT_R8G8B8A8_UNORM, 1, 1, 1, kStorageSampled) ||
         !make_image(s_dummy_storage2d, VK_IMAGE_TYPE_2D, rgba16, 1, 1, 1, kStorageSampled) ||
+        !make_image(s_hist, VK_IMAGE_TYPE_2D, VK_FORMAT_R32_UINT, 128, 1, 1,
+                    kStorageSampled | VK_IMAGE_USAGE_TRANSFER_DST_BIT) ||
         !make_image(s_dummy_storage3d, VK_IMAGE_TYPE_3D, VK_FORMAT_R8G8B8A8_UNORM, 1, 1, 1, kStorageSampled))
         return fail("Atmosphere images");
     return true;
@@ -892,7 +894,7 @@ bool apply(gx2vk::Image& color, gx2vk::Image& depth, const Camera& camera, const
         c.images[kDome] = &s_dome;
         c.images[kBloom0] = bloom ? &s_bloom_up[0] : nullptr;
         c.images[kToneMap] = curve ? &s_curve : nullptr;
-        if (curve) c.images[kDomeImage] = &s_hist;
+        c.images[kDomeImage] = &s_hist;
         dispatch(s_composite, c, cp, (w + 7) / 8, (h + 7) / 8, 1, &s_result);
         gx2vk::Image* final_image = &s_result;
         // Temporal AA (RBREW_TAA=0: off) with the previous frame's camera.

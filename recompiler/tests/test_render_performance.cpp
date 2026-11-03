@@ -515,6 +515,9 @@ static int present_capture_test() {
             ++disturbed;
     require(disturbed == 0, "the interface leaked into a captured present");
     gx2vk::capture_presents(false);
+    // Normal presents load the scene before drawing the overlay over it.
+    for (unsigned i = 0; i < 3; ++i) require(gx2vk::present(frame, 640, 360), "overlay present failed");
+    require(gx2vk::finish(), "overlay presents did not complete");
     require(gx2vk::validation_error_count() == 0, "Vulkan validation error");
     std::printf("{\"metric\":\"present_capture\",\"presents\":%u,\"width\":%u,\"height\":%u,\"passed\":true}\n",
                 presented, w, h);

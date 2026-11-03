@@ -331,6 +331,7 @@ bool gx2r::ensure_rendering(bool streamout_only) {
     if (!S.framebuffer.valid && !streamout_only) return false;
     if (s_rendering && s_active_fb == S.framebuffer && s_streamout_only == streamout_only) return true;
     end_rendering();
+    if (s_streamout_only != streamout_only) reset_command_tracking();
     const auto& fb = S.framebuffer;
     uint32_t w = UINT32_MAX, h = UINT32_MAX;
     for (auto* t : fb.colors) {
@@ -1094,7 +1095,7 @@ void release_program_layouts(Program& p) {
 static_assert(std::is_trivially_copyable_v<R700VulkanInterface> && std::is_trivially_copyable_v<R700UniformEntry>);
 // Compatibility changes only when translation semantics, exact-key inputs or
 // serialized metadata change. Ordinary game/renderer rebuilds reuse entries.
-constexpr uint32_t kTranslationCompatibility = 1;
+constexpr uint32_t kTranslationCompatibility = 2;
 std::string translation_cache_prefix() {
     return "v" + std::to_string(kTranslationCompatibility) + "_c" +
            std::to_string(unsigned(gx2vk::caps().negative_one_to_one)) + "_";
@@ -3011,8 +3012,9 @@ VkPipeline create_pipeline(const PipelineRequest& r, const PipelineSwitches& s) 
                                              VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE,
                                              VK_DYNAMIC_STATE_BLEND_CONSTANTS};
     VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
-    dynamic.dynamicStateCount = uint32_t(std::size(dynamic_states));
-    dynamic.pDynamicStates = dynamic_states;
+    const VkDynamicState discard_states[] = {VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE};
+    dynamic.dynamicStateCount = discard ? uint32_t(std::size(discard_states)) : uint32_t(std::size(dynamic_states));
+    dynamic.pDynamicStates = discard ? discard_states : dynamic_states;
     VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
     rendering.colorAttachmentCount = discard ? 0 : 8;
     rendering.pColorAttachmentFormats = discard ? nullptr : r.colors;
@@ -3070,6 +3072,15 @@ struct WarmPipelineRecord {
     uint32_t stencil, discard, half_z, z_clip;
     VkPipelineColorBlendAttachmentState blend[8];
 };
+bool warm_formats_supported(const WarmPipelineRecord& record) {
+    if (record.depth != VK_FORMAT_UNDEFINED &&
+        !gx2vk::format_supports(record.depth, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT))
+        return false;
+    for (const auto format : record.colors)
+        if (format != VK_FORMAT_UNDEFINED && !gx2vk::format_supports(format, VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT))
+            return false;
+    return true;
+}
 static_assert(std::is_trivially_copyable_v<WarmPipelineRecord> && std::is_trivially_copyable_v<WarmMasksRecord>);
 bool warmup_enabled() {
     static const bool on = [] {
@@ -3148,6 +3159,11 @@ void warm_poll() {
         const auto& w = *it;
         auto found = s_prog_cache.find(w.program_key);
         if (found == s_prog_cache.end() || !found->second) {
+            it = s_warm.pending.erase(it);
+            continue;
+        }
+        // Warm-up records can come from another GPU, including unsupported D24 depth views.
+        if (!warm_formats_supported(w)) {
             it = s_warm.pending.erase(it);
             continue;
         }
@@ -3562,7 +3578,10 @@ struct VboMru {
 };
 static std::array<VboMru, 32> s_vbo_mru{};
 
-BufferRef cached_vertex_buffer(uint8_t* mem, uint32_t addr, uint32_t size, uint64_t written) {
+BufferRef cached_vertex_buffer(uint8_t* mem, uint32_t addr, uint32_t size, uint64_t written, uint32_t stride) {
+    // AMD bounds checks may cover a full stride after the attribute binding offset.
+    const auto padding = std::max(16u, std::min(stride, gx2vk::caps().limits.maxVertexInputBindingStride));
+    const VkDeviceSize storage_size = VkDeviceSize(size) + padding;
     const uint64_t key = uint64_t(addr) << 32 | size;
     const size_t mru_idx = (key ^ (key >> 20) ^ (key >> 35)) & (s_vbo_mru.size() - 1);
     CachedVertexBuffer* b_ptr = nullptr;
@@ -3613,7 +3632,7 @@ BufferRef cached_vertex_buffer(uint8_t* mem, uint32_t addr, uint32_t size, uint6
     const uint64_t epoch = g_gx2_frame_epoch.load(std::memory_order_relaxed);
     bool hit = false;
     uint64_t content = 0;
-    if (b.valid && b.mem == mem) {
+    if (b.valid && b.buffer.size >= storage_size && b.mem == mem) {
         if (untracked) {
             // Epoch model (Cemu's chronon): re-prove the copy at most once
             // per frame — the first draw of the mesh hashes, every later draw
@@ -3645,10 +3664,10 @@ BufferRef cached_vertex_buffer(uint8_t* mem, uint32_t addr, uint32_t size, uint6
     // storage only when every recorded read has completed.
     // Otherwise orphan it so earlier draws retain their original bytes.
     // The cached completion is conservative and adds no polling or GPU wait.
-    if (!b.buffer.buffer || b.last_serial > gx2vk::known_completed_serial()) {
+    if (!b.buffer.buffer || b.buffer.size < storage_size || b.last_serial > gx2vk::known_completed_serial()) {
         if (b.buffer.buffer) s_vertex_bytes -= size;
         gx2vk::destroy_buffer(b.buffer);
-        b.buffer = gx2vk::create_buffer(size, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, gx2vk::MemoryUse::Upload);
+        b.buffer = gx2vk::create_buffer(storage_size, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, gx2vk::MemoryUse::Upload);
         if (b.buffer.buffer) s_vertex_bytes += size;
     }
     if (!b.buffer.buffer || !b.buffer.memory.mapped) {
@@ -3656,7 +3675,8 @@ BufferRef cached_vertex_buffer(uint8_t* mem, uint32_t addr, uint32_t size, uint6
         return {};
     }
     std::memcpy(b.buffer.memory.mapped, mem + addr, size);
-    if (!gx2vk::flush_mapped(b.buffer.memory, 0, size)) {
+    std::memset(static_cast<uint8_t*>(b.buffer.memory.mapped) + size, 0, size_t(b.buffer.size - size));
+    if (!gx2vk::flush_mapped(b.buffer.memory, 0, b.buffer.size)) {
         b.valid = false;
         return {};
     }
@@ -3763,7 +3783,8 @@ void setup_vertex_attribs(uint8_t* mem, Program& prog, VertexBindings& out) {
     }
     gx2_write_generations(mem, checks.data(), check_count);
     for (unsigned i = 0; i < check_count; ++i)
-        vbo[checked_slots[i]] = cached_vertex_buffer(mem, checks[i].address, checks[i].size, checks[i].generation);
+        vbo[checked_slots[i]] = cached_vertex_buffer(mem, checks[i].address, checks[i].size, checks[i].generation,
+                                                     S.attrib[checked_slots[i]].stride);
     struct Bound {
         VkFormat format = VK_FORMAT_UNDEFINED;
         uint32_t buffer = 0, offset = 0, stride = 0, rate = 0, divisor = 0;
@@ -4617,7 +4638,13 @@ bool is_triangle_topology(VkPrimitiveTopology t) {
 }
 
 bool apply_dynamic_state(VkCommandBuffer cb, VkPrimitiveTopology topology, bool indexed_restart,
-                         bool atmosphere_sky = false) {
+                         bool atmosphere_sky = false, bool rasterizer_discard = false) {
+    const int restart = indexed_restart ? 1 : 0;
+    if (restart != s_dyn.restart) {
+        vkCmdSetPrimitiveRestartEnable(cb, restart);
+        s_dyn.restart = restart;
+    }
+    if (rasterizer_discard) return true;
     const auto& g = S.raster;
     const auto area = s_area;
     // Viewport: GPU UPPER_LEFT (guest top at row 0) = negative-height Vulkan
@@ -4749,11 +4776,6 @@ bool apply_dynamic_state(VkCommandBuffer cb, VkPrimitiveTopology topology, bool 
     if (std::memcmp(s_dyn.blend, g.blend_color.data(), 16) != 0) {
         vkCmdSetBlendConstants(cb, g.blend_color.data());
         std::memcpy(s_dyn.blend, g.blend_color.data(), 16);
-    }
-    const int restart = indexed_restart ? 1 : 0;
-    if (restart != s_dyn.restart) {
-        vkCmdSetPrimitiveRestartEnable(cb, restart);
-        s_dyn.restart = restart;
     }
     return true;
 }
@@ -5350,8 +5372,8 @@ bool issue_draw_program(Program* prog, uint8_t* mem, uint32_t prim, uint32_t cou
     if (s_dynamic_serial != gx2vk::recording_serial()) reset_command_tracking();
     const bool restart = indices.indexed && indices.restart;
     if (gx2weather::hud_hidden()) return trace_skip("cinema");
-    const bool atmosphere_sky = gx2weather::sky_draw(mem, count);
-    if (!apply_dynamic_state(cb, topology, restart, atmosphere_sky)) return trace_skip("dynamic-state");
+    const bool atmosphere_sky = !streamout_only && gx2weather::sky_draw(mem, count);
+    if (!apply_dynamic_state(cb, topology, restart, atmosphere_sky, streamout_only)) return trace_skip("dynamic-state");
     uint64_t applied_epoch = s_tracking_epoch;
     frame_trace_draw(*prog);
     const unsigned mode = prim & 31;
@@ -5410,7 +5432,8 @@ bool issue_draw_program(Program* prog, uint8_t* mem, uint32_t prim, uint32_t cou
         if (s_dynamic_serial != gx2vk::recording_serial()) reset_command_tracking();
         // Packing descriptors does not change guest raster state. Revalidate
         // only if an upload/readback/internal pass invalidated command state.
-        if (applied_epoch != s_tracking_epoch && !apply_dynamic_state(cb, topology, restart, atmosphere_sky))
+        if (applied_epoch != s_tracking_epoch &&
+            !apply_dynamic_state(cb, topology, restart, atmosphere_sky, streamout_only))
             return any;
         applied_epoch = s_tracking_epoch;
         if (pipeline != s_bound_pipeline) {
@@ -6188,10 +6211,15 @@ const char* kTransferPs =
     "#version 450\nlayout(set=0,binding=0) uniform sampler2D source;layout(location=0) out vec4 value;"
     "layout(push_constant)uniform CopyScale{vec2 scale;}pc;"
     "void main(){value=vec4(texelFetch(source,ivec2(gl_FragCoord.xy*pc.scale),0).r,0,0,1);}\n";
-} // namespace
+const char* kDepthTransferPs = "#version 450\nlayout(set=0,binding=0)uniform sampler2D source;"
+                               "layout(push_constant)uniform CopyScale{vec2 scale;}pc;"
+                               "void main(){gl_FragDepth=texelFetch(source,ivec2(gl_FragCoord.xy*pc.scale),0).r;}\n";
 
-bool gx2r::depth_to_color_pass(DepthTarget& source, ColorTarget& destination, uint32_t width, uint32_t height) {
-    if (!(destination.image.desc.usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)) return false;
+bool depth_transfer_pass(DepthTarget& source, gx2vk::Image& destination, VkFormat format, uint32_t guest_width,
+                         uint32_t guest_height, uint32_t width, uint32_t height, bool depth_output, uint32_t level = 0,
+                         uint32_t layer = 0) {
+    const auto usage = depth_output ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    if (!(destination.desc.usage & usage)) return false;
     if (!s_transfer_layout) {
         VkDescriptorSetLayoutBinding binding{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
                                              VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
@@ -6208,7 +6236,6 @@ bool gx2r::depth_to_color_pass(DepthTarget& source, ColorTarget& destination, ui
         layout.pPushConstantRanges = &push;
         vkCreatePipelineLayout(gx2vk::device(), &layout, nullptr, &s_transfer_layout);
     }
-    const VkFormat format = destination.fmt.attachment;
     auto& pipeline = s_transfer_pipelines[format];
     if (!pipeline) {
         VkPipelineShaderStageCreateInfo stages[2]{{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO},
@@ -6217,7 +6244,8 @@ bool gx2r::depth_to_color_pass(DepthTarget& source, ColorTarget& destination, ui
         stages[0].module = gx2vk::shader_module(VK_SHADER_STAGE_VERTEX_BIT, kTransferVs);
         stages[0].pName = "main";
         stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-        stages[1].module = gx2vk::shader_module(VK_SHADER_STAGE_FRAGMENT_BIT, kTransferPs);
+        stages[1].module =
+            gx2vk::shader_module(VK_SHADER_STAGE_FRAGMENT_BIT, depth_output ? kDepthTransferPs : kTransferPs);
         stages[1].pName = "main";
         VkPipelineVertexInputStateCreateInfo vertex{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
         VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
@@ -6232,18 +6260,22 @@ bool gx2r::depth_to_color_pass(DepthTarget& source, ColorTarget& destination, ui
         VkPipelineMultisampleStateCreateInfo multisample{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
         multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
         VkPipelineDepthStencilStateCreateInfo depth{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+        depth.depthTestEnable = depth_output;
+        depth.depthWriteEnable = depth_output;
+        depth.depthCompareOp = VK_COMPARE_OP_ALWAYS;
         VkPipelineColorBlendAttachmentState attachment{};
         attachment.colorWriteMask = 0xF;
         VkPipelineColorBlendStateCreateInfo blend{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-        blend.attachmentCount = 1;
+        blend.attachmentCount = depth_output ? 0 : 1;
         blend.pAttachments = &attachment;
         const VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
         VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
         dynamic.dynamicStateCount = 2;
         dynamic.pDynamicStates = dynamic_states;
         VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-        rendering.colorAttachmentCount = 1;
-        rendering.pColorAttachmentFormats = &format;
+        rendering.colorAttachmentCount = depth_output ? 0 : 1;
+        rendering.pColorAttachmentFormats = depth_output ? nullptr : &format;
+        rendering.depthAttachmentFormat = depth_output ? format : VK_FORMAT_UNDEFINED;
         VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
         info.pNext = &rendering;
         info.stageCount = 2;
@@ -6270,22 +6302,28 @@ bool gx2r::depth_to_color_pass(DepthTarget& source, ColorTarget& destination, ui
     gx2vk::ViewDesc dv;
     dv.type = VK_IMAGE_VIEW_TYPE_2D;
     dv.format = format;
+    dv.aspect = depth_output ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+    dv.base_level = level;
+    dv.base_layer = layer;
     VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-    color.imageView = gx2vk::image_view(destination.image, dv);
+    color.imageView = gx2vk::image_view(destination, dv);
     color.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
     color.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
     color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     VkRenderingInfo info{VK_STRUCTURE_TYPE_RENDERING_INFO};
-    info.renderArea = {{0, 0}, {destination.image.desc.width, destination.image.desc.height}};
+    const uint32_t target_width = std::max(1u, destination.desc.width >> level);
+    const uint32_t target_height = std::max(1u, destination.desc.height >> level);
+    info.renderArea = {{0, 0}, {target_width, target_height}};
     info.layerCount = 1;
-    info.colorAttachmentCount = 1;
-    info.pColorAttachments = &color;
+    info.colorAttachmentCount = depth_output ? 0 : 1;
+    info.pColorAttachments = depth_output ? nullptr : &color;
+    info.pDepthAttachment = depth_output ? &color : nullptr;
     vkCmdBeginRendering(cb, &info);
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-    const auto dst_scale = image_coordinate_scale(destination.image, destination.width, destination.height);
+    const auto dst_scale = std::array<float, 2>{float(target_width) / guest_width, float(target_height) / guest_height};
     const auto src_scale = image_coordinate_scale(source.image, source.width, source.height);
-    const uint32_t native_width = std::min(destination.image.desc.width, uint32_t(std::ceil(width * dst_scale[0])));
-    const uint32_t native_height = std::min(destination.image.desc.height, uint32_t(std::ceil(height * dst_scale[1])));
+    const uint32_t native_width = std::min(target_width, uint32_t(std::ceil(width * dst_scale[0])));
+    const uint32_t native_height = std::min(target_height, uint32_t(std::ceil(height * dst_scale[1])));
     const VkViewport vp{0, 0, float(native_width), float(native_height), 0, 1};
     const VkRect2D sc{{0, 0}, {native_width, native_height}};
     vkCmdSetViewport(cb, 0, 1, &vp);
@@ -6313,8 +6351,22 @@ bool gx2r::depth_to_color_pass(DepthTarget& source, ColorTarget& destination, ui
     // dynamic depth/cull/stencil/restart state as well as viewport/scissor.
     // A following draw in the same command buffer must emit all of it again.
     reset_command_tracking();
-    gx2vk::note_gpu_write(destination.image);
+    gx2vk::note_gpu_write(destination);
     return true;
+}
+
+} // namespace
+
+bool gx2r::depth_to_color_pass(DepthTarget& source, ColorTarget& destination, uint32_t width, uint32_t height) {
+    return depth_transfer_pass(source, destination.image, destination.fmt.attachment, destination.width,
+                               destination.height, width, height, false);
+}
+
+bool gx2r::depth_to_depth_pass(DepthTarget& source, gx2vk::Image& destination, uint32_t level, uint32_t layer) {
+    const auto width = std::max(1u, destination.desc.width >> level);
+    const auto height = std::max(1u, destination.desc.height >> level);
+    return depth_transfer_pass(source, destination, destination.desc.format, width, height, width, height, true, level,
+                               layer);
 }
 
 // Startup, on the render thread ahead of every game command: the shader
