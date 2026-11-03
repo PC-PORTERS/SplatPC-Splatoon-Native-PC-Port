@@ -94,6 +94,8 @@ Official game updates (such as EUR revision 288) and resource mods are handled d
    - **For Resource Mods:** Mods modifying game resources (custom textures, audio, models, or UI inside `content/` and `meta/`) can also be added as overlay layers in the exact same way.
 3. Proceed with the wizard and build. The builder layers and merges everything automatically during compilation without modifying your original files.
 
+> **Note:** **Update-combinator** (`scripts/update_combinator.py`) can also be used as a standalone script to manually merge dumps (see [docs/update-288.md](docs/update-288.md)).
+
 ## Controls
 
 **Esc** (or the touchpad button of a PlayStation controller) opens the port's settings menu (ImGui): render resolution (applies at the next start), the graphics preset, plaza 60 FPS on/off, frame rate, G-Sync / FreeSync, fullscreen, performance overlay, controller gyro on/off, gyro sensitivity, inverted gyro up/down, mouse sensitivity, volume and quit. Two pages show and rebind every GamePad input for keyboard & mouse and for the controller: select a row, press Enter/Cross, then the new key or button (a key already in use swaps with the old one; Delete/Square clears; "Reset to defaults" restores the layout below). The game keeps running but gets no input while the menu is open. Choices are saved in `settings.ini` next to the game executable (`Splatoon.exe` / `Splatoon`); an environment variable that is set (for example `RBREW_PLAZA_60FPS`, `RBREW_GYRO`, `RBREW_RENDER_RESOLUTION`) still wins over the file.
