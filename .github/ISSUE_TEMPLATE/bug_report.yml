@@ -66,9 +66,9 @@ body:
     attributes:
       label: Checklist
       options:
-        - label: I’ve looked everywhere, and the bug hasn’t been reported or identified yet.
+        - label: "I’ve looked everywhere, and the bug hasn’t been reported or identified yet."
           required: true
-        - label: I have provided as much detail as possible.
+        - label: "I have provided as much detail as possible."
           required: true
-        - label: I am working on / intend to work on a PR to fix this bug (note: after 1 week of inactivity / without a PR, we will assume that you do not intend to submit one).
+        - label: "I am working on / intend to work on a PR to fix this bug (note: after 1 week of inactivity / without a PR, we will assume that you do not intend to submit one)."
           required: false
