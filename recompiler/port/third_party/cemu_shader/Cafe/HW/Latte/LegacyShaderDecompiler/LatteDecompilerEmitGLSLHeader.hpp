@@ -396,31 +396,58 @@ namespace LatteDecompiler
 			if (psInputTable->import[psInputIndex].isNoPerspective)
 				src->add("noperspective ");
 			src->add("out");
-			src->addFmt(" vec4 passParameterSem{};" _CRLF, psInputTable->import[psInputIndex].semanticId);
-		}
-	}
+            src->addFmt(" vec4 passParameterSem{};" _CRLF, psInputTable->import[psInputIndex].semanticId);
+        }
+        if (shaderContext->options->nativeVulkan) {
+            for (sint32 i = 0; i < psInputTable->count; ++i) {
+                const auto& input = psInputTable->import[i];
+                if (input.semanticId > LATTE_ANALYZER_IMPORT_INDEX_PARAM_MAX || declared[input.semanticId]) continue;
+                declared[input.semanticId] = true;
+                src->addFmt("layout(location = {}) ", i);
+                if (input.isFlat) src->add("flat ");
+                if (input.isNoPerspective) src->add("noperspective ");
+                src->addFmt("out vec4 passParameterSem{};" _CRLF, input.semanticId);
+            }
+        }
+    }
 
-	void _emitPSImports(LatteDecompilerShaderContext* shaderContext)
-	{
-		auto* src = shaderContext->shaderSource;
-		LatteShaderPSInputTable* psInputTable = LatteSHRC_GetPSInputTable();
-		for (sint32 i = 0; i < psInputTable->count; i++)
-		{
-			if (psInputTable->import[i].semanticId > LATTE_ANALYZER_IMPORT_INDEX_PARAM_MAX)
-				continue;
-			src->addFmt("layout(location = {}) ", i);
-			if (psInputTable->import[i].isFlat)
-				src->add("flat ");
-			if (psInputTable->import[i].isNoPerspective)
-				src->add("noperspective ");
-			src->add("in");
-			src->addFmt(" vec4 passParameterSem{};" _CRLF, psInputTable->import[i].semanticId);
-		}
-	}
+    void _emitVSExportDefaults(LatteDecompilerShaderContext* context) {
+        if (!context->options->nativeVulkan || context->options->usesGeometryShader ||
+            context->shaderType != LatteConst::ShaderType::Vertex)
+            return;
+        bool exported[256]{};
+        for (uint32 i = 0; i < 32; ++i) {
+            if (!(context->shader->outputParameterMask & (1u << i))) continue;
+            exported[_getVertexShaderOutParamSemanticId(context->contextRegisters, i)] = true;
+        }
+        const auto* inputs = LatteSHRC_GetPSInputTable();
+        for (sint32 i = 0; i < inputs->count; ++i) {
+            const auto semantic = inputs->import[i].semanticId;
+            if (semantic > LATTE_ANALYZER_IMPORT_INDEX_PARAM_MAX || exported[semantic]) continue;
+            exported[semantic] = true;
+            const auto value = (context->contextRegisters[mmSPI_PS_INPUT_CNTL_0 + i] >> 8) & 3;
+            const auto xyz = (value & 2) ? "1.0" : "0.0";
+            const auto w = (value & 1) ? "1.0" : "0.0";
+            context->shaderSource->addFmt("passParameterSem{} = vec4({}, {}, {}, {});" _CRLF, semantic, xyz, xyz, xyz,
+                                          w);
+        }
+    }
 
-	void _emitMisc(LatteDecompilerShaderContext* decompilerContext)
-	{
-		auto src = decompilerContext->shaderSource;
+    void _emitPSImports(LatteDecompilerShaderContext* shaderContext) {
+        auto* src = shaderContext->shaderSource;
+        LatteShaderPSInputTable* psInputTable = LatteSHRC_GetPSInputTable();
+        for (sint32 i = 0; i < psInputTable->count; i++) {
+            if (psInputTable->import[i].semanticId > LATTE_ANALYZER_IMPORT_INDEX_PARAM_MAX) continue;
+            src->addFmt("layout(location = {}) ", i);
+            if (psInputTable->import[i].isFlat) src->add("flat ");
+            if (psInputTable->import[i].isNoPerspective) src->add("noperspective ");
+            src->add("in");
+            src->addFmt(" vec4 passParameterSem{};" _CRLF, psInputTable->import[i].semanticId);
+        }
+    }
+
+    void _emitMisc(LatteDecompilerShaderContext* decompilerContext) {
+        auto src = decompilerContext->shaderSource;
 		// per-vertex output (VS or GS)
 		if ((decompilerContext->shaderType == LatteConst::ShaderType::Vertex && !decompilerContext->options->usesGeometryShader) ||
 			(decompilerContext->shaderType == LatteConst::ShaderType::Geometry))
@@ -555,9 +582,9 @@ namespace LatteDecompiler
 				}
 			}
 		}
-	}
+    }
 
-	void emitHeader(LatteDecompilerShaderContext* decompilerContext)
+    void emitHeader(LatteDecompilerShaderContext* decompilerContext)
 	{
 		const bool dump_shaders_enabled = ActiveSettings::DumpShadersEnabled();
 		if(dump_shaders_enabled)

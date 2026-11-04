@@ -9,7 +9,7 @@ An unofficial native PC port of **Splatoon (Wii U)** for **Windows and Linux**, 
 
 > **This project contains no Nintendo code, assets or game files.** You need your own copy of the game, dumped from your own Wii U. The setup builds the port on your PC from your files.
 
-> ⚠️ **Work in progress.** Expect graphical glitches, missing effects, stutter and crashes. You need **strong hardware** (see below). If something goes wrong, please [open an issue](https://github.com/NEVESYA/SPLATOON-1-PC-PORT/issues). Include your PC specs and the text from the setup window or a screenshot. **AMD GPUs are not supported**, only NVIDIA
+> ⚠️ **Work in progress.** Expect graphical glitches, missing effects, stutter and crashes. You need **strong hardware** (see below). If something goes wrong, please [open an issue](https://github.com/NEVESYA/SPLATOON-1-PC-PORT/issues). Include your PC specs and the text from the setup window or a screenshot. **AMD GPU compatibility is experimental**; NVIDIA remains the tested baseline. See [GPU selection](#gpu-selection-amd-and-integrated-graphics).
 
 ## Features
 
@@ -56,6 +56,21 @@ Turn it on in the settings menu with *Graphics preset* (Balanced, Realistic or C
 - **CPU:** modern 6–8 cores or more · **RAM:** 16 GB minimum, 32 GB recommended (building the game uses a lot of memory)
 - **Disk:** about 40 GB free during setup FINAL BUILD IS 6GB COUNTING THE SHADER CACHES
 - **Your own game dump:** Supported Splatoon version (see [VersionDb](/VersionDb.md)), with the folders `code`, `content` and `meta` (for example made with *Dumpling* on your Wii U).
+
+## GPU selection (AMD and integrated graphics)
+
+The game uses Vulkan, not CUDA. Startup checks the renderer's required Vulkan 1.3 features and prefers a compatible discrete GPU over integrated graphics, regardless of manufacturer. An unsuitable adapter is skipped so another compatible GPU can be used. AMD Radeon and integrated GPUs are experimental. The renderer includes an AMD vertex-buffer bounds fix; local testing covers AMD Radeon(TM) Graphics. Other models and drivers, including the RX 9060 XT, still need hardware verification. Older iGPUs without the required features cannot run this renderer.
+
+To select a specific GPU, set `RBREW_GPU` to a case-insensitive part of its name, or its numeric Vulkan adapter index. Vulkan indices can differ from the GPU numbers in Windows Task Manager. Adapter names, indices and rejection reasons are logged in diagnostic builds (`-DRBREW_DIAGNOSTIC_RUNTIME=ON`); normal gameplay builds compile out logging. For example, in PowerShell from the project folder:
+
+```powershell
+$env:RBREW_GPU = "9060 XT"
+.\Game\Splatoon.exe
+```
+
+For an iGPU use its name, or its Vulkan index (for example `$env:RBREW_GPU = "0"`). On Linux: `RBREW_GPU="9060 XT" ./Game/Splatoon`. Unset the variable to restore automatic selection. If an explicit selection is unavailable or incompatible, startup reports an error instead of silently using a different GPU. Name matches that identify several compatible adapters retain the discrete GPU preference; use an index to distinguish identical names.
+
+When reporting an AMD issue, include the selected GPU line, driver version, missing-feature warnings, and a description or screenshot of the rendering problem. Use the Original graphics preset for initial testing. The optional Python HD texture upscaler has a separate CUDA/CPU backend; this GPU selection does not enable AMD acceleration for that tool.
 
 ## Installation (Windows)
 
