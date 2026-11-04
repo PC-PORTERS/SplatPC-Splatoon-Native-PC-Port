@@ -4,50 +4,16 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 
+	"splatpc-builder/embedded"
 	"splatpc-builder/prereq"
 	"splatpc-builder/ui"
 )
 
-func findRepoRoot() string {
-	checkPath := func(startDir string) (string, bool) {
-		curr := startDir
-		for {
-			if fileExists(filepath.Join(curr, "setup.sh")) && fileExists(filepath.Join(curr, "Manifest")) {
-				return curr, true
-			}
-			parent := filepath.Dir(curr)
-			if parent == curr {
-				break
-			}
-			curr = parent
-		}
-		return "", false
-	}
-
-	if cwd, err := os.Getwd(); err == nil {
-		if root, ok := checkPath(cwd); ok {
-			return root
-		}
-	}
-
-	if exe, err := os.Executable(); err == nil {
-		if root, ok := checkPath(filepath.Dir(exe)); ok {
-			return root
-		}
-	}
-
-	return "."
-}
-
-func fileExists(p string) bool {
-	s, err := os.Stat(p)
-	return err == nil && (s.IsDir() || s.Mode().IsRegular())
-}
+//go:generate python3 ../scripts/bundle_builder_assets.py
 
 func main() {
 	checkOnly := flag.Bool("check", false, "Check system prerequisites and exit")
@@ -71,7 +37,10 @@ func main() {
 		os.Exit(0)
 	}
 
-	repoRoot := findRepoRoot()
+	repoRoot, isStandalone, err := embedded.ResolveRepoRoot()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning resolving builder environment: %v\n", err)
+	}
 
 	a := app.NewWithID("com.splatpc.builder")
 	a.Settings().SetTheme(&ui.SplatTheme{})
@@ -80,8 +49,9 @@ func main() {
 	w.Resize(fyne.NewSize(960, 680))
 	w.CenterOnScreen()
 
-	wizard := ui.NewWizard(a, w, repoRoot)
+	wizard := ui.NewWizard(a, w, repoRoot, isStandalone)
 	w.SetContent(wizard.Container())
 
 	w.ShowAndRun()
 }
+

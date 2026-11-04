@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -52,12 +53,26 @@ type Wizard struct {
 	doneView        *StepDoneView
 }
 
-func NewWizard(a fyne.App, w fyne.Window, repoRoot string) *Wizard {
+func NewWizard(a fyne.App, w fyne.Window, repoRoot string, isStandalone bool) *Wizard {
+	cfg := settings.DefaultConfiguration(repoRoot)
+	if isStandalone {
+		if appImage := os.Getenv("APPIMAGE"); appImage != "" {
+			cfg.OutputDir = filepath.Join(filepath.Dir(appImage), "Game")
+		} else if exe, err := os.Executable(); err == nil {
+			exeDir := filepath.Dir(exe)
+			if !strings.HasPrefix(exeDir, os.TempDir()) {
+				cfg.OutputDir = filepath.Join(exeDir, "Game")
+			}
+		} else if cwd, err := os.Getwd(); err == nil {
+			cfg.OutputDir = filepath.Join(cwd, "Game")
+		}
+	}
+
 	wiz := &Wizard{
 		app:      a,
 		window:   w,
 		repoRoot: repoRoot,
-		config:   settings.DefaultConfiguration(repoRoot),
+		config:   cfg,
 		overlays: make([]roms.RomLayer, 0),
 	}
 

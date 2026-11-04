@@ -12,6 +12,7 @@
 /Builder/splatpc-builder
 /Builder/splatpc-builder.exe
 /Builder/*.exe
+/Builder/embedded/assets.zip
 *.AppImage
 *.AppDir/
 *.exe
@@ -81,5 +82,6 @@ __pycache__/
 
 # Merged-ROM update tooling (tracked on purpose)
 !/scripts/update_combinator.py
+!/scripts/bundle_builder_assets.py
 !/scripts/tests/
 !/scripts/tests/**
