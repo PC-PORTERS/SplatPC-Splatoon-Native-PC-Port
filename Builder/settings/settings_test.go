@@ -3,6 +3,7 @@ package settings
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -15,8 +16,9 @@ func TestDefaultConfiguration(t *testing.T) {
 	if cfg.ParallelJobs < 1 {
 		t.Errorf("Expected at least 1 job, got %d", cfg.ParallelJobs)
 	}
-	if cfg.OutputDir != "/tmp/splatpc/Game" {
-		t.Errorf("Expected output dir /tmp/splatpc/Game, got %s", cfg.OutputDir)
+	expectedOutputDir := filepath.Join("/tmp/splatpc", "Game")
+	if cfg.OutputDir != expectedOutputDir {
+		t.Errorf("Expected output dir %s, got %s", expectedOutputDir, cfg.OutputDir)
 	}
 }
 
@@ -150,19 +152,27 @@ func TestWriteLauncherScript(t *testing.T) {
 		t.Fatalf("WriteLauncherScript failed: %v", err)
 	}
 
-	// On Linux, Splatoon.sh is created
-	scriptPath := filepath.Join(tempDir, "Splatoon.sh")
+	launcherName := "Splatoon.sh"
+	expectedPlayer := `RBREW_PLAYER_NAME="InklingMaster"`
+	expectedLang := `RBREW_CONSOLE_LANGUAGE="2"`
+	if runtime.GOOS == "windows" {
+		launcherName = "Launch_Splatoon.bat"
+		expectedPlayer = `set "RBREW_PLAYER_NAME=InklingMaster"`
+		expectedLang = `set "RBREW_CONSOLE_LANGUAGE=2"`
+	}
+
+	scriptPath := filepath.Join(tempDir, launcherName)
 	data, err := os.ReadFile(scriptPath)
 	if err != nil {
-		t.Fatalf("Failed to read Splatoon.sh: %v", err)
+		t.Fatalf("Failed to read %s: %v", launcherName, err)
 	}
 
 	content := string(data)
-	if !strings.Contains(content, "RBREW_PLAYER_NAME=\"InklingMaster\"") {
-		t.Errorf("Expected RBREW_PLAYER_NAME export in launcher script")
+	if !strings.Contains(content, expectedPlayer) {
+		t.Errorf("Expected %s in launcher script", expectedPlayer)
 	}
-	if !strings.Contains(content, "RBREW_CONSOLE_LANGUAGE=\"2\"") {
-		t.Errorf("Expected RBREW_CONSOLE_LANGUAGE export in launcher script")
+	if !strings.Contains(content, expectedLang) {
+		t.Errorf("Expected %s in launcher script", expectedLang)
 	}
 }
 
@@ -194,7 +204,11 @@ func TestHDTexturingOption(t *testing.T) {
 		t.Fatalf("WriteLauncherScript failed: %v", err)
 	}
 
-	scriptPath := filepath.Join(tempDir, "Splatoon.sh")
+	launcherName := "Splatoon.sh"
+	if runtime.GOOS == "windows" {
+		launcherName = "Launch_Splatoon.bat"
+	}
+	scriptPath := filepath.Join(tempDir, launcherName)
 	sData, err := os.ReadFile(scriptPath)
 	if err != nil {
 		t.Fatalf("Failed to read launcher script: %v", err)

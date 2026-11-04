@@ -232,10 +232,22 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 			failDone(err)
 			return
 		}
-		volkConfig, _ = findVolkConfig(buildDir)
+		volkConfig, err = findVolkConfig(buildDir)
+		if err != nil {
+			failDone(fmt.Errorf("volk installation succeeded but volkConfig.cmake was not found: %w", err))
+			return
+		}
 	}
-	volkPrefix := filepath.Dir(filepath.Dir(filepath.Dir(volkConfig)))
-	log("Volk installed: %s", volkConfig)
+	volkDir := filepath.Dir(volkConfig)
+	volkPrefix := filepath.Join(depsDir, "volk")
+	if !strings.HasPrefix(volkConfig, filepath.Join(buildDir, "deps", "volk")) {
+		p := filepath.Dir(volkDir)
+		if filepath.Base(p) == "cmake" {
+			p = filepath.Dir(p)
+		}
+		volkPrefix = filepath.Dir(p)
+	}
+	log("Volk ready: %s (dir: %s, prefix: %s)", volkConfig, volkDir, volkPrefix)
 
 	// STEP 5: Build RebrewU recompiler
 	progress(5, "RebrewU Recompiler", "Building the RebrewU recompiler executable", 0.45)
@@ -302,6 +314,7 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 		fmt.Sprintf("-DGAMBIT_GENERATED_DIR=%s", generatedDir),
 		fmt.Sprintf("-DSDL2_DIR=%s", sdl2Dir),
 		fmt.Sprintf("-Dglslang_DIR=%s", glslangDir),
+		fmt.Sprintf("-Dvolk_DIR=%s", volkDir),
 		fmt.Sprintf("-DCMAKE_PREFIX_PATH=%s", volkPrefix),
 		"-DRBREW_BUILD_GAME=ON",
 		"-DRBREW_ENABLE_COVERAGE=OFF",
@@ -409,13 +422,39 @@ func runCmdWithLog(cmd *exec.Cmd, log func(string, ...interface{})) error {
 }
 
 func findVolkConfig(buildDir string) (string, error) {
+	depsVolk := filepath.Join(buildDir, "deps", "volk")
+	if _, err := os.Stat(depsVolk); err == nil {
+		var found string
+		_ = filepath.Walk(depsVolk, func(path string, info os.FileInfo, err error) error {
+			if err == nil && !info.IsDir() && (info.Name() == "volkConfig.cmake" || info.Name() == "volk-config.cmake") {
+				found = path
+				return filepath.SkipAll
+			}
+			return nil
+		})
+		if found != "" {
+			return found, nil
+		}
+	}
+
 	candidates := []string{
 		filepath.Join(buildDir, "deps", "volk", "lib", "cmake", "volk", "volkConfig.cmake"),
+		filepath.Join(buildDir, "deps", "volk", "lib64", "cmake", "volk", "volkConfig.cmake"),
 		filepath.Join(buildDir, "deps", "volk", "share", "cmake", "volk", "volkConfig.cmake"),
 		"/usr/lib/cmake/volk/volkConfig.cmake",
 		"/usr/lib64/cmake/volk/volkConfig.cmake",
 		"/usr/share/cmake/volk/volkConfig.cmake",
+		"/usr/local/lib/cmake/volk/volkConfig.cmake",
+		"/usr/local/share/cmake/volk/volkConfig.cmake",
 	}
+
+	if matches, err := filepath.Glob("/usr/lib/*-linux-gnu/cmake/volk/volkConfig.cmake"); err == nil {
+		candidates = append(candidates, matches...)
+	}
+	if matches, err := filepath.Glob("/usr/local/lib/*-linux-gnu/cmake/volk/volkConfig.cmake"); err == nil {
+		candidates = append(candidates, matches...)
+	}
+
 	for _, c := range candidates {
 		if _, err := os.Stat(c); err == nil {
 			return c, nil
