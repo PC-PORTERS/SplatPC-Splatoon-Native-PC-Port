@@ -1,10 +1,8 @@
 package prereq
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -56,6 +54,9 @@ func DetectDistro() string {
 }
 
 func RunChecks() CheckReport {
+	// Proactively register discovered tool directories into PATH and environment
+	EnsureEnvironment()
+
 	report := CheckReport{
 		Items:  make([]CheckItem, 0),
 		OSName: runtime.GOOS,
@@ -69,17 +70,10 @@ func RunChecks() CheckReport {
 		Category: "Tool",
 		Required: true,
 	}
-	if path, err := exec.LookPath("cmake"); err == nil {
+	if path, ver, ok := FindCMake(); ok {
 		cmakeItem.Found = true
 		cmakeItem.Path = path
-		if out, err := exec.Command("cmake", "--version").Output(); err == nil {
-			v := parseVersion(string(out))
-			cmakeItem.Version = v
-			if isVersionOlder(v, "3.20") {
-				cmakeItem.Found = false
-				cmakeItem.ErrorMsg = fmt.Sprintf("CMake %s is too old (>= 3.20 required)", v)
-			}
-		}
+		cmakeItem.Version = ver
 	} else {
 		cmakeItem.ErrorMsg = "CMake is not installed or not in PATH"
 	}
@@ -92,26 +86,12 @@ func RunChecks() CheckReport {
 		Category: "Tool",
 		Required: true,
 	}
-	pyBin := "python3"
-	if runtime.GOOS == "windows" {
-		if _, err := exec.LookPath("python3"); err != nil {
-			pyBin = "python"
-		}
-	}
-	if path, err := exec.LookPath(pyBin); err == nil {
-		pyItem.Path = path
-		if out, err := exec.Command(pyBin, "--version").Output(); err == nil {
-			v := parseVersion(string(out))
-			pyItem.Version = v
-			if isVersionOlder(v, "3.12") {
-				pyItem.Found = false
-				pyItem.ErrorMsg = fmt.Sprintf("Python %s is too old (>= 3.12 required for tar filters)", v)
-			} else {
-				pyItem.Found = true
-			}
-		}
+	if py, ok := FindPython(); ok {
+		pyItem.Found = true
+		pyItem.Path = py.Path
+		pyItem.Version = py.Version
 	} else {
-		pyItem.ErrorMsg = "Python 3 is not installed or not in PATH"
+		pyItem.ErrorMsg = "Python 3 (>= 3.12) is not installed or not in PATH"
 	}
 	report.Items = append(report.Items, pyItem)
 
@@ -122,7 +102,15 @@ func RunChecks() CheckReport {
 		Category: "Compiler",
 		Required: true,
 	}
-	checkCompilers(&compilerItem)
+	name, path, ver, ok, errMsg := FindCompiler()
+	if ok {
+		compilerItem.Found = true
+		compilerItem.Name = name
+		compilerItem.Path = path
+		compilerItem.Version = ver
+	} else {
+		compilerItem.ErrorMsg = errMsg
+	}
 	report.Items = append(report.Items, compilerItem)
 
 	// 4. Ninja (Recommended) or Make
@@ -132,12 +120,10 @@ func RunChecks() CheckReport {
 		Category: "Tool",
 		Required: false,
 	}
-	if path, err := exec.LookPath("ninja"); err == nil {
+	if path, ver, ok := FindNinja(); ok {
 		ninjaItem.Found = true
 		ninjaItem.Path = path
-		if out, err := exec.Command("ninja", "--version").Output(); err == nil {
-			ninjaItem.Version = strings.TrimSpace(string(out))
-		}
+		ninjaItem.Version = ver
 	} else {
 		ninjaItem.ErrorMsg = "Optional (speeds up compilation significantly)"
 	}
@@ -150,10 +136,51 @@ func RunChecks() CheckReport {
 		Category: "Library",
 		Required: true,
 	}
-	checkVulkan(&vulkanItem)
+	if path, ver, ok := FindVulkan(); ok {
+		vulkanItem.Found = true
+		vulkanItem.Path = path
+		vulkanItem.Version = ver
+	} else {
+		vulkanItem.ErrorMsg = "Vulkan Headers / SDK not found"
+	}
 	report.Items = append(report.Items, vulkanItem)
 
-	// 6. Linux specific libraries
+	// 6. Windows-specific tools and dependencies
+	if runtime.GOOS == "windows" {
+		gitItem := CheckItem{
+			ID:       "git",
+			Name:     "Git Version Control",
+			Category: "Tool",
+			Required: true,
+		}
+		if path, ver, ok := FindGit(); ok {
+			gitItem.Found = true
+			gitItem.Path = path
+			gitItem.Version = ver
+		} else {
+			gitItem.ErrorMsg = "Git is required to fetch vcpkg dependencies (install Git for Windows)"
+		}
+		report.Items = append(report.Items, gitItem)
+
+		_, tc, foundVcpkg := FindVcpkg("")
+		hasPkgs := CheckVcpkgPackages(tc)
+		vcpkgItem := CheckItem{
+			ID:       "vcpkg_libs",
+			Name:     "Windows Libraries (zlib, curl via vcpkg)",
+			Category: "Library",
+			Required: false,
+		}
+		if foundVcpkg && hasPkgs {
+			vcpkgItem.Found = true
+			vcpkgItem.Version = "Packages installed"
+		} else {
+			vcpkgItem.Found = true
+			vcpkgItem.Version = "Auto-configured during build"
+		}
+		report.Items = append(report.Items, vcpkgItem)
+	}
+
+	// 7. Linux specific libraries
 	if runtime.GOOS == "linux" {
 		// zlib
 		zlibItem := CheckItem{
@@ -198,7 +225,7 @@ func RunChecks() CheckReport {
 		report.Items = append(report.Items, displayItem)
 	}
 
-	// 7. Graphics Hardware & HD Texturing capability
+	// 8. Graphics Hardware & HD Texturing capability
 	gpu := DetectGPU()
 	gpuItem := CheckItem{
 		ID:       "gpu_nvidia",
@@ -228,56 +255,6 @@ func RunChecks() CheckReport {
 
 	report.InstallScript = generateInstallCommand(report.Distro, report.Items)
 	return report
-}
-
-func checkCompilers(item *CheckItem) {
-	compilers := []string{"g++", "clang++", "cl"}
-	for _, c := range compilers {
-		if path, err := exec.LookPath(c); err == nil {
-			item.Found = true
-			item.Path = path
-			if out, err := exec.Command(c, "--version").Output(); err == nil {
-				lines := strings.Split(string(out), "\n")
-				if len(lines) > 0 {
-					item.Version = strings.TrimSpace(lines[0])
-				}
-			} else {
-				item.Version = c
-			}
-			return
-		}
-	}
-	item.ErrorMsg = "No C++ compiler found (install g++, clang, or MSVC)"
-}
-
-func checkVulkan(item *CheckItem) {
-	if os.Getenv("VULKAN_SDK") != "" {
-		item.Found = true
-		item.Path = os.Getenv("VULKAN_SDK")
-		item.Version = "SDK"
-		return
-	}
-	// Check pkg-config or cmake package config
-	if pkgConfigExists("vulkan") || pkgConfigExists("VulkanHeaders") {
-		item.Found = true
-		item.Version = "System Headers"
-		return
-	}
-	// Common system header paths
-	paths := []string{
-		"/usr/include/vulkan/vulkan.h",
-		"/usr/local/include/vulkan/vulkan.h",
-		"/usr/share/cmake/VulkanHeaders/VulkanHeadersConfig.cmake",
-		"/usr/lib/cmake/VulkanHeaders/VulkanHeadersConfig.cmake",
-	}
-	for _, p := range paths {
-		if fileExists(p) {
-			item.Found = true
-			item.Path = filepath.Dir(p)
-			return
-		}
-	}
-	item.ErrorMsg = "Vulkan Headers not found (install vulkan-headers / Vulkan-Headers)"
 }
 
 func fileExists(p string) bool {
@@ -331,8 +308,28 @@ func generateInstallCommand(distro string, items []CheckItem) string {
 	case "fedora":
 		return "sudo dnf install -y cmake gcc-c++ ninja-build python3 curl vulkan-headers zlib-devel libcurl-devel libX11-devel"
 	case "windows":
-		return "winget install Kitware.CMake Ninja-build.Ninja Python.Python.3.12 LLVM.LLVM LunarG.VulkanSDK"
+		var wingetPkgs []string
+		for _, id := range missing {
+			switch id {
+			case "cmake":
+				wingetPkgs = append(wingetPkgs, "Kitware.CMake")
+			case "python3":
+				wingetPkgs = append(wingetPkgs, "Python.Python.3.12")
+			case "ninja":
+				wingetPkgs = append(wingetPkgs, "Ninja-build.Ninja")
+			case "git":
+				wingetPkgs = append(wingetPkgs, "Git.Git")
+			case "vulkan":
+				wingetPkgs = append(wingetPkgs, "LunarG.VulkanSDK")
+			case "compiler":
+				wingetPkgs = append(wingetPkgs, "Microsoft.VisualStudio.2022.BuildTools")
+			}
+		}
+		if len(wingetPkgs) > 0 {
+			return "winget install " + strings.Join(wingetPkgs, " ")
+		}
+		return "winget install Kitware.CMake Ninja-build.Ninja Python.Python.3.12 LunarG.VulkanSDK"
 	default:
-		return "Please install cmake, g++/clang++, ninja, python3 (>=3.12), vulkan-headers, zlib, libcurl"
+		return "Please install cmake, g++/clang++/MSVC, ninja, python3 (>=3.12), vulkan-headers, zlib, libcurl"
 	}
 }

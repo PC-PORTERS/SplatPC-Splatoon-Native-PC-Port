@@ -117,6 +117,20 @@ jobs:
           & $rebrewu manifest verify --manifest Manifest/Gambit_v16.manifest
           if ($LASTEXITCODE -ne 0) { throw "Manifest verification failed" }
 
+      - name: Stage RebrewU binary
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist
+          $rebrewu = (Get-ChildItem -Path build/rebrewu -Recurse -Filter rebrewu.exe | Select-Object -First 1).FullName
+          Copy-Item -LiteralPath $rebrewu -Destination "dist/rebrewu.exe"
+
+      - name: Upload RebrewU recompiler artifact (Windows)
+        uses: actions/upload-artifact@v4
+        with:
+          name: rebrewu-windows
+          path: dist/rebrewu.exe
+          retention-days: 14
+
       - name: Configure & build port runtime and regression tests
         shell: pwsh
         run: |
