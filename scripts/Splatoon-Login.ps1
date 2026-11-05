@@ -196,7 +196,21 @@ foreach ($control in @($play, $languageBox)) {
 $play.FlatAppearance.BorderColor = $dark.Edge
 $play.FlatAppearance.MouseOverBackColor = $dark.Hover
 $play.FlatAppearance.MouseDownBackColor = $dark.Down
-$offline.LinkColor = $dark.Link; $offline.ActiveLinkColor = $dark.Text; $offline.VisitedLinkColor = $dark.Link
+# Quiet link: grey like the hint, underlined on hover only.
+$offline.LinkBehavior = 'HoverUnderline'
+$offline.LinkColor = $dark.Muted; $offline.ActiveLinkColor = $dark.Text; $offline.VisitedLinkColor = $dark.Muted
+# The language list is drawn by hand: the system draws its selected item in bright white and blue.
+$languageBox.DrawMode = 'OwnerDrawFixed'
+$languageBox.Add_DrawItem({
+    param($sender, $e)
+    if ($e.Index -lt 0) { return }
+    $isList = -not ($e.State -band [System.Windows.Forms.DrawItemState]::ComboBoxEdit)
+    $selected = $e.State -band [System.Windows.Forms.DrawItemState]::Selected
+    $back = if ($isList -and $selected) { $dark.Hover } else { $dark.Button }
+    $brush = New-Object System.Drawing.SolidBrush($back)
+    $e.Graphics.FillRectangle($brush, $e.Bounds); $brush.Dispose()
+    [System.Windows.Forms.TextRenderer]::DrawText($e.Graphics, [string]$sender.Items[$e.Index], $sender.Font, $e.Bounds, $dark.Text, 'Left, VerticalCenter')
+})
 try {
     Add-Type -Namespace Native -Name Dwm -MemberDefinition '[System.Runtime.InteropServices.DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(System.IntPtr window, int attribute, ref int value, int size);'
     $form.Add_HandleCreated({ $on = 1; [void][Native.Dwm]::DwmSetWindowAttribute($form.Handle, 20, [ref]$on, 4) })
@@ -262,6 +276,18 @@ function Set-ServerLabel {
     $serverLabel.ForeColor = if ($cfg['_custom']) { [System.Drawing.Color]::FromArgb(255, 200, 87) } else { $dark.Muted }
 }
 Set-ServerLabel
+# Installed game version, bottom left under the server name.
+$versionLabel = New-Object System.Windows.Forms.Label
+$versionLabel.Location = New-Object System.Drawing.Point(20, 214)
+$versionLabel.Size = New-Object System.Drawing.Size(196, 18)
+$versionLabel.ForeColor = $dark.Muted
+$form.Controls.Add($versionLabel)
+foreach ($file in @((Join-Path $Root 'build\installed-version.txt'), (Join-Path $Root 'VERSION'))) {
+    if (Test-Path -LiteralPath $file) {
+        $text = (Get-Content -LiteralPath $file -Raw).Trim()
+        if ($text -match '^v?\d+\.\d+(\.\d+)?$') { $versionLabel.Text = 'v' + $text.TrimStart('v'); break }
+    }
+}
 # "0.2" and "0.2.0" are the same version (System.Version would call the first one older).
 function ConvertTo-GameVersion([string]$Text) {
     $parsed = $null
