@@ -89,6 +89,7 @@ server.json
 !/scripts/Update-Apply.ps1
 !/scripts/allowed_signers
 !/scripts/server.public.txt
+!/scripts/friends_relay.py
 
 # The launcher shortcut that Setup may put in the install folder
 *.lnk
