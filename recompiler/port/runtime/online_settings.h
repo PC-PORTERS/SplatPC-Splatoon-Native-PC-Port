@@ -14,7 +14,8 @@
 
 #if defined(_WIN32)
 // Same declaration as <windows.h>, so this header does not pull it in.
-extern "C" __declspec(dllimport) unsigned long __stdcall GetModuleFileNameW(struct HINSTANCE__*, wchar_t*, unsigned long);
+extern "C" __declspec(dllimport) unsigned long __stdcall GetModuleFileNameW(struct HINSTANCE__*, wchar_t*,
+                                                                            unsigned long);
 #endif
 
 namespace rbrew_online_cfg {
@@ -49,7 +50,8 @@ inline std::filesystem::path settings_path() {
 }
 // Environment first, then settings.ini, then `fallback`. Read on each call.
 inline std::string resolved(const char* env, const std::string& key, const std::string& fallback) {
-    if (env && *env) if (const char* v = std::getenv(env); v && *v) return v;
+    if (env && *env)
+        if (const char* v = std::getenv(env); v && *v) return v;
     std::ifstream f(settings_path());
     if (f) {
         const Values file = parse(f);
@@ -59,4 +61,4 @@ inline std::string resolved(const char* env, const std::string& key, const std::
     return fallback;
 }
 
-}  // namespace rbrew_online_cfg
+} // namespace rbrew_online_cfg

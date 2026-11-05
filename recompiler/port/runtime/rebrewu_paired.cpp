@@ -150,7 +150,10 @@ void compare(CPUState* cpu, uint32_t crf, double a, double b) {
 }
 } // namespace
 
-extern "C" void rbrew_ps(CPUState* cpu, uint32_t w) {
+extern "C" void rbrew_ps_mem(CPUState* cpu, uint8_t* mem, uint32_t w) {
+    // mem is carried for the caller's alias analysis; helpers read the arena
+    // through cpu->mem, which holds the same base.
+    (void)mem;
     const uint32_t op = w >> 26, d = bits(w, 6, 10), a = bits(w, 11, 15), b = bits(w, 16, 20), c = bits(w, 21, 25);
     auto ra0 = [&]() { return a ? cpu->r[a] : 0u; };
     switch (op) {
@@ -310,6 +313,10 @@ extern "C" void rbrew_ps(CPUState* cpu, uint32_t w) {
     case 624: merge(a1, b1); return; // ps_merge11
     }
     undefined(w);
+}
+
+extern "C" void rbrew_ps(CPUState* cpu, uint32_t w) {
+    rbrew_ps_mem(cpu, cpu->mem, w);
 }
 
 extern "C" void rbrew_trap(CPUState* cpu, uint32_t w, uint32_t pc) {

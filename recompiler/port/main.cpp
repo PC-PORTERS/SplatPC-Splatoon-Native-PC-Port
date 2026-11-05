@@ -13,6 +13,7 @@
 #include "runtime/rebrewu_runtime.h"
 #include "runtime/host_process.h"
 #include "runtime/discord_rpc.h"
+#include "runtime/splatoon_diagnostics.h"
 #include "runtime/port_settings.h"
 #include "runtime/online_settings.h"
 #include "os/erreula/erreula.h"
@@ -30,7 +31,6 @@
 
 struct OverlayHostMapping {
     uint8_t* arena;
-    bool committed{};
 };
 
 #if defined(_WIN32)
@@ -39,44 +39,19 @@ static void platform_sleep_us(unsigned us) {
     Sleep(us / 1000);
 }
 static uint8_t* alloc_arena(size_t sz) {
-    // Write watch lets the renderer skip guest pages the CPU did not write
-    // since it last copied them (gx2_write_watch.h).
-    auto p = static_cast<uint8_t*>(VirtualAlloc(nullptr, sz, MEM_RESERVE | MEM_WRITE_WATCH, PAGE_NOACCESS));
-    if (p && (!VirtualAlloc(p, RBREW_APPLICATION_ARENA_END, MEM_COMMIT, PAGE_READWRITE) ||
-              !VirtualAlloc(p + RBREW_FG_FREE_BASE, RBREW_FG_FREE_SIZE, MEM_COMMIT, PAGE_READWRITE) ||
-              !VirtualAlloc(p + RBREW_MEM1_BASE, RBREW_MEM1_SIZE, MEM_COMMIT, PAGE_READWRITE) ||
-              !VirtualAlloc(p + RBREW_SHARED_DATA_BASE, RBREW_SHARED_DATA_SIZE, MEM_COMMIT, PAGE_READWRITE))) {
-        VirtualFree(p, 0, MEM_RELEASE);
-        return nullptr;
-    }
-    return p;
+    // One flat aperture over the whole 32-bit guest address space, committed
+    // at startup (pages stay demand-zero until touched). Write watch lets the
+    // renderer skip guest pages the CPU did not write since it last copied
+    // them (gx2_write_watch.h).
+    return static_cast<uint8_t*>(VirtualAlloc(nullptr, sz, MEM_RESERVE | MEM_COMMIT | MEM_WRITE_WATCH, PAGE_READWRITE));
 }
 static bool map_overlay(void* user, uint32_t base, uint32_t size, bool enable) {
     if (!user || base != RBREW_OVERLAY_BASE || size != RBREW_OVERLAY_SIZE) return false;
     auto& mapping = *static_cast<OverlayHostMapping*>(user);
-    auto p = mapping.arena + base;
-    if (enable) {
-        if (!mapping.committed) {
-            if (VirtualAlloc(p, size, MEM_COMMIT, PAGE_READWRITE) != p) return false;
-            mapping.committed = true;
-        } else {
-            DWORD old_protection;
-            if (!VirtualProtect(p, size, PAGE_READWRITE, &old_protection)) return false;
-        }
-        try {
-            rbrew_set_overlay_access(mapping.arena, true);
-        } catch (...) {
-            DWORD old_protection;
-            VirtualProtect(p, size, PAGE_NOACCESS, &old_protection);
-            throw;
-        }
-        RBREW_LOG_INFO("MEM", "OverlayArena mapped: base=%08X size=%08X\n", base, size);
-        return true;
-    }
-    // Cafe unmaps the aperture; its backing storage survives a later remap.
-    DWORD old_protection;
-    if (!VirtualProtect(p, size, PAGE_NOACCESS, &old_protection)) return false;
-    rbrew_set_overlay_access(mapping.arena, false);
+    // The aperture is already committed; only guest-visible accessibility
+    // changes (the checked path consults the overlay registry).
+    rbrew_set_overlay_access(mapping.arena, enable);
+    if (enable) RBREW_LOG_INFO("MEM", "OverlayArena mapped: base=%08X size=%08X\n", base, size);
     return true;
 }
 static void free_arena(uint8_t* p, size_t sz) {
@@ -138,7 +113,7 @@ static void start_hang_sampler(const CPUState* cpu) {
 }
 // Diagnostic (RBREW_PROFILE=<start s>:<duration s>:<file>): sampling
 // profiler. Every ~2 ms suspend each other thread and count its stack: up to
-// four Gambit return addresses (RVAs, innermost first; symbolize with the
+// twelve Gambit return addresses (RVAs, innermost first; symbolize with the
 // linker map), prefixed by "module|" when the thread is in a system DLL or
 // driver (time in ntdll/KernelBase is mostly waiting). Writes
 // "tid count [module|]rva<rva<...". With RBREW_PROFILE_TRIGGER=<path> the
@@ -150,12 +125,13 @@ static void start_hang_sampler(const CPUState* cpu) {
 #ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
 #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
 #endif
-// Up to four Gambit return addresses (RVAs) from a resumed thread's context.
+constexpr unsigned kProfileDepth = 12;
+// Up to kProfileDepth Gambit return addresses (RVAs) from a resumed thread's context.
 // Its stack may change underneath: faults end the walk instead of the game.
-static unsigned profile_unwind(CONTEXT walk, uintptr_t exe, uintptr_t exe_end, uintptr_t (&chain)[4]) {
+static unsigned profile_unwind(CONTEXT walk, uintptr_t exe, uintptr_t exe_end, uintptr_t (&chain)[kProfileDepth]) {
     unsigned found = 0;
     __try {
-        for (int depth = 0; depth < 64 && walk.Rip && found < 4; ++depth) {
+        for (int depth = 0; depth < 64 && walk.Rip && found < kProfileDepth; ++depth) {
             if (walk.Rip >= exe && walk.Rip < exe_end) chain[found++] = uintptr_t(walk.Rip) - exe;
             DWORD64 image = 0;
             auto* function = RtlLookupFunctionEntry(walk.Rip, &image, nullptr);
@@ -171,7 +147,107 @@ static unsigned profile_unwind(CONTEXT walk, uintptr_t exe, uintptr_t exe_end, u
     } __except (EXCEPTION_EXECUTE_HANDLER) {}
     return found;
 }
+// Samples every other thread for `seconds` and writes the stack counts.
+static void profile_threads(unsigned seconds, const std::string& path) {
+    rbrew_benchmark::profiling.store(true, std::memory_order_relaxed);
+    const uint32_t first_frame = rbrew_benchmark::frame.load(std::memory_order_relaxed);
+    const auto exe = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    MODULEINFO info{};
+    GetModuleInformation(GetCurrentProcess(), GetModuleHandleW(nullptr), &info, sizeof(info));
+    const uintptr_t exe_end = exe + info.SizeOfImage;
+    auto in_exe = [&](DWORD64 rip) { return rip >= exe && rip < exe_end; };
+    const DWORD self = GetCurrentThreadId(), pid = GetCurrentProcessId();
+    std::map<std::pair<DWORD, std::string>, unsigned> hits;
+    std::map<uintptr_t, std::string> module_names;
+    std::map<DWORD, HANDLE> threads;
+    HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    const ULONGLONG stop = GetTickCount64() + seconds * 1000ull;
+    ULONGLONG refreshed = 0;
+    unsigned rounds = 0;
+    while (GetTickCount64() < stop) {
+        if (GetTickCount64() - refreshed >= 500) { // thread list changes rarely
+            refreshed = GetTickCount64();
+            HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+            THREADENTRY32 entry{};
+            entry.dwSize = sizeof(entry);
+            for (BOOL ok = Thread32First(snap, &entry); ok; ok = Thread32Next(snap, &entry)) {
+                if (entry.th32OwnerProcessID != pid || entry.th32ThreadID == self || threads.count(entry.th32ThreadID))
+                    continue;
+                if (HANDLE thread = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE, entry.th32ThreadID))
+                    threads[entry.th32ThreadID] = thread;
+            }
+            CloseHandle(snap);
+        }
+        for (const auto& [tid, thread] : threads) {
+            CONTEXT context{};
+            context.ContextFlags = CONTEXT_FULL;
+            if (SuspendThread(thread) == DWORD(-1)) continue;
+            const bool got = GetThreadContext(thread, &context);
+            // Resume before unwinding: RtlLookupFunctionEntry can take
+            // locks the suspended thread holds, which hung the profiler
+            // (no output file). The first Gambit frames say who is running
+            // or waiting; a racy walk is guarded and only drops a sample.
+            ResumeThread(thread);
+            if (!got) continue;
+            uintptr_t chain[kProfileDepth]{};
+            unsigned depth_found = profile_unwind(context, exe, exe_end, chain);
+            std::string key;
+            if (!in_exe(context.Rip)) {
+                HMODULE module = nullptr;
+                key = "?";
+                if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                           GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                       reinterpret_cast<LPCWSTR>(context.Rip), &module)) {
+                    auto& cached = module_names[reinterpret_cast<uintptr_t>(module)];
+                    if (cached.empty()) {
+                        char file[MAX_PATH]{};
+                        GetModuleBaseNameA(GetCurrentProcess(), module, file, MAX_PATH);
+                        cached = file;
+                    }
+                    key = cached;
+                }
+                key += '|';
+            }
+            for (unsigned i = 0; i < depth_found; ++i) {
+                char rva[24];
+                snprintf(rva, sizeof(rva), i ? "<%llX" : "%llX", (unsigned long long)chain[i]);
+                key += rva;
+            }
+            ++hits[{tid, key}];
+        }
+        ++rounds;
+        if (timer) {
+            LARGE_INTEGER due{};
+            due.QuadPart = -20000; // 2 ms
+            SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
+            WaitForSingleObject(timer, INFINITE);
+        } else {
+            Sleep(1);
+        }
+    }
+    for (const auto& [tid, thread] : threads) CloseHandle(thread);
+    if (timer) CloseHandle(timer);
+    if (FILE* f = fopen(path.c_str(), "w")) {
+        std::fprintf(f, "# rounds %u seconds %u\n", rounds, seconds);
+        std::fprintf(f, "# frames %u %u\n", first_frame, rbrew_benchmark::frame.load(std::memory_order_relaxed));
+        for (const auto& [key, n] : hits) std::fprintf(f, "%lu %u %s\n", key.first, n, key.second.c_str());
+        fclose(f);
+    } else
+        RBREW_LOG_ERROR("profile", "cannot write %s\n", path.c_str());
+    RBREW_LOG_INFO("profile", "finished %u rounds\n", rounds);
+    rbrew_benchmark::profiling.store(false, std::memory_order_relaxed);
+}
 static void start_profiler() {
+    // F9 (ManualCapture) also profiles 4 s into the snapshot folder: a stuck
+    // scene then shows what each thread runs, without any setup.
+    SplatoonDiagnostics::SetManualProfiler([](const std::string& path) {
+        static std::atomic<bool> busy{false};
+        if (busy.exchange(true)) return;
+        std::thread([path] {
+            profile_threads(4, path);
+            busy = false;
+        }).detach();
+    });
     // Sampling must work on the normal release too: enabling every per-draw
     // diagnostic changes the workload being investigated. No thread or timer
     // is created unless the user explicitly requests this profile.
@@ -188,131 +264,31 @@ static void start_profiler() {
             while (GetFileAttributesA(trigger.c_str()) == INVALID_FILE_ATTRIBUTES) Sleep(250);
         RBREW_LOG_INFO("profile", "sampling %u s -> %s\n", seconds, path.c_str());
         Sleep(start * 1000);
-        rbrew_benchmark::profiling.store(true, std::memory_order_relaxed);
-        const uint32_t first_frame = rbrew_benchmark::frame.load(std::memory_order_relaxed);
-        const auto exe = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
-        MODULEINFO info{};
-        GetModuleInformation(GetCurrentProcess(), GetModuleHandleW(nullptr), &info, sizeof(info));
-        const uintptr_t exe_end = exe + info.SizeOfImage;
-        auto in_exe = [&](DWORD64 rip) { return rip >= exe && rip < exe_end; };
-        const DWORD self = GetCurrentThreadId(), pid = GetCurrentProcessId();
-        std::map<std::pair<DWORD, std::string>, unsigned> hits;
-        std::map<uintptr_t, std::string> module_names;
-        std::map<DWORD, HANDLE> threads;
-        HANDLE timer =
-            CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
-        const ULONGLONG stop = GetTickCount64() + seconds * 1000ull;
-        ULONGLONG refreshed = 0;
-        unsigned rounds = 0;
-        while (GetTickCount64() < stop) {
-            if (GetTickCount64() - refreshed >= 500) { // thread list changes rarely
-                refreshed = GetTickCount64();
-                HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-                THREADENTRY32 entry{};
-                entry.dwSize = sizeof(entry);
-                for (BOOL ok = Thread32First(snap, &entry); ok; ok = Thread32Next(snap, &entry)) {
-                    if (entry.th32OwnerProcessID != pid || entry.th32ThreadID == self ||
-                        threads.count(entry.th32ThreadID))
-                        continue;
-                    if (HANDLE thread =
-                            OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE, entry.th32ThreadID))
-                        threads[entry.th32ThreadID] = thread;
-                }
-                CloseHandle(snap);
-            }
-            for (const auto& [tid, thread] : threads) {
-                CONTEXT context{};
-                context.ContextFlags = CONTEXT_FULL;
-                if (SuspendThread(thread) == DWORD(-1)) continue;
-                const bool got = GetThreadContext(thread, &context);
-                // Resume before unwinding: RtlLookupFunctionEntry can take
-                // locks the suspended thread holds, which hung the profiler
-                // (no output file). The first Gambit frames say who is running
-                // or waiting; a racy walk is guarded and only drops a sample.
-                ResumeThread(thread);
-                if (!got) continue;
-                uintptr_t chain[4]{};
-                unsigned depth_found = profile_unwind(context, exe, exe_end, chain);
-                std::string key;
-                if (!in_exe(context.Rip)) {
-                    HMODULE module = nullptr;
-                    key = "?";
-                    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                                               GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                                           reinterpret_cast<LPCWSTR>(context.Rip), &module)) {
-                        auto& cached = module_names[reinterpret_cast<uintptr_t>(module)];
-                        if (cached.empty()) {
-                            char file[MAX_PATH]{};
-                            GetModuleBaseNameA(GetCurrentProcess(), module, file, MAX_PATH);
-                            cached = file;
-                        }
-                        key = cached;
-                    }
-                    key += '|';
-                }
-                for (unsigned i = 0; i < depth_found; ++i) {
-                    char rva[24];
-                    snprintf(rva, sizeof(rva), i ? "<%llX" : "%llX", (unsigned long long)chain[i]);
-                    key += rva;
-                }
-                ++hits[{tid, key}];
-            }
-            ++rounds;
-            if (timer) {
-                LARGE_INTEGER due{};
-                due.QuadPart = -20000; // 2 ms
-                SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
-                WaitForSingleObject(timer, INFINITE);
-            } else {
-                Sleep(1);
-            }
-        }
-        for (const auto& [tid, thread] : threads) CloseHandle(thread);
-        if (timer) CloseHandle(timer);
-        if (FILE* f = fopen(path.c_str(), "w")) {
-            std::fprintf(f, "# rounds %u seconds %u\n", rounds, seconds);
-            std::fprintf(f, "# frames %u %u\n", first_frame, rbrew_benchmark::frame.load(std::memory_order_relaxed));
-            for (const auto& [key, n] : hits) std::fprintf(f, "%lu %u %s\n", key.first, n, key.second.c_str());
-            fclose(f);
-        } else
-            RBREW_LOG_ERROR("profile", "cannot write %s\n", path.c_str());
-        RBREW_LOG_INFO("profile", "finished %u rounds\n", rounds);
-        rbrew_benchmark::profiling.store(false, std::memory_order_relaxed);
+        profile_threads(seconds, path);
     }).detach();
 }
 #else
 static void start_profiler() {}
 static void start_hang_sampler(const CPUState*) {}
 #include <sys/mman.h>
+#include <sys/prctl.h>
 #include <unistd.h>
 static void platform_sleep_us(unsigned us) {
     usleep(us);
 }
 static uint8_t* alloc_arena(size_t sz) {
-    void* p = mmap(nullptr, sz, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    // One flat aperture over the whole 32-bit guest address space, mapped
+    // readable/writable at startup (pages stay demand-zero until touched).
+    void* p = mmap(nullptr, sz, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (p == MAP_FAILED) return nullptr;
-    auto* base = static_cast<uint8_t*>(p);
-    if (mprotect(p, RBREW_APPLICATION_ARENA_END, PROT_READ | PROT_WRITE) ||
-        mprotect(base + RBREW_FG_FREE_BASE, RBREW_FG_FREE_SIZE, PROT_READ | PROT_WRITE) ||
-        mprotect(base + RBREW_MEM1_BASE, RBREW_MEM1_SIZE, PROT_READ | PROT_WRITE) ||
-        mprotect(base + RBREW_SHARED_DATA_BASE, RBREW_SHARED_DATA_SIZE, PROT_READ | PROT_WRITE)) {
-        munmap(p, sz);
-        return nullptr;
-    }
     return static_cast<uint8_t*>(p);
 }
 static bool map_overlay(void* user, uint32_t base, uint32_t size, bool enable) {
     if (!user || base != RBREW_OVERLAY_BASE || size != RBREW_OVERLAY_SIZE) return false;
     auto& mapping = *static_cast<OverlayHostMapping*>(user);
-    auto p = mapping.arena + base;
-    if (mprotect(p, size, enable ? (PROT_READ | PROT_WRITE) : PROT_NONE)) return false;
-    mapping.committed = true;
-    try {
-        rbrew_set_overlay_access(mapping.arena, enable);
-    } catch (...) {
-        mprotect(p, size, enable ? PROT_NONE : (PROT_READ | PROT_WRITE));
-        throw;
-    }
+    // The aperture is already mapped; only guest-visible accessibility
+    // changes (the checked path consults the overlay registry).
+    rbrew_set_overlay_access(mapping.arena, enable);
     if (enable) RBREW_LOG_INFO("MEM", "OverlayArena mapped: base=%08X size=%08X\n", base, size);
     return true;
 }
@@ -327,17 +303,21 @@ static void free_arena(uint8_t* p, size_t sz) {
 // ---------------------------------------------------------------------------
 void gambit_plt_auto_register(CPUState* cpu); // pre-registers STUB for all 610 PLT stubs
 
-// RBREW_STUB_REPORT diagnostics: one trampoline per blank import slot logs
-// its first call (import address and caller LR) and otherwise does nothing,
-// exactly like the blank STUB it replaces.
+// One trampoline per blank import slot reports its first call (import address
+// and caller LR) to the log and the diagnostics event log (events.jsonl), and
+// otherwise does nothing, exactly like the blank STUB it replaces.
 namespace {
 constexpr size_t kBlankLoggerSlots = 640;
 uint32_t g_blank_import_addr[kBlankLoggerSlots];
 std::atomic<bool> g_blank_import_seen[kBlankLoggerSlots];
 template <size_t I> void blank_import_trampoline(CPUState* cpu) {
-    if (!g_blank_import_seen[I].exchange(true))
-        RBREW_LOG_INFO("IMPORT", "first call to blank import %08X lr=%08X r3=%08X\n", g_blank_import_addr[I], cpu->lr,
-                       cpu->r[3]);
+    if (g_blank_import_seen[I].load(std::memory_order_relaxed) || g_blank_import_seen[I].exchange(true)) return;
+    RBREW_LOG_INFO("IMPORT", "first call to blank import %08X lr=%08X r3=%08X\n", g_blank_import_addr[I], cpu->lr,
+                   cpu->r[3]);
+    char message[48];
+    std::snprintf(message, sizeof(message), "blank import %08X lr=%08X", g_blank_import_addr[I], cpu->lr);
+    SplatoonDiagnostics::RecordEvent(SplatoonDiagnostics::EventCategory::System,
+                                     SplatoonDiagnostics::EventSeverity::Warning, 0, message);
 }
 template <size_t... I> constexpr std::array<HostFunc, sizeof...(I)> make_blank_loggers(std::index_sequence<I...>) {
     return {&blank_import_trampoline<I>...};
@@ -359,10 +339,9 @@ static uint32_t Gambit_entry_point;
 void Gambit_game_register(CPUState* cpu); // registers all recompiled game functions
 #endif
 #include "os/gx2/gx2_env_light.h"
-void player_anim_register(); // idle look-around and opt-in (RBREW_ANIM_LOG) animation trace
-void player_anim_register();                 // idle look-around and opt-in (RBREW_ANIM_LOG) animation trace
-void branch_tables_install(CPUState* cpu);   // branch_tables.cpp
-void broadcast_guard_install();              // broadcast_guard.cpp
+void player_anim_register();               // idle look-around and opt-in (RBREW_ANIM_LOG) animation trace
+void branch_tables_install(CPUState* cpu); // branch_tables.cpp
+void broadcast_guard_install();            // broadcast_guard.cpp
 void coreinit_memory_init(uint8_t* mem);
 void coreinit_memory_register(CPUState* cpu);
 void coreinit_dimport_repatch(CPUState* cpu); // re-apply after Gambit_data_init
@@ -380,6 +359,7 @@ void padscore_register(CPUState* cpu);
 void stubs_register(CPUState* cpu);
 void nsysnet_register(CPUState* cpu);
 void nn_act_register(CPUState* cpu);
+void nn_nfp_register(CPUState* cpu);
 void sysapp_title_register(CPUState* cpu);
 
 // ---------------------------------------------------------------------------
@@ -403,6 +383,12 @@ void Gambit_data_init(uint8_t* arena);
 static int rbrew_game_main(int argc, char** argv) {
 #else
 int main(int argc, char** argv) {
+#if defined(__linux__)
+    // Pin every hrtimer wakeup to 1 ns: the kernel's default 50 µs timer
+    // slack made each guest/vsync sleep overshoot. Threads created later
+    // inherit this slack, so every wait in the process becomes precise.
+    prctl(PR_SET_TIMERSLACK, 1UL);
+#endif
 #endif
 #if defined(_WIN32)
     (void)rbrew_configure_game_process();
@@ -422,11 +408,10 @@ int main(int argc, char** argv) {
     RBREW_LOG_INFO("FS", "RBREW_CONTENT_DIR=%s\n",
                    getenv("RBREW_CONTENT_DIR") ? getenv("RBREW_CONTENT_DIR") : "./content");
 
-    // 1. Allocate the shared native layout, including application heap memory
-    // The whole 32-bit guest space plus a guard is reserved (no access outside the committed
-    // regions), so a guest address + a short length can never reach host memory, even in a
-    // helper that skips the bounds check: a bad pointer from network data only faults.
-    const size_t arena_sz = (size_t(1) << 32) + 0x100000;
+    // 1. Allocate the shared native layout, including application heap memory.
+    // The aperture spans the whole 32-bit guest address space so any guest
+    // effective address is a plain offset into it.
+    const size_t arena_sz = size_t(RBREW_GUEST_APERTURE_SIZE);
     uint8_t* arena = alloc_arena(arena_sz);
     if (!arena) {
         RBREW_LOG_ERROR("gambit", "Failed to allocate %zu MB guest arena\n", arena_sz >> 20);
@@ -440,8 +425,7 @@ int main(int argc, char** argv) {
         // Owner request: use the RAM this machine has. Ask Windows to keep a
         // large working set resident (soft limits: under real memory
         // pressure Windows may still trim; nothing fails if refused).
-        const uint64_t committed =
-            uint64_t(RBREW_APPLICATION_ARENA_END) + RBREW_FG_FREE_SIZE + RBREW_MEM1_SIZE + RBREW_SHARED_DATA_SIZE;
+        const uint64_t committed = arena_sz;
         MEMORYSTATUSEX status{};
         status.dwLength = sizeof(status);
         if (GlobalMemoryStatusEx(&status)) {
@@ -507,17 +491,17 @@ int main(int argc, char** argv) {
         // Explicit native offline profile: English and unregistered country.
         // These match the selected local reference profile, independently of
         // title region. Neither the provider nor guest code depends on Cemu.
-        RbrewUcSystemProfile uc_profile{1,0};
-        // settings.ini language=1 English / 2 French; RBREW_CONSOLE_LANGUAGE wins.
-        if(const std::string value=rbrew_online_cfg::resolved("RBREW_CONSOLE_LANGUAGE","language","1");!value.empty())
-            uc_profile.language=rbrew_parse_native_uc_scalar(value.c_str(),11);
-        if(const char* value=getenv("RBREW_COUNTRY_REGISTRATION");value && *value)
-            uc_profile.country_registration=rbrew_parse_native_uc_scalar(value,255);
-        rbrew_uc_configure_profile(&cpu_reg,uc_profile);
-        RBREW_LOGF(stderr,"[UC] Native profile: language=%u country_registration=%u\n",
-            uc_profile.language,uc_profile.country_registration);
-        RBREW_LOGF(stderr, "[MCP] Native profile: console=0x%X title_regions=0x%X metadata=%s\n",
-            regions.console_region, regions.title_regions, metadata.string().c_str());
+        RbrewUcSystemProfile uc_profile{1, 0};
+        if (const std::string value = rbrew_online_cfg::resolved("RBREW_CONSOLE_LANGUAGE", "language", "1");
+            !value.empty())
+            uc_profile.language = rbrew_parse_native_uc_scalar(value.c_str(), 11);
+        if (const char* value = getenv("RBREW_COUNTRY_REGISTRATION"); value && *value)
+            uc_profile.country_registration = rbrew_parse_native_uc_scalar(value, 255);
+        rbrew_uc_configure_profile(&cpu_reg, uc_profile);
+        RBREW_LOG_INFO("UC", "Native profile: language=%u country_registration=%u\n", uc_profile.language,
+                       uc_profile.country_registration);
+        RBREW_LOG_INFO("MCP", "Native profile: console=0x%X title_regions=0x%X metadata=%s\n", regions.console_region,
+                       regions.title_regions, metadata.string().c_str());
     } catch (const std::exception& error) {
         RBREW_LOG_ERROR("MCP", "Native profile setup failed: %s\n", error.what());
         delete overlay_mapping;
@@ -531,7 +515,7 @@ int main(int argc, char** argv) {
     gambit_plt_auto_register(&cpu_reg);
     // Every PLT slot now holds the same blank STUB; remember it so imports
     // that no native module overrides can be reported (RBREW_STUB_REPORT).
-    const HostFunc blank_stub = cpu_reg.dispatch_table[rbrew_game_address(0x02D051A0u) >> 2];
+    const HostFunc blank_stub = cpu_reg.dispatch_table[RBREW_GAME_BLANK_STUB >> 2];
     // Now override with real implementations
     coreinit_memory_init(arena);
     coreinit_memory_register(&cpu_reg);
@@ -551,31 +535,33 @@ int main(int argc, char** argv) {
     stubs_register(&cpu_reg);
     nsysnet_register(&cpu_reg);
     nn_act_register(&cpu_reg);
+    nn_nfp_register(&cpu_reg);
     sysapp_title_register(&cpu_reg);
     // Register all recompiled game functions so rbrew_dispatch can find them
     Gambit_game_register(&cpu_reg);
-    branch_tables_install(&cpu_reg);    // link branch-table case blocks (see os/game/branch_tables.cpp)
-    broadcast_guard_install();          // 0285C3D0 broadcast loop guard
+    branch_tables_install(&cpu_reg); // link branch-table case blocks (see hooks/branch_tables.cpp)
+    broadcast_guard_install();       // 0285C3D0 broadcast loop guard
     player_anim_register();
-    gx2env::register_hooks(); // camera field of view (gx2_env_light.h)
+    gx2env::register_hooks(); // game camera hooks (hooks/gx2_camera_hooks.h)
     erreula_register(&cpu_reg);
 
     RBREW_LOG_INFO("IMPORT", "OS modules and game dispatch registered\n");
-    if (const char* report = rbrew_diagnostic_env("RBREW_STUB_REPORT"); report && *report) {
+    {
         // PLT trampolines occupy 0x02D051A0..0x02D0E098 in Gambit.
-        // Each blank slot is rebound to a logging trampoline with the same
-        // do-nothing behavior, so the first call to it is reported.
-        if (FILE* out = fopen(report, "w")) {
-            unsigned blank = 0;
-            for (uint32_t addr = 0x02D05000u; addr < 0x02D10000u; addr += 4)
-                if (cpu_reg.dispatch_table[addr >> 2] == blank_stub) {
-                    RBREW_LOGF(out, "%08X\n", addr);
-                    if (HostFunc logger = blank_import_logger(blank, addr)) cpu_reg.dispatch_table[addr >> 2] = logger;
-                    ++blank;
-                }
-            fclose(out);
-            RBREW_LOG_INFO("IMPORT", "%u PLT imports still bound to the blank STUB -> %s\n", blank, report);
-        }
+        // Each blank slot is rebound to a reporting trampoline with the same
+        // do-nothing behavior, so the first call to it is recorded.
+        // RBREW_STUB_REPORT=<file> also lists the blank slots.
+        const char* report = rbrew_diagnostic_env("RBREW_STUB_REPORT");
+        FILE* out = report && *report ? fopen(report, "w") : nullptr;
+        unsigned blank = 0;
+        for (uint32_t addr = 0x02D05000u; addr < 0x02D10000u; addr += 4)
+            if (cpu_reg.dispatch_table[addr >> 2] == blank_stub) {
+                if (out) RBREW_LOGF(out, "%08X\n", addr);
+                if (HostFunc logger = blank_import_logger(blank, addr)) cpu_reg.dispatch_table[addr >> 2] = logger;
+                ++blank;
+            }
+        if (out) fclose(out);
+        RBREW_LOG_INFO("IMPORT", "%u PLT imports still bound to the blank STUB\n", blank);
     }
 
     start_hang_sampler(&cpu_reg);

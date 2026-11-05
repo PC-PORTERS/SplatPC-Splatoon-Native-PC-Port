@@ -13,6 +13,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <time.h>
 
 #if !defined(_MSC_VER)
 #include <strings.h> // strcasecmp
@@ -105,6 +106,34 @@ static std::string get_diagnostics_base_dir() {
 #if defined(_WIN32)
 static LPTOP_LEVEL_EXCEPTION_FILTER s_previous_filter = nullptr;
 
+// "module+offset" per frame, unwound from the faulting context (offsets into
+// Splatoon.exe resolve with Splatoon.map). Allocation free.
+static int format_backtrace(CONTEXT context, char* out, size_t size) {
+    int len = snprintf(out, size, "\nBacktrace:\n");
+    for (int frame = 0; frame < 24 && context.Rip && len < int(size) - 160; ++frame) {
+        HMODULE module = nullptr;
+        char path[MAX_PATH] = "?";
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               reinterpret_cast<LPCSTR>(context.Rip), &module))
+            GetModuleFileNameA(module, path, sizeof(path));
+        const char* base = strrchr(path, '\\');
+        len += snprintf(out + len, size - len, "  #%02d %s+0x%llX\n", frame, base ? base + 1 : path,
+                        (unsigned long long)(context.Rip - reinterpret_cast<DWORD64>(module)));
+        DWORD64 image = 0;
+        PRUNTIME_FUNCTION entry = RtlLookupFunctionEntry(context.Rip, &image, nullptr);
+        if (!entry) { // leaf function: the return address is on top of the stack
+            context.Rip = *reinterpret_cast<DWORD64*>(context.Rsp);
+            context.Rsp += 8;
+            continue;
+        }
+        void* handler_data = nullptr;
+        DWORD64 frame_pointer = 0;
+        RtlVirtualUnwind(UNW_FLAG_NHANDLER, image, context.Rip, entry, &context, &handler_data, &frame_pointer,
+                         nullptr);
+    }
+    return len;
+}
+
 // Unhandled-exception filter, not a vectored handler: the runtime handles
 // some access violations itself (__try in gx2_display_list.cpp, the hang
 // sampler), and a first-chance vectored handler wrote a "crash" report for
@@ -152,6 +181,8 @@ static LONG WINAPI CrashUnhandledFilter(PEXCEPTION_POINTERS ep) {
                          (void*)ep->ContextRecord->Rsp, (void*)ep->ContextRecord->Rax, (void*)ep->ContextRecord->Rcx,
                          (void*)ep->ContextRecord->Rdx, (void*)ep->ContextRecord->Rbx);
             DWORD written = 0;
+            WriteFile(hFile, buf, (DWORD)len, &written, nullptr);
+            len = format_backtrace(*ep->ContextRecord, buf, sizeof(buf));
             WriteFile(hFile, buf, (DWORD)len, &written, nullptr);
             CloseHandle(hFile);
         }
@@ -648,8 +679,22 @@ OverlayMetrics GetOverlayMetrics() {
     return s_overlay_metrics;
 }
 
+namespace {
+std::atomic<void (*)(const std::string&)> s_manual_profiler{nullptr};
+} // namespace
+
+void SetManualProfiler(void (*profiler)(const std::string& path)) {
+    s_manual_profiler = profiler;
+}
+
 void ManualCapture() {
     TriggerCapture("manual_snapshot", "Manual F9 snapshot triggered by user");
+    if (auto profiler = s_manual_profiler.load()) {
+        char name[64];
+        const auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+        std::strftime(name, sizeof(name), "%Y-%m-%d_%H-%M-%S_threads.txt", std::localtime(&now));
+        profiler(get_diagnostics_base_dir() + "/" + name);
+    }
 }
 
 namespace {
@@ -748,6 +793,66 @@ bool AnalyzeReport(const std::string& report_dir, std::string& out_summary, std:
     out_report = gs.str();
 
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// Per-thread CPU sensors
+// ---------------------------------------------------------------------------
+namespace {
+struct ThreadSensor {
+    std::atomic<const char*> name{nullptr};
+    std::atomic<uint64_t> cpu_ns{0};
+    std::atomic<uint64_t> wall_ns{0};
+};
+constexpr size_t kMaxThreadSensors = 8;
+ThreadSensor s_thread_sensors[kMaxThreadSensors];
+
+uint64_t thread_cpu_time_ns() {
+#if defined(_WIN32)
+    FILETIME creation{}, exit_time{}, kernel{}, user{};
+    if (!GetThreadTimes(GetCurrentThread(), &creation, &exit_time, &kernel, &user)) return 0;
+    const auto to_ns = [](const FILETIME& t) {
+        return (uint64_t(t.dwHighDateTime) << 32 | uint64_t(t.dwLowDateTime)) * 100ull;
+    };
+    return to_ns(kernel) + to_ns(user);
+#else
+    timespec ts{};
+    if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) != 0) return 0;
+    return uint64_t(ts.tv_sec) * 1000000000ull + uint64_t(ts.tv_nsec);
+#endif
+}
+} // namespace
+
+void SampleThreadCpu(const char* name) {
+    const uint64_t cpu = thread_cpu_time_ns();
+    const uint64_t wall = now_ns();
+    for (auto& s : s_thread_sensors) {
+        const char* seen = s.name.load(std::memory_order_acquire);
+        if (seen == name) {
+            s.cpu_ns.store(cpu, std::memory_order_relaxed);
+            s.wall_ns.store(wall, std::memory_order_relaxed);
+            return;
+        }
+        if (!seen && s.name.compare_exchange_strong(seen, name, std::memory_order_acq_rel)) {
+            s.cpu_ns.store(cpu, std::memory_order_relaxed);
+            s.wall_ns.store(wall, std::memory_order_relaxed);
+            return;
+        }
+    }
+}
+
+size_t GetThreadSensorReadings(ThreadSensorReading* out, size_t max) {
+    size_t n = 0;
+    for (auto& s : s_thread_sensors) {
+        if (n >= max) break;
+        const char* name = s.name.load(std::memory_order_acquire);
+        if (!name) continue;
+        out[n].name = name;
+        out[n].cpu_ns = s.cpu_ns.load(std::memory_order_relaxed);
+        out[n].wall_ns = s.wall_ns.load(std::memory_order_relaxed);
+        ++n;
+    }
+    return n;
 }
 
 } // namespace SplatoonDiagnostics

@@ -19,7 +19,9 @@
 namespace {
 std::atomic<uint32_t> g_initialize_count{0};
 // Mii name: the player's pseudo (settings.ini pseudo=, F2) or "default".
-std::u16string mii_name() { return rbrew_online::mii_name(rbrew_online::pseudo(), u"default"); }
+std::u16string mii_name() {
+    return rbrew_online::mii_name(rbrew_online::pseudo(), u"default");
+}
 constexpr char kCountry[] = "NN"; // Cemu: country index 0 has no table entry
 
 void require_guest(const CPUState* cpu, uint32_t address, uint64_t length, const char* what) {
@@ -52,15 +54,27 @@ void Finalize(CPUState* cpu) {
     while (count && !g_initialize_count.compare_exchange_weak(count, count - 1)) {}
     cpu->r[3] = 0;
 }
-void GetSlotNo(CPUState* cpu) { cpu->r[3] = 1; }
-void IsSlotOccupied(CPUState* cpu) { cpu->r[3] = slot_occupied(cpu->r[3]) ? 1 : 0; }
+void GetSlotNo(CPUState* cpu) {
+    cpu->r[3] = 1;
+}
+void IsSlotOccupied(CPUState* cpu) {
+    cpu->r[3] = slot_occupied(cpu->r[3]) ? 1 : 0;
+}
 // Online mode (runtime/online_identity.h): a network account whose principal
 // id is the local identity's. Offline: Cemu's default offline account.
-void IsNetworkAccount(CPUState* cpu) { cpu->r[3] = rbrew_online::config().online ? 1 : 0; }
+void IsNetworkAccount(CPUState* cpu) {
+    cpu->r[3] = rbrew_online::config().online ? 1 : 0;
+}
 // Cemu returns 1; with 0 Splatoon attempts nn_fp.RegisterAccount.
-void HasNfsAccount(CPUState* cpu) { cpu->r[3] = 1; }
-void GetPrincipalId(CPUState* cpu) { cpu->r[3] = rbrew_online::config().online ? rbrew_online::identity().pid : 0; }
-void GetSimpleAddressId(CPUState* cpu) { cpu->r[3] = 0; }
+void HasNfsAccount(CPUState* cpu) {
+    cpu->r[3] = 1;
+}
+void GetPrincipalId(CPUState* cpu) {
+    cpu->r[3] = rbrew_online::config().online ? rbrew_online::identity().pid : 0;
+}
+void GetSimpleAddressId(CPUState* cpu) {
+    cpu->r[3] = 0;
+}
 
 // Revision 288 requests a UUID even for the default offline account. The API
 // writes sixteen bytes and returns an ACT result, rather than an output pointer.
@@ -74,15 +88,16 @@ void GetUuidEx(CPUState* cpu) {
     }
     const uint32_t out = cpu->r[3];
     require_guest(cpu, out, 16, "UUID output");
-    static constexpr uint8_t uuid[16] = {
-        0x53,0x50,0x4C,0x41,0x54,0x4F,0x40,0x4E,
-        0x80,0x43,0x50,0x4F,0x52,0x54,0x30,0x31
-    };
+    static constexpr uint8_t uuid[16] = {0x53, 0x50, 0x4C, 0x41, 0x54, 0x4F, 0x40, 0x4E,
+                                         0x80, 0x43, 0x50, 0x4F, 0x52, 0x54, 0x30, 0x31};
     for (uint32_t i = 0; i < 16; ++i) rbrew_write8(cpu->mem, out + i, common && i == 15 ? 0 : uuid[i]);
     cpu->r[3] = 0;
 }
 
-void GetMii(CPUState* cpu) { write_mii(cpu, cpu->r[3]); cpu->r[3] = 0; }
+void GetMii(CPUState* cpu) {
+    write_mii(cpu, cpu->r[3]);
+    cpu->r[3] = 0;
+}
 void GetMiiEx(CPUState* cpu) {
     if (!slot_occupied(cpu->r[4])) {
         cpu->r[3] = RBREW_ACT_RESULT_ACCOUNT_DOES_NOT_EXIST; // output untouched
@@ -145,7 +160,10 @@ void AcquireNexServiceToken(CPUState* cpu) {
     }();
     if (stub) return;
     const auto online = rbrew_online::config();
-    if (!online.online) { cpu->r[3] = RBREW_ACT_RESULT_NEX_UNAVAILABLE; return; }
+    if (!online.online) {
+        cpu->r[3] = RBREW_ACT_RESULT_NEX_UNAVAILABLE;
+        return;
+    }
     const uint32_t out = cpu->r[3], game_server = cpu->r[4];
     require_guest(cpu, out, rbrew_online::kNexTokenSize, "NEX token output");
     const auto& id = rbrew_online::identity();
@@ -155,7 +173,8 @@ void AcquireNexServiceToken(CPUState* cpu) {
     rbrew_online::fill_nex_token(buffer, token, id.password, online.host, online.port);
     for (uint32_t i = 0; i < rbrew_online::kNexTokenSize; ++i) rbrew_write8(cpu->mem, out + i, buffer[i]);
     char note[96];
-    std::snprintf(note, sizeof note, "game_server=%08x pid=%08x -> %s:%u", game_server, id.pid, online.host.c_str(), online.port);
+    std::snprintf(note, sizeof note, "game_server=%08x pid=%08x -> %s:%u", game_server, id.pid, online.host.c_str(),
+                  online.port);
     rbrew_net_note("nex token", note);
     cpu->r[3] = 0;
 }

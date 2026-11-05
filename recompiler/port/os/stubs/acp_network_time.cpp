@@ -17,10 +17,18 @@
 namespace {
 // ACPGetNetworkTime(s64* time, u32* valid) -> ACPResult (0 = success)
 void ACPGetNetworkTime(CPUState* cpu) {
-    if (!rbrew_online::config().online) { RET = uint32_t(-1); return; }
-    if(!ARG0 || !ARG1 || uint64_t(ARG0)+8>cpu->guest_memory_size || uint64_t(ARG1)+4>cpu->guest_memory_size || !rbrew_memory_accessible(MEM,ARG0,8) || !rbrew_memory_accessible(MEM,ARG1,4)){RET=uint32_t(-1);return;}
+    if (!rbrew_online::config().online) {
+        RET = uint32_t(-1);
+        return;
+    }
+    if (!ARG0 || !ARG1 || uint64_t(ARG0) + 8 > cpu->guest_memory_size || uint64_t(ARG1) + 4 > cpu->guest_memory_size ||
+        !rbrew_memory_accessible(MEM, ARG0, 8) || !rbrew_memory_accessible(MEM, ARG1, 4)) {
+        RET = uint32_t(-1);
+        return;
+    }
     using namespace std::chrono;
-    const int64_t seconds = duration_cast<std::chrono::seconds>(system_clock::now().time_since_epoch()).count() - 946684800;
+    const int64_t seconds =
+        duration_cast<std::chrono::seconds>(system_clock::now().time_since_epoch()).count() - 946684800;
     if (ARG0 && rbrew_memory_accessible(MEM, ARG0, 8u)) {
         rbrew_write32(MEM, ARG0, uint32_t(uint64_t(seconds) >> 32));
         rbrew_write32(MEM, ARG0 + 4, uint32_t(seconds));
@@ -32,15 +40,17 @@ void ACPGetNetworkTime(CPUState* cpu) {
 void ACPConvertNetworkTimeToOSCalendarTime(CPUState* cpu) {
     const int64_t seconds = int64_t(uint64_t(cpu->r[3]) << 32 | cpu->r[4]);
     const uint32_t out = cpu->r[5];
-    if (!out || uint64_t(out)+40>cpu->guest_memory_size || !rbrew_memory_accessible(MEM, out, 40u)) { RET = uint32_t(-1); return; }
+    if (!out || uint64_t(out) + 40 > cpu->guest_memory_size || !rbrew_memory_accessible(MEM, out, 40u)) {
+        RET = uint32_t(-1);
+        return;
+    }
     const auto fields = rbrew_calendar_from_seconds(seconds);
     for (unsigned i = 0; i < fields.size(); ++i) rbrew_write32(MEM, out + 4 * i, uint32_t(fields[i]));
     RET = 0;
 }
-}
+} // namespace
 
 void acp_network_time_register(CPUState* cpu) {
     rbrew_register_func(cpu, ADDR_ACPGetNetworkTime, ACPGetNetworkTime);
     rbrew_register_func(cpu, ADDR_ACPConvertNetworkTimeToOSCalendarTime, ACPConvertNetworkTimeToOSCalendarTime);
 }
-

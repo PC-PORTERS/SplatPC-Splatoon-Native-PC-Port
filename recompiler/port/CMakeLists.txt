@@ -5,8 +5,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Shared public headers (the logger lives here).
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../include)
-set(RBREW_GAME_REVISION "16" CACHE STRING "Supported title revision: 16 or experimental 288")
-if(NOT RBREW_GAME_REVISION MATCHES "^(16|288)$")
+set(RBREW_GAME_REVISION "16" CACHE STRING "Title revision of the selected manifest (app_version)")
+if(NOT RBREW_GAME_REVISION MATCHES "^[0-9]+$")
     message(FATAL_ERROR "Unsupported title revision")
 endif()
 add_compile_definitions(RBREW_GAME_REVISION=${RBREW_GAME_REVISION})
@@ -62,7 +62,9 @@ set(RBREW_PLT_OUTPUTS
     os/padscore/padscore_addrs.h
     os/snd_core/snd_core_addrs.h
     os/stubs/stubs_addrs.h
-    os/vpad/vpad_addrs.h)
+    os/vpad/vpad_addrs.h
+    runtime/game_revision.h
+    runtime/game_branch_tables.h)
 
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(NOT RBREW_MANIFEST_PATH AND Python3_Interpreter_FOUND AND EXISTS "${RBREW_PLT_RESOLVER}")
@@ -76,7 +78,8 @@ if(NOT RBREW_MANIFEST_PATH AND Python3_Interpreter_FOUND AND EXISTS "${RBREW_PLT
             ERROR_VARIABLE  RBREW_SELECT_STDERR)
         if(NOT RBREW_SELECT_RESULT EQUAL 0)
             message(FATAL_ERROR
-                "No manifest describes ${RBREW_RPX}:\n${RBREW_SELECT_STDERR}")
+                "No manifest describes ${RBREW_RPX}:
+${RBREW_SELECT_STDERR}")
         endif()
         string(STRIP "${RBREW_SELECT_STDOUT}" RBREW_MANIFEST_PATH)
     else()
@@ -117,7 +120,19 @@ if(Python3_Interpreter_FOUND AND EXISTS "${RBREW_MANIFEST_PATH}" AND EXISTS "${R
         ERROR_VARIABLE  RBREW_PLT_STDERR)
     if(NOT RBREW_PLT_RESULT EQUAL 0)
         message(FATAL_ERROR
-            "Generating PLT addresses from ${RBREW_MANIFEST_PATH} failed:\n${RBREW_PLT_STDERR}")
+            "Generating PLT addresses from ${RBREW_MANIFEST_PATH} failed:
+${RBREW_PLT_STDERR}")
+    endif()
+    # runtime/game_revision.h (relocation of base addresses, RBREW_GAME_* constants) comes from the same manifest.
+    execute_process(
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../tools/generate_revision_header.py"
+                --manifest "${RBREW_MANIFEST_PATH}"
+                --out-dir "${CMAKE_CURRENT_SOURCE_DIR}/runtime"
+        RESULT_VARIABLE RBREW_REVISION_RESULT
+        ERROR_VARIABLE  RBREW_REVISION_STDERR)
+    if(NOT RBREW_REVISION_RESULT EQUAL 0)
+        message(FATAL_ERROR "Generating game_revision.h from ${RBREW_MANIFEST_PATH} failed:
+${RBREW_REVISION_STDERR}")
     endif()
     set(RBREW_PLT_GENERATED ON)
     message(STATUS "PLT addresses generated from ${RBREW_MANIFEST_PATH}")
@@ -164,6 +179,7 @@ add_library(gambit_runtime STATIC
     os/coreinit/coreinit_user_config.cpp
     os/erreula/erreula.cpp
     os/nn_act/nn_act.cpp
+    os/nn_nfp/nn_nfp.cpp
     os/sysapp/sysapp_title.cpp
     os/coreinit/coreinit_fs.cpp
     os/gx2/gx2_context.cpp
@@ -186,9 +202,10 @@ add_library(gambit_runtime STATIC
     os/stubs/acp_network_time.cpp
     os/stubs/fp_lab.cpp
     os/nsysnet/nsysnet.cpp
-    os/game/player_anim.cpp
-    os/game/branch_tables.cpp
-    os/game/broadcast_guard.cpp
+    hooks/gx2_camera_hooks.cpp
+    hooks/player_anim.cpp
+    hooks/branch_tables.cpp
+    hooks/broadcast_guard.cpp
     loader/gambit_loader.cpp
     loader/native_console_profile.cpp
     runtime/splatoon_diagnostics.cpp
@@ -210,6 +227,14 @@ if(NOT RBREW_DIAGNOSTIC_RUNTIME)
     target_compile_definitions(gambit_runtime PRIVATE RBREW_DISABLE_LOGGING)
     target_compile_definitions(cemu_shader PRIVATE RBREW_DISABLE_LOGGING)
     set_property(SOURCE main.cpp APPEND PROPERTY COMPILE_DEFINITIONS RBREW_DISABLE_LOGGING)
+endif()
+# HYPER_OPTIMIZE: aggressive CPU path for the recompiled game code. The host
+# aperture covers the whole 32-bit guest address space, so generated loads and
+# stores skip bounds checks and store gating; the compiler gets full inlining
+# and LTCG/LTO. OFF restores the checked memory path and the original flags.
+option(HYPER_OPTIMIZE "Aggressive CPU optimizations for guest code (zero-check memory, LTCG/LTO)" ON)
+if(HYPER_OPTIMIZE)
+    message(STATUS "HYPER_OPTIMIZE enabled: zero-check guest memory, aggressive inlining")
 endif()
 rbrew_gx2_backend(gambit_runtime PUBLIC)
 
@@ -279,12 +304,22 @@ target_compile_definitions(gambit_generated PRIVATE
     RBREW_DISABLE_LOGGING
     HAVE_SDL2
 )
+if(HYPER_OPTIMIZE)
+    target_compile_definitions(gambit_generated PRIVATE RBREW_HYPER_OPTIMIZE=1)
+endif()
 
 if(MSVC)
     if(CMAKE_GENERATOR MATCHES "Visual Studio")
         target_compile_options(gambit_generated PRIVATE /MP)
     endif()
-    target_compile_options(gambit_generated PRIVATE "$<$<CONFIG:Debug>:/Od>" /bigobj /Ob1 /GS- /Gy- /EHs-c- /GR-)
+    target_compile_options(gambit_generated PRIVATE "$<$<CONFIG:Debug>:/Od>" /bigobj /GS- /Gy- /EHs-c- /GR-)
+    if(HYPER_OPTIMIZE)
+        # Full inlining plus whole-program optimization on the generated parts.
+        # /arch:AVX2 (Haswell+) brings MOVBE and BMI2 like -march=native above.
+        target_compile_options(gambit_generated PRIVATE /Ob2 /Oi /GT /GL /arch:AVX2)
+    else()
+        target_compile_options(gambit_generated PRIVATE /Ob1)
+    endif()
     if(EXISTS "${GAMBIT_GENERATED_DIR}/Gambit.h")
         target_precompile_headers(gambit_generated PRIVATE "${GAMBIT_GENERATED_DIR}/Gambit.h")
     endif()
@@ -345,8 +380,18 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         target_compile_options(Gambit PRIVATE "$<$<CONFIG:Debug>:-O0>" -fno-strict-aliasing)
     endif()
     target_compile_options(gambit_runtime PRIVATE -O2)
+    if(HYPER_OPTIMIZE AND TARGET gambit_generated)
+        target_compile_options(gambit_generated PRIVATE -O3)
+        # MOVBE fuses each guest load/store + bswap into one instruction and
+        # BMI2 replaces shift-by-register sequences; -march=native matches the
+        # build machine (do not redistribute such a binary).
+        target_compile_options(gambit_generated PRIVATE -march=native)
+        # GCC/Clang -flto on the generated corpus OOMs the linker (the parts
+        # carry thousands of large functions); MSVC /GL+/LTCG is used there.
+    endif()
     if(TARGET Gambit AND CMAKE_BUILD_TYPE STREQUAL "Release")
-        target_link_options(Gambit PRIVATE -s)
+        # Symbols stay in the local binary: CPU profiling of the recompiled
+        # corpus resolves Gambit_fn_* addresses (a release zip can strip them).
     endif()
 endif()
 
@@ -363,6 +408,10 @@ if(MSVC)
         # (rebrewu_runtime.h); the executable needs no per-access TLS guard.
         target_compile_options(Gambit PRIVATE /Zc:tlsGuards-)
         target_link_options(Gambit PRIVATE "/MAP:$<TARGET_FILE_DIR:Gambit>/Splatoon.map")
+        if(HYPER_OPTIMIZE)
+            # gambit_generated is compiled with /GL; link the whole game with LTCG.
+            target_link_options(Gambit PRIVATE /LTCG)
+        endif()
     endif()
     target_compile_options(gambit_runtime PRIVATE /utf-8 /MP)
 endif()
@@ -412,6 +461,14 @@ if(RBREW_BUILD_TESTS)
     target_link_libraries(gambit_texture_pack_tests PRIVATE gambit_runtime)
     target_include_directories(gambit_texture_pack_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME native_texture_pack COMMAND gambit_texture_pack_tests)
+    add_executable(gambit_nfp_tests ../tests/test_nn_nfp.cpp)
+    target_link_libraries(gambit_nfp_tests PRIVATE gambit_runtime)
+    target_include_directories(gambit_nfp_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME native_nn_nfp COMMAND gambit_nfp_tests)
+    add_executable(gambit_quit_confirm_tests ../tests/test_quit_confirmation.cpp)
+    target_link_libraries(gambit_quit_confirm_tests PRIVATE gambit_runtime)
+    target_include_directories(gambit_quit_confirm_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME native_quit_confirm COMMAND gambit_quit_confirm_tests)
     # Local developer tests/tools below are optional (not in the public tree).
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../tests/test_frame_pacing.cpp")
         add_executable(gambit_frame_pacing_tests ../tests/test_frame_pacing.cpp)
@@ -470,10 +527,13 @@ if(RBREW_BUILD_TESTS)
     add_executable(gambit_guest_bench ../tests/test_guest_animation.cpp)
     target_link_libraries(gambit_guest_bench PRIVATE gambit_runtime)
     target_include_directories(gambit_guest_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    if(HYPER_OPTIMIZE)
+        target_compile_definitions(gambit_guest_bench PRIVATE RBREW_HYPER_OPTIMIZE=1)
+    endif()
     if(MSVC)
         target_compile_options(gambit_guest_bench PRIVATE /Zc:tlsGuards-) # as the Gambit target
     endif()
-    foreach(case npc_1 npc_10 npc_25 npc_50 npc_100 paired_equivalence)
+    foreach(case npc_1 npc_10 npc_25 npc_50 npc_100 paired_equivalence psq_equivalence)
         add_test(NAME guest_${case} COMMAND gambit_guest_bench ${case})
         set_tests_properties(guest_${case} PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
     endforeach()

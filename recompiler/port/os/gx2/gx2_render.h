@@ -108,6 +108,7 @@ void gx2_render_save_fetch_shader(uint32_t fs_addr, uint32_t attrib_count, uint3
 
 // Called from GX2SetFetchShader: makes fs_addr the active fetch shader.
 void gx2_render_set_active_fetch_shader(uint32_t fs_addr);
+uint32_t gx2_render_active_fetch_shader();
 
 // Called from GX2SetAttribBuffer: records the guest vertex buffer for a slot.
 // The buffer is uploaded (with endian-swap) to a VBO at draw time.

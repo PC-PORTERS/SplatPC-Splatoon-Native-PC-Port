@@ -1,7 +1,9 @@
 #include "../../../runtime/rbrew_diagnostics.h"
 #include "../../../runtime/texture_diagnostics.h"
 #include "../../../runtime/port_settings.h"
+#include "../../../runtime/splatoon_diagnostics.h"
 #include "gx2_vk.h"
+#include "gx2_vk_capture.h"
 #include "gx2_vk_memory.h"
 #include "gx2_imgui_overlay.h"
 #include "gx2_vk_shader.h"
@@ -46,6 +48,7 @@ VkPhysicalDeviceMemoryProperties s_memory{};
 Caps s_caps;
 std::unordered_map<VkFormat, VkFormatProperties> s_format_properties;
 uint64_t s_image_generation = 0;
+uint64_t s_image_serial = 0;
 bool s_ready = false;
 bool s_debug_utils = false;
 #ifdef RBREW_TEXTURE_DIAGNOSTICS
@@ -741,6 +744,12 @@ VKAPI_ATTR void VKAPI_CALL w_BindDescriptorSets(VkCommandBuffer cb, VkPipelineBi
 VKAPI_ATTR void VKAPI_CALL w_PushConstants(VkCommandBuffer cb, VkPipelineLayout l, VkShaderStageFlags s,
                                            uint32_t offset, uint32_t size, const void* v) {
     if (!deferring()) return real.PushConstants(cb, l, s, offset, size, v);
+    if (size <= 8) {
+        uint64_t inline_val = 0;
+        if (size) std::memcpy(&inline_val, v, size);
+        defer(0, [=](uint8_t*) { return [=] { real.PushConstants(cb, l, s, offset, size, &inline_val); }; });
+        return;
+    }
     defer(align16(size), [=](uint8_t* c) {
         const uint8_t* vc = put(c, static_cast<const uint8_t*>(v), size);
         return [=] { real.PushConstants(cb, l, s, offset, size, vc); };
@@ -767,8 +776,65 @@ bool descriptor_buffers(VkDescriptorType t) {
 bool descriptor_texels(VkDescriptorType t) {
     return t == VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER || t == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
 }
+struct CompactPushWrite {
+    uint32_t binding;
+    VkDescriptorType type;
+    union {
+        VkDescriptorBufferInfo buf;
+        VkDescriptorImageInfo img;
+    };
+};
 VKAPI_ATTR void VKAPI_CALL w_PushDescriptorSet(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipelineLayout l,
                                                uint32_t set, uint32_t n, const VkWriteDescriptorSet* writes) {
+    if (deferring() && n > 0 && n <= 32) {
+        bool compact = true;
+        for (uint32_t i = 0; i < n; ++i) {
+            const auto& w = writes[i];
+            if (w.pNext || w.dstArrayElement || w.descriptorCount != 1 ||
+                (w.descriptorType != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER &&
+                 w.descriptorType != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)) {
+                compact = false;
+                break;
+            }
+        }
+        if (compact) {
+            defer(align16(sizeof(CompactPushWrite) * n), [=](uint8_t* c) {
+                auto* cw = reinterpret_cast<CompactPushWrite*>(c);
+                for (uint32_t i = 0; i < n; ++i) {
+                    const auto& w = writes[i];
+                    cw[i].binding = w.dstBinding;
+                    cw[i].type = w.descriptorType;
+                    if (w.descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
+                        cw[i].buf = *w.pBufferInfo;
+                    else
+                        cw[i].img = *w.pImageInfo;
+                }
+                return [=] {
+                    VkWriteDescriptorSet expanded[32];
+                    for (uint32_t i = 0; i < n; ++i) {
+                        auto& w = expanded[i];
+                        w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                        w.pNext = nullptr;
+                        w.dstSet = VK_NULL_HANDLE;
+                        w.dstBinding = cw[i].binding;
+                        w.dstArrayElement = 0;
+                        w.descriptorCount = 1;
+                        w.descriptorType = cw[i].type;
+                        if (cw[i].type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) {
+                            w.pImageInfo = nullptr;
+                            w.pBufferInfo = &cw[i].buf;
+                        } else {
+                            w.pImageInfo = &cw[i].img;
+                            w.pBufferInfo = nullptr;
+                        }
+                        w.pTexelBufferView = nullptr;
+                    }
+                    real.PushDescriptorSetKHR(cb, bp, l, set, n, expanded);
+                };
+            });
+            return;
+        }
+    }
     bool simple = deferring();
     size_t extra = bytes(writes, n);
     for (uint32_t i = 0; simple && i < n; ++i) {
@@ -2260,6 +2326,7 @@ bool create_image(Image& image, const ImageDesc& desc) {
     image.desc.levels = info.mipLevels;
     image.desc.layers = info.arrayLayers;
     image.aspect = format_aspect(desc.format);
+    image.image_serial = ++s_image_serial;
     image.content_generation = ++s_image_generation;
     image.views.clear();
     TXDIAG(const auto id = txdiag::create("image", txdiag::handle(image.image)); txdiag::event(
@@ -2309,6 +2376,7 @@ void destroy_image(Image& image) {
     }
 #endif
     image.image = VK_NULL_HANDLE;
+    image.image_serial = 0;
     image.views.clear();
     image.memory = {};
     --s_images;
@@ -2451,6 +2519,19 @@ static VkImageView swapchain_view(uint32_t index) {
     return views[index];
 }
 bool present(Image& source, uint32_t width, uint32_t height) {
+    // A present is never part of the 120 FPS replay frame: the in-between
+    // present ran with capture on, so ImGui's draws and its font uploads were
+    // replayed later with buffers ImGui had already freed (driver crash or a
+    // frozen picture once the amiibo picker added glyphs).
+    struct CapturePause {
+        bool was = capture::enabled();
+        CapturePause() {
+            if (was) capture::set_enabled(false);
+        }
+        ~CapturePause() {
+            if (was) capture::set_enabled(true);
+        }
+    } capture_pause;
     if (s_capture_presents) {
         s_last_present.clear();
         s_last_present_w = s_last_present_h = 0;
@@ -2594,6 +2675,15 @@ bool present(Image& source, uint32_t width, uint32_t height) {
     present.pImageIndices = &index;
     result = vkQueuePresentKHR(s_queue, &present);
     ++s_presents;
+    // Heartbeat in the diagnostics event log: shows whether the window still
+    // gets pictures when the screen looks frozen.
+    if (s_presents % 600 == 0 || result != VK_SUCCESS) {
+        char message[48];
+        std::snprintf(message, sizeof(message), "vk present %llu result %d", (unsigned long long)s_presents,
+                      int(result));
+        SplatoonDiagnostics::RecordEvent(SplatoonDiagnostics::EventCategory::Graphics,
+                                         SplatoonDiagnostics::EventSeverity::Info, 0, message);
+    }
     if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
         vkQueueWaitIdle(s_queue);
         create_swapchain();

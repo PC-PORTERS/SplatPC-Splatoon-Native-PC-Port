@@ -8,6 +8,7 @@
 //   gambit_guest_bench breakdown|instructions  per-kernel / per-form cost
 #include "runtime/rebrewu_runtime.h"
 #include "runtime/rebrewu_memory_observer.h"
+#include "rebrewu/logger.hpp"
 #include <algorithm>
 #include <atomic>
 #include <bit>
@@ -385,7 +386,7 @@ template <uint32_t word> void compare_paired() {
                           !std::memcmp(fast.r, reference.r, sizeof fast.r) &&
                           !std::memcmp(fast.cr, reference.cr, sizeof fast.cr) && fast.fpscr == reference.fpscr &&
                           memory == expected;
-        if (!same) std::fprintf(stderr, "paired mismatch word=%08X case=%u\n", word, n);
+        if (!same) RBREW_LOG_ERROR("guest", "paired mismatch word=%08X case=%u", word, n);
         require(same, "constant paired instruction differs from interpreter");
     }
 }
@@ -395,6 +396,22 @@ template <unsigned xo> void compare_paired_math() {
     compare_paired<base | (4u << 21) | (3u << 16) | (4u << 11) | (5u << 6) | 1u>();
     compare_paired<base | (5u << 21) | (3u << 16) | (4u << 11) | (5u << 6)>();
 }
+void psq_equivalence() {
+    // The psq forms only: the math cases above share a pre-existing mismatch
+    // on some hosts (xo=13 rounding of NaN payloads) unrelated to psq.
+    compare_paired<0xE0050000u>();
+    compare_paired<0xE1048008u>();
+    compare_paired<0xE4640000u>();
+    compare_paired<0xE4648FF0u>();
+    compare_paired<0xF1440000u>();
+    compare_paired<0xF5448FF0u>();
+    compare_paired<0xF5408000u>();
+    compare_paired<0xE4600000u>();
+    compare_paired<0xF1408000u>();
+    compare_paired<0xE0608000u>();
+    std::puts("psq constant/interpreter: quantized and float forms bit-exact");
+}
+
 void paired_equivalence() {
     compare_paired_math<10>();
     compare_paired_math<11>();
@@ -443,6 +460,10 @@ int main(int argc, char** argv) {
             paired_equivalence();
             return 0;
         }
+        if (mode == "psq_equivalence") {
+            psq_equivalence();
+            return 0;
+        }
         if (mode == "scaling") {
             for (unsigned n : {1u, 10u, 25u, 50u, 100u}) report(n, frames);
             return 0;
@@ -455,7 +476,7 @@ int main(int argc, char** argv) {
         }
         throw std::runtime_error("unknown mode");
     } catch (const std::exception& e) {
-        std::fprintf(stderr, "FAILED: %s\n", e.what());
+        RBREW_LOG_ERROR("test", "FAILED: %s", e.what());
         return 1;
     }
 }

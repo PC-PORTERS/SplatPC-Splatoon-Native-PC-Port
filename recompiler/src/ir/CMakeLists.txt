@@ -1,5 +1,6 @@
 add_library(rebrewu_ir STATIC
     ir_builder.cpp
+    ir_optimizer.cpp
 )
 
 target_include_directories(rebrewu_ir

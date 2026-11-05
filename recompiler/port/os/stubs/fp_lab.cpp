@@ -34,7 +34,11 @@ namespace fs = std::filesystem;
 constexpr uint32_t kGameModeSize = 0x2C;
 constexpr uint32_t kPresenceSize = 0x34;
 
-struct Friend { uint32_t pid = 0; std::string name; std::vector<uint8_t> mode; };
+struct Friend {
+    uint32_t pid = 0;
+    std::string name;
+    std::vector<uint8_t> mode;
+};
 
 fs::path s_dir;
 std::vector<uint8_t> s_mode(kGameModeSize, 0);
@@ -48,7 +52,11 @@ void publish() {
     char name[16];
     std::snprintf(name, sizeof name, "%08x", rbrew_online::identity().pid);
     std::string hex;
-    for (uint8_t b : s_mode) { char h[3]; std::snprintf(h, sizeof h, "%02x", b); hex += h; }
+    for (uint8_t b : s_mode) {
+        char h[3];
+        std::snprintf(h, sizeof h, "%02x", b);
+        hex += h;
+    }
     const fs::path tmp = s_dir / (std::string(name) + ".tmp");
     {
         std::ofstream out(tmp, std::ios::trunc);
@@ -69,8 +77,10 @@ std::map<uint32_t, Friend> friends() {
             const auto eq = line.find('=');
             if (eq == std::string::npos) continue;
             const std::string key = line.substr(0, eq), value = line.substr(eq + 1);
-            if (key == "pid") f.pid = uint32_t(std::strtoul(value.c_str(), nullptr, 16));
-            else if (key == "name") f.name = value;
+            if (key == "pid")
+                f.pid = uint32_t(std::strtoul(value.c_str(), nullptr, 16));
+            else if (key == "name")
+                f.name = value;
             else if (key == "mode" && value.size() == kGameModeSize * 2)
                 for (uint32_t i = 0; i < kGameModeSize; ++i)
                     f.mode.push_back(uint8_t(std::strtoul(value.substr(i * 2, 2).c_str(), nullptr, 16)));
@@ -83,7 +93,10 @@ std::map<uint32_t, Friend> friends() {
 // Fills count entries of size bytes at out, one per pid in pids, with fill(entry, friend).
 template <typename Fill>
 void for_each_friend(CPUState* cpu, uint32_t out, uint32_t pids, uint32_t count, uint32_t size, Fill fill) {
-    if (count > 100 || !guest_ok(cpu, out, uint64_t(size) * count) || !guest_ok(cpu, pids, 4ull * count)) { RET = 0; return; }
+    if (count > 100 || !guest_ok(cpu, out, uint64_t(size) * count) || !guest_ok(cpu, pids, 4ull * count)) {
+        RET = 0;
+        return;
+    }
     const auto all = friends();
     for (uint32_t i = 0; i < count; ++i) {
         const uint32_t entry = out + i * size;
@@ -94,7 +107,9 @@ void for_each_friend(CPUState* cpu, uint32_t out, uint32_t pids, uint32_t count,
     RET = 0;
 }
 
-std::u16string display_name(const Friend& f) { return rbrew_online::mii_name(f.name, u"Ami"); }
+std::u16string display_name(const Friend& f) {
+    return rbrew_online::mii_name(f.name, u"Ami");
+}
 
 // GetFriendList(u32* pids, u32* count, u32 offset, u32 max)
 void GetFriendList(CPUState* cpu) {
@@ -108,7 +123,8 @@ void GetFriendList(CPUState* cpu) {
 }
 void GetFriendAccountId(CPUState* cpu) {
     for_each_friend(cpu, ARG0, ARG1, ARG2, 17, [&](uint32_t e, const Friend& f) {
-        char id[17]; std::snprintf(id, sizeof id, "rb%08x", f.pid);
+        char id[17];
+        std::snprintf(id, sizeof id, "rb%08x", f.pid);
         for (uint32_t i = 0; id[i]; ++i) rbrew_write8(MEM, e + i, uint8_t(id[i]));
     });
 }
@@ -124,8 +140,12 @@ void GetFriendMii(CPUState* cpu) {
         for (uint32_t i = 0; i < mii.size(); ++i) rbrew_write8(MEM, e + i, mii[i]);
     });
 }
-void GetFriendProfile(CPUState* cpu) { for_each_friend(cpu, ARG0, ARG1, ARG2, 4, [](uint32_t, const Friend&) {}); }
-void GetFriendApprovalTime(CPUState* cpu) { for_each_friend(cpu, ARG0, ARG1, ARG2, 8, [](uint32_t, const Friend&) {}); }
+void GetFriendProfile(CPUState* cpu) {
+    for_each_friend(cpu, ARG0, ARG1, ARG2, 4, [](uint32_t, const Friend&) {});
+}
+void GetFriendApprovalTime(CPUState* cpu) {
+    for_each_friend(cpu, ARG0, ARG1, ARG2, 8, [](uint32_t, const Friend&) {});
+}
 void GetFriendPresence(CPUState* cpu) {
     for_each_friend(cpu, ARG0, ARG1, ARG2, kPresenceSize, [&](uint32_t e, const Friend& f) {
         for (uint32_t i = 0; i < f.mode.size(); ++i) rbrew_write8(MEM, e + i, f.mode[i]);
@@ -139,13 +159,13 @@ void UpdateGameMode(CPUState* cpu) {
     if (guest_ok(cpu, ARG0, kGameModeSize)) {
         for (uint32_t i = 0; i < kGameModeSize; ++i) s_mode[i] = rbrew_read8(MEM, ARG0 + i);
         RBREW_LOG_INFO("fp_lab", "UpdateGameMode flags=%08x type=%08x game=%08x mode=%08x host=%08x group=%08x\n",
-                     rbrew_read32(MEM, ARG0), rbrew_read32(MEM, ARG0 + 4), rbrew_read32(MEM, ARG0 + 8),
-                     rbrew_read32(MEM, ARG0 + 12), rbrew_read32(MEM, ARG0 + 16), rbrew_read32(MEM, ARG0 + 20));
+                       rbrew_read32(MEM, ARG0), rbrew_read32(MEM, ARG0 + 4), rbrew_read32(MEM, ARG0 + 8),
+                       rbrew_read32(MEM, ARG0 + 12), rbrew_read32(MEM, ARG0 + 16), rbrew_read32(MEM, ARG0 + 20));
         publish();
     }
     RET = 0;
 }
-}
+} // namespace
 
 void fp_lab_register(CPUState* cpu) {
     const char* dir = std::getenv("RBREW_FRIENDS_DIR");

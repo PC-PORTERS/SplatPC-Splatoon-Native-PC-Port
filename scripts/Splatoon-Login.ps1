@@ -14,8 +14,6 @@ $Root = Split-Path -Parent $PSScriptRoot
 $Game = Join-Path $Root 'Game'
 $Settings = Join-Path $Game 'settings.ini'
 $Executable = Join-Path $Game 'Splatoon-v288.exe'
-# New version on GitHub (update.ini)? Offered before the sign-in screen; silent otherwise.
-if (-not $Shot) { & (Join-Path $PSScriptRoot 'Update-Check.ps1') }
 
 function Get-SavedPseudo {
     if (-not (Test-Path -LiteralPath $Settings)) { return '' }

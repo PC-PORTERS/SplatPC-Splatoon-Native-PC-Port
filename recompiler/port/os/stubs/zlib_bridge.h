@@ -8,13 +8,13 @@
 // zlib owns the state and the guest `state` field holds a non-zero cookie.
 namespace rbrew_zlib {
 constexpr uint32_t kGuestStreamSize = 0x38;
-void inflateInit2_(CPUState* cpu);   // (strm, windowBits, version, stream_size)
-void inflateInit_(CPUState* cpu);    // (strm, version, stream_size)
-void inflate(CPUState* cpu);         // (strm, flush)
-void inflateEnd(CPUState* cpu);      // (strm)
-void deflateInit2_(CPUState* cpu);   // (strm, level, method, windowBits, memLevel, strategy, version, stream_size)
-void deflate(CPUState* cpu);         // (strm, flush)
-void deflateEnd(CPUState* cpu);      // (strm)
-void deflateBound(CPUState* cpu);    // (strm, sourceLen)
-size_t open_streams();               // tests: streams not yet ended
-}
+void inflateInit2_(CPUState* cpu); // (strm, windowBits, version, stream_size)
+void inflateInit_(CPUState* cpu);  // (strm, version, stream_size)
+void inflate(CPUState* cpu);       // (strm, flush)
+void inflateEnd(CPUState* cpu);    // (strm)
+void deflateInit2_(CPUState* cpu); // (strm, level, method, windowBits, memLevel, strategy, version, stream_size)
+void deflate(CPUState* cpu);       // (strm, flush)
+void deflateEnd(CPUState* cpu);    // (strm)
+void deflateBound(CPUState* cpu);  // (strm, sourceLen)
+size_t open_streams();             // tests: streams not yet ended
+} // namespace rbrew_zlib

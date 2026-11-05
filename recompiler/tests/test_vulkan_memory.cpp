@@ -1,6 +1,7 @@
 // Synthetic memory topologies, injected driver failures and real GPU round trips.
 // No guest code, game files, saves or shader caches are used.
 #include "os/gx2/vk/gx2_vk_memory.h"
+#include "rebrewu/logger.hpp"
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
@@ -364,7 +365,7 @@ int main(int argc, char** argv) {
             throw std::runtime_error("unknown memory test");
         return 0;
     } catch (const std::exception& error) {
-        std::fprintf(stderr, "FAIL: %s\n", error.what());
+        RBREW_LOG_ERROR("test", "FAIL: %s", error.what());
         return 1;
     }
 }

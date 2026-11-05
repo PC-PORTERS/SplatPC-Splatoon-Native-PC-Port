@@ -3,6 +3,19 @@
 # files).
 /build/
 /Game/
+/Out/
+/dist/
+
+# Builder binaries and packages
+/splatpc-builder
+/splatpc-builder.exe
+/Builder/splatpc-builder
+/Builder/splatpc-builder.exe
+/Builder/*.exe
+/Builder/embedded/assets.zip
+*.AppImage
+*.AppDir/
+*.exe
 
 # Auto-fetched third-party headers
 recompiler/third_party/nlohmann/
@@ -35,6 +48,8 @@ save/
 /recompiler/port/os/snd_core/snd_core_addrs.h
 /recompiler/port/os/stubs/stubs_addrs.h
 /recompiler/port/os/vpad/vpad_addrs.h
+/recompiler/port/runtime/game_revision.h
+/recompiler/port/runtime/game_branch_tables.h
 
 # Tools
 __pycache__/
@@ -52,7 +67,6 @@ __pycache__/
 !/tools/nexlab/
 !/tools/tests/
 !/tools/boss/
-__pycache__/
 online_identity.ini
 server.json
 /*.png
@@ -66,29 +80,24 @@ server.json
 # can live here without showing up in git status. Add new tools below.
 /scripts/*
 !/scripts/Setup.ps1
+!/scripts/Install-Update.ps1
 !/scripts/hd_textures.py
 !/scripts/install-hooks.sh
 !/scripts/git-hooks/
 !/scripts/git-hooks/*
 
-# v288 update tooling (tracked on purpose)
-!/scripts/Build-Update.ps1
-!/scripts/Launch-Update.ps1
-!/scripts/Install-Update.ps1
+# Merged-ROM update tooling (tracked on purpose)
+!/scripts/update_combinator.py
+!/scripts/bundle_builder_assets.py
 !/scripts/tests/
 !/scripts/tests/**
 
-# Multiplayer launchers
+# Online launchers and config
 !/scripts/Splatoon-Login.ps1
-!/scripts/Launch-Duo-Public.ps1
-!/scripts/Launch-Duo.ps1
-!/scripts/Launch-Duo-LAN.ps1
-!/scripts/Launch-Duo-VPN.ps1
 !/scripts/Launch-Online.ps1
+!/scripts/server.public.txt
+!/scripts/allowed_signers
 !/scripts/Update-Check.ps1
 !/scripts/Update-Apply.ps1
-!/scripts/allowed_signers
-!/scripts/server.public.txt
 
-# The launcher shortcut that Setup may put in the install folder
 *.lnk

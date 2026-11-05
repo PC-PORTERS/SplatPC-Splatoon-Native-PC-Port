@@ -2000,10 +2000,9 @@ void FunctionDiscovery::scan_corroborated_entries() {
         return false;
     };
     auto corroboration_candidates = m_cfg.analyzer_entries;
-    if (m_cfg.discover_referenced_entries)
-        corroboration_candidates.insert(referenced.begin(), referenced.end());
+    if (m_cfg.discover_referenced_entries) corroboration_candidates.insert(referenced.begin(), referenced.end());
     for (uint32_t addr : corroboration_candidates) {
-        if (m_candidates.contains(addr) || addr<4 || !is_valid_code_addr(addr)) continue;
+        if (m_candidates.contains(addr) || addr < 4 || !is_valid_code_addr(addr)) continue;
         // Independent evidence 1: a reference, or only cross-function tail
         // branches (any local or conditional branch makes it an interior label).
         const auto sources = incoming.find(addr);

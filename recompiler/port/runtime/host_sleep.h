@@ -39,11 +39,30 @@ struct Timer {
 } // namespace rbrew_host_timing
 #endif
 
+// Cheap spin hint for the tail of a wait. The non-Windows spin used
+// std::this_thread::yield(), a sched_yield syscall per iteration: on the CPU
+// profile the kernel scheduler (update_curr/pick_eevdf/__schedule) became one
+// of the top consumers. Pause keeps the spin in user space.
+#if defined(_WIN32) || defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
+#if !defined(_WIN32)
+#include <immintrin.h>
+#endif
+#define RBREW_SPIN_PAUSE() _mm_pause()
+#elif defined(_M_ARM64)
+#define RBREW_SPIN_PAUSE() __yield()
+#elif defined(__aarch64__)
+#define RBREW_SPIN_PAUSE() __asm__ __volatile__("yield" ::: "memory")
+#else
+#define RBREW_SPIN_PAUSE() ((void)0)
+#endif
+
 inline void rbrew_host_sleep_until(std::chrono::steady_clock::time_point deadline) {
-    // Spin only for the final stretch to avoid scheduler overshoot. Earlier
-    // fallbacks (no high-resolution timer, timer error, non-Windows) spun for
-    // the whole wait and kept a core busy; they sleep for the bulk again.
-    constexpr auto kSpin = std::chrono::microseconds(600);
+    // Sleep the bulk and spin only the final stretch: the spin covers the
+    // wake-up scheduling jitter (the sleep itself lands on time — main pins
+    // the timer slack to 1 ns, so an hrtimer wake does not overshoot).
+    // The old 1 ms margin + 600 us yield spin wasted ~1.6 ms of core per
+    // guest/vsync sleep; 250 us of pause covers the jitter on a busy host.
+    constexpr auto kSpin = std::chrono::microseconds(250);
 #if defined(_WIN32)
     thread_local rbrew_host_timing::Timer timer;
     if (timer.handle) {
@@ -56,17 +75,13 @@ inline void rbrew_host_sleep_until(std::chrono::steady_clock::time_point deadlin
                 WaitForSingleObject(timer.handle, INFINITE) != WAIT_OBJECT_0)
                 break;
         }
-    }
+    } else
 #endif
-    // Bulk sleep where the timer was unavailable or failed (~1 ms granularity).
-    if (deadline - std::chrono::steady_clock::now() > kSpin + std::chrono::milliseconds(1))
-        std::this_thread::sleep_until(deadline - kSpin - std::chrono::milliseconds(1));
+        // Bulk sleep: precise hrtimer (Linux, slack-pinned) or timeBeginPeriod
+        // sleep for platforms without the high-resolution timer.
+        if (deadline - std::chrono::steady_clock::now() > kSpin) std::this_thread::sleep_until(deadline - kSpin);
     while (std::chrono::steady_clock::now() < deadline) {
-#if defined(_WIN32)
-        _mm_pause();
-#else
-        std::this_thread::yield();
-#endif
+        RBREW_SPIN_PAUSE();
     }
 }
 

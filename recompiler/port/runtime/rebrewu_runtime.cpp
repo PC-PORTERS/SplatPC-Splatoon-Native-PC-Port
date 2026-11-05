@@ -126,13 +126,16 @@ void rbrew_write_memory(uint8_t* mem, uint32_t addr, const void* bytes, uint32_t
     if (!rbrew_memory_accessible(mem, addr, size)) return;
     observe_write(mem, addr, size);
     if (strict_reservations.load(std::memory_order_relaxed)) invalidate_reservations(mem, addr, size);
-    uint8_t* p = mem + addr;
     switch (size) { // fixed widths become single moves
-    case 1: *p = *static_cast<const uint8_t*>(bytes); break;
-    case 2: memcpy(p, bytes, 2); break;
-    case 4: memcpy(p, bytes, 4); break;
-    case 8: memcpy(p, bytes, 8); break;
-    default: memcpy(p, bytes, size); break;
+    case 1: rbrew_store8_raw(mem, addr, *static_cast<const uint8_t*>(bytes)); break;
+    case 2: rbrew_store16_raw(mem, addr, *static_cast<const uint16_t*>(bytes)); break;
+    case 4: rbrew_store32_raw(mem, addr, *static_cast<const uint32_t*>(bytes)); break;
+    case 8: rbrew_store64_raw(mem, addr, *static_cast<const uint64_t*>(bytes)); break;
+    default: {
+        const uint8_t* src = static_cast<const uint8_t*>(bytes);
+        for (uint32_t i = 0; i < size; ++i) rbrew_store8_raw(mem, addr + i, src[i]);
+        break;
+    }
     }
 }
 
@@ -160,50 +163,57 @@ static bool hot_lwarx_enabled() {
     return on;
 }
 
-uint32_t rbrew_lwarx(CPUState* cpu, uint32_t addr) {
+uint32_t rbrew_lwarx_mem(CPUState* cpu, uint8_t* mem, uint32_t addr) {
     if (hot_lwarx_enabled()) {
         thread_local uint64_t total = 0;
         if (++total % 5000000 == 0 && total <= 15000000)
             RBREW_LOG_DEBUG("resv", "hot lwarx cpu=%p n=%llu addr=%08X value=%08X lr=%08X r3=%08X\n", (void*)cpu,
-                            (unsigned long long)total, addr, rbrew_read32(cpu->mem, addr), cpu->lr, cpu->r[3]);
+                            (unsigned long long)total, addr, rbrew_read32(mem, addr), cpu->lr, cpu->r[3]);
     }
     if (addr && addr == reservation_trace_addr())
-        RBREW_LOG_DEBUG("resv", "lwarx cpu=%p value=%08X lr=%08X\n", (void*)cpu, rbrew_read32(cpu->mem, addr), cpu->lr);
+        RBREW_LOG_DEBUG("resv", "lwarx cpu=%p value=%08X lr=%08X\n", (void*)cpu, rbrew_read32(mem, addr), cpu->lr);
     cpu->reservation_valid = false;
-    if ((addr & 3u) || !rbrew_memory_accessible(cpu->mem, addr, 4)) {
+    if ((addr & 3u) || !rbrew_memory_accessible(mem, addr, 4)) {
         RBREW_LOG_ERROR("rbrew", "invalid lwarx address=0x%08X\n", addr);
         return 0;
     }
     // Counter first: a store between the two reads changes either the
     // counter or the word the reservation commits against.
-    const uint32_t version = reservation_counter(cpu->mem, addr).load();
-    uint32_t raw;
-    memcpy(&raw, cpu->mem + addr, 4);
-    cpu->reservation_mem = cpu->mem;
+    const uint32_t version = reservation_counter(mem, addr).load();
+    uint32_t raw = rbrew_load32_raw(mem, addr);
+    cpu->reservation_mem = mem;
     cpu->reservation_addr = addr;
     cpu->reservation_version = uint64_t(version) << 32 | raw; // counter, reserved word (guest order)
     cpu->reservation_valid = true;
     return rbrew_bswap32(raw);
 }
 
-void rbrew_stwcx(CPUState* cpu, uint32_t addr, uint32_t value) {
+void rbrew_stwcx_mem(CPUState* cpu, uint8_t* mem, uint32_t addr, uint32_t value) {
     bool success = false;
-    if (cpu->reservation_valid && cpu->reservation_mem == cpu->mem && cpu->reservation_addr == addr && !(addr & 3u) &&
-        rbrew_memory_accessible(cpu->mem, addr, 4)) {
+    if (cpu->reservation_valid && cpu->reservation_mem == mem && cpu->reservation_addr == addr && !(addr & 3u) &&
+        rbrew_memory_accessible(mem, addr, 4)) {
         // Claim the granule (no store since lwarx), invalidating other
         // reservations on it, then commit only if the word is still the
         // reserved value (a store may have bumped the counter after the
         // claim but not yet written; its bytes then fail the exchange).
         uint32_t version = uint32_t(cpu->reservation_version >> 32);
-        if (reservation_counter(cpu->mem, addr).compare_exchange_strong(version, version + 1)) {
-            success = compare_exchange_word(cpu->mem + addr, uint32_t(cpu->reservation_version), rbrew_bswap32(value));
-            if (success) observe_write(cpu->mem, addr, 4);
+        if (reservation_counter(mem, addr).compare_exchange_strong(version, version + 1)) {
+            success = compare_exchange_word(mem + addr, uint32_t(cpu->reservation_version), rbrew_bswap32(value));
+            if (success) observe_write(mem, addr, 4);
         }
     }
     cpu->reservation_valid = false; // every attempt consumes the reservation
     cpu->cr[0] = (success ? 2u : 0u) | ((cpu->xer >> 31) & 1u);
     if (addr && addr == reservation_trace_addr())
         RBREW_LOG_DEBUG("resv", "stwcx cpu=%p value=%08X success=%d lr=%08X\n", (void*)cpu, value, success, cpu->lr);
+}
+
+uint32_t rbrew_lwarx(CPUState* cpu, uint32_t addr) {
+    return rbrew_lwarx_mem(cpu, cpu->mem, addr);
+}
+
+void rbrew_stwcx(CPUState* cpu, uint32_t addr, uint32_t value) {
+    rbrew_stwcx_mem(cpu, cpu->mem, addr, value);
 }
 
 // Dispatch table is a flat array: dispatch_table[addr >> 2] = HostFunc
@@ -342,47 +352,15 @@ namespace {
 // RBREW_IMPORT_TRACE=<file> (release builds too): calls per import slot with
 // the first/last call time, rewritten every 2 s, to find what a stalled
 // game polls. Slots are 0x02D00000-based PLT addresses.
-const char* const import_trace_path = [] { const char* p = std::getenv("RBREW_IMPORT_TRACE"); return p && *p ? p : nullptr; }();
-// RBREW_DISPATCH_RING=<file>: the last kRingSize guest virtual calls (target, caller lr, thread,
-// milliseconds), kept in memory and written to <file>.<n> by rbrew_dispatch_ring_dump (called
-// when a socket closes) to find which call chain decided to end a session.
-const char* const ring_path = [] { const char* p = std::getenv("RBREW_DISPATCH_RING"); return p && *p ? p : nullptr; }();
-constexpr uint32_t kRingSize = 1u << 20;
-struct RingEntry { uint32_t target, lr, thread, ms; };
-RingEntry* const ring = ring_path ? new RingEntry[kRingSize]() : nullptr;
-std::atomic<uint32_t> ring_next{0};
-const auto ring_start = std::chrono::steady_clock::now();
-uint32_t ring_ms() { return uint32_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - ring_start).count()); }
+const char* const import_trace_path = [] {
+    const char* p = std::getenv("RBREW_IMPORT_TRACE");
+    return p && *p ? p : nullptr;
+}();
 const bool dispatch_instrumented = [] {
     const char* trace = rbrew_diagnostic_env("RBREW_ENTRY_TRACE");
     const char* profile = rbrew_diagnostic_env("RBREW_IMPORT_PROFILE");
-    return (trace && *trace) || (profile && *profile && *profile != '0') || import_trace_path || ring_path;
+    return (trace && *trace) || (profile && *profile && *profile != '0') || import_trace_path;
 }();
-// First sighting of every target: when, by which thread, from which caller, and how often since.
-// A function that only runs on an unusual path (an error, a teardown) shows up here at the moment
-// it first runs, however long the ring has since moved on.
-constexpr uint32_t kSeenSize = 1u << 16;
-struct SeenTarget { std::atomic<uint32_t> target{0}, count{0}; uint32_t first_ms = 0, first_lr = 0, first_thread = 0; std::atomic<uint32_t> last_ms{0}; };
-SeenTarget* const seen_targets = ring_path ? new SeenTarget[kSeenSize] : nullptr;
-void ring_record(CPUState* cpu, uint32_t guest_addr) {
-    static std::atomic<uint32_t> next_thread{1};
-    thread_local const uint32_t thread = next_thread.fetch_add(1);
-    const uint32_t now = ring_ms();
-    ring[ring_next.fetch_add(1, std::memory_order_relaxed) & (kRingSize - 1)] = {guest_addr, cpu->lr, thread, now};
-    for (uint32_t slot = (guest_addr >> 2) * 2654435761u >> 16, probes = 0; probes < kSeenSize; slot = (slot + 1) & (kSeenSize - 1), ++probes) {
-        SeenTarget& entry = seen_targets[slot];
-        uint32_t current = entry.target.load(std::memory_order_acquire);
-        if (current == 0 && entry.target.compare_exchange_strong(current, guest_addr)) {
-            entry.first_ms = now; entry.first_lr = cpu->lr; entry.first_thread = thread;
-            current = guest_addr;
-        }
-        if (current == guest_addr) {
-            entry.count.fetch_add(1, std::memory_order_relaxed);
-            entry.last_ms.store(now, std::memory_order_relaxed);
-            return;
-        }
-    }
-}
 void import_trace(CPUState* cpu, uint32_t guest_addr) {
     if (!import_trace_path || guest_addr < 0x02D00000u || guest_addr >= 0x02E00000u) return;
     struct Slot {
@@ -421,7 +399,7 @@ void import_trace(CPUState* cpu, uint32_t guest_addr) {
 }
 } // namespace
 
-void rbrew_dispatch(CPUState* cpu, uint32_t guest_addr) {
+void rbrew_dispatch_mem(CPUState* cpu, uint8_t* mem, uint32_t guest_addr) {
     if (!dispatch_instrumented && !cpu->differential_validation) {
         const uint32_t index = guest_addr >> 2;
         if (index < cpu->dispatch_size) {
@@ -440,7 +418,6 @@ void rbrew_dispatch(CPUState* cpu, uint32_t guest_addr) {
             RBREW_LOG_INFO("entry", "reached %08X lr=%08X r3=%08X r4=%08X\n", guest_addr, cpu->lr, cpu->r[3],
                            cpu->r[4]);
     }
-    if (ring) ring_record(cpu, guest_addr);
     import_trace(cpu, guest_addr);
     InsideImport inside_import;
     if (ImportProfile* profile = import_profile_start()) {
@@ -502,8 +479,8 @@ void rbrew_dispatch(CPUState* cpu, uint32_t guest_addr) {
         RBREW_LOG_INFO_BEGIN("rbrew", "  guest call chain:");
         uint32_t sp = cpu->r[1];
         for (int i = 0; i < 8 && sp >= 0x10000000u && sp < 0x1FC10000u; i++) {
-            uint32_t saved_lr = read_u32_be(cpu->mem, sp + 4);
-            uint32_t saved_sp = read_u32_be(cpu->mem, sp);
+            uint32_t saved_lr = read_u32_be(mem, sp + 4);
+            uint32_t saved_sp = read_u32_be(mem, sp);
             RBREW_LOG_RAW(" lr=0x%08X", saved_lr);
             if (saved_sp == 0 || saved_sp == sp) break;
             sp = saved_sp;
@@ -516,7 +493,7 @@ void rbrew_dispatch(CPUState* cpu, uint32_t guest_addr) {
     }
 }
 
-void rbrew_dispatch_linked(CPUState* cpu, uint32_t guest_addr) {
+void rbrew_dispatch_linked_mem(CPUState* cpu, uint8_t* mem, uint32_t guest_addr) {
     if (cpu->differential_validation)
         throw std::runtime_error("dispatch/HLE is forbidden during detached differential replay");
 #ifdef RBREW_ENABLE_PPC_FALLBACK
@@ -540,31 +517,23 @@ void rbrew_dispatch_linked(CPUState* cpu, uint32_t guest_addr) {
         }
     }
 #endif
-    rbrew_dispatch(cpu, guest_addr);
+    rbrew_dispatch_mem(cpu, mem, guest_addr);
 }
 
-extern "C" void rbrew_dispatch_ring_dump() {
-    if (!ring) return;
-    static unsigned dump_index = 0;
-    const uint32_t next = ring_next.load(), count = next < kRingSize ? next : kRingSize;
-    const std::string path = std::string(ring_path) + "." + std::to_string(dump_index++);
-    if (FILE* f = std::fopen(path.c_str(), "wb")) {
-        const uint32_t header[4] = {0x52494E47u, count, ring_ms(), 0};
-        std::fwrite(header, sizeof header, 1, f);
-        for (uint32_t i = next - count; i != next; ++i) std::fwrite(&ring[i & (kRingSize - 1)], sizeof(RingEntry), 1, f);
-        std::fclose(f);
-    }
-    // <file>.<n>.txt: every target seen so far, oldest first sighting first.
-    std::vector<const SeenTarget*> sorted;
-    for (uint32_t i = 0; i < kSeenSize; ++i)
-        if (seen_targets[i].target.load()) sorted.push_back(&seen_targets[i]);
-    std::sort(sorted.begin(), sorted.end(), [](const SeenTarget* a, const SeenTarget* b) { return a->first_ms < b->first_ms; });
-    if (FILE* f = std::fopen((path + ".txt").c_str(), "w")) {
-        std::fprintf(f, "dump_ms %u\nfirst_ms last_ms count thread target caller_lr\n", ring_ms());
-        for (const SeenTarget* s : sorted)
-            std::fprintf(f, "%u %u %u %u %08X %08X\n", s->first_ms, s->last_ms.load(), s->count.load(), s->first_thread, s->target.load(), s->first_lr);
-        std::fclose(f);
-    }
+void rbrew_call_indirect_mem(CPUState* cpu, uint8_t* mem, uint32_t guest_addr) {
+    rbrew_dispatch_linked_mem(cpu, mem, guest_addr);
+}
+
+void rbrew_call_mem(CPUState* cpu, uint8_t* mem, uint32_t guest_addr) {
+    rbrew_dispatch_mem(cpu, mem, guest_addr);
+}
+
+void rbrew_dispatch(CPUState* cpu, uint32_t guest_addr) {
+    rbrew_dispatch_mem(cpu, cpu->mem, guest_addr);
+}
+
+void rbrew_dispatch_linked(CPUState* cpu, uint32_t guest_addr) {
+    rbrew_dispatch_linked_mem(cpu, cpu->mem, guest_addr);
 }
 
 void rbrew_call_indirect(CPUState* cpu, uint32_t guest_addr) {

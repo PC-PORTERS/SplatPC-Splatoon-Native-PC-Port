@@ -227,7 +227,7 @@ bool build_camera(rs::Values& v) {
     }
     dirty |= slider("Mouse sensitivity", v.mouse_sensitivity, 25, 400, "%d %%",
                     "How far the camera turns per mouse movement.");
-    if (gx2env::online_mode()) return dirty;   // online keeps the Wii U camera (gx2_env_light.cpp)
+    if (gx2env::online_mode()) return dirty; // online keeps the Wii U camera (gx2_env_light.cpp)
     dirty |=
         slider("Field of view", v.camera_fov, 40, 90, "%d", "Wider makes the plaza feel bigger. The game's own is 55.");
     dirty |= slider("Camera distance", v.camera_distance, 50, 250, "%d %%",
@@ -304,10 +304,7 @@ const char* title(Page page) {
 Page build_main_rows(rs::Values& v, bool& dirty) {
     s_help = nullptr;
     int preset = preset_of(v);
-    // Graphics preset, Graphics and Weather pages: hidden while the new shaders do not work
-    // (settings force shader_quality off). true brings them back.
-    constexpr bool kShaderPages = false;
-    if (kShaderPages && ImGui::BeginCombo("Graphics preset (experimental)", preset < 0 ? "Custom" : kPresetLabels[preset])) {
+    if (ImGui::BeginCombo("Graphics preset (experimental)", preset < 0 ? "Custom" : kPresetLabels[preset])) {
         for (int p = 0; p < kPresetCount; ++p)
             if (ImGui::Selectable(kPresetLabels[p], p == preset)) {
                 apply_preset(v, p);
@@ -315,7 +312,7 @@ Page build_main_rows(rs::Values& v, bool& dirty) {
             }
         ImGui::EndCombo();
     }
-    if (kShaderPages) help("One switch for the whole look. Original = the clean game at 60 FPS.");
+    help("One switch for the whole look. Original = the clean game at 60 FPS.");
     static const char* const kRates[] = {"30 (low-end PC)", "60", "120", "180 (plaza 120)"};
     static const int kRateValues[] = {30, 60, 120, 180};
     int rate = 1;
@@ -330,17 +327,15 @@ Page build_main_rows(rs::Values& v, bool& dirty) {
     ImGui::EndDisabled();
     dirty |= check("G-Sync / FreeSync", v.gsync, "For G-Sync/FreeSync monitors: frames are shown without waiting.");
     Page open = Page::None;
-    if (kShaderPages) {
-        if (button("Graphics (experimental)", "New shaders: clouds, sun rays, colours, picture quality."))
-            open = Page::Graphics;
-        ImGui::SameLine();
-        if (button("Weather & time (experimental)", "Weather, time of day, day/night cycle and clouds."))
-            open = Page::Weather;
-    }
+    if (button("Graphics (experimental)", "New shaders: clouds, sun rays, colours, picture quality."))
+        open = Page::Graphics;
+    ImGui::SameLine();
+    if (button("Weather & time (experimental)", "Weather, time of day, day/night cycle and clouds."))
+        open = Page::Weather;
     if (button("Camera & mouse", gx2env::online_mode() ? "Mouse aiming and sensitivity."
-                                                        : "Mouse aiming, field of view, camera distance, wiggle."))
+                                                       : "Mouse aiming, field of view, camera distance, wiggle."))
         open = Page::Camera;
-    if (!gx2env::online_mode()) {   // free camera and spawn hacks: offline only
+    if (!gx2env::online_mode()) { // free camera and spawn hacks: offline only
         ImGui::SameLine();
         if (button("Cinema, photo & hacks (experimental)", "Cinema mode, photos, focus blur, free camera, spawn."))
             open = Page::Cinema;

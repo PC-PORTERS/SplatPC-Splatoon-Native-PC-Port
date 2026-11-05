@@ -135,7 +135,8 @@ static void set_camera_follow(uint8_t* mem, bool follow) {
     if (current == kOriginal || current == kMouse) rbrew_write_f32(mem, kRate, follow ? kOriginal : kMouse);
     state = int(follow);
 #else
-    (void)mem; (void)follow;
+    (void)mem;
+    (void)follow;
 #endif
 }
 
@@ -227,10 +228,10 @@ static Mat3 rotation_y(float radians) {
     return {{{c, 0, s}, {0, 1, 0}, {-s, 0, c}}};
 }
 struct VirtualMotion {
-    Mat3 base{{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}};  // orientation at the last VPADSetGyroDirection
-    float yaw = 0, pitch = 0;                        // degrees from base
-    float angle[3] = {};                             // revolutions, device axes
-    float mouse_acc = 0;                             // degrees of yaw that came from the mouse
+    Mat3 base{{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}}; // orientation at the last VPADSetGyroDirection
+    float yaw = 0, pitch = 0;                     // degrees from base
+    float angle[3] = {};                          // revolutions, device axes
+    float mouse_acc = 0;                          // degrees of yaw that came from the mouse
     uint64_t last_ns = 0;
 };
 static std::mutex s_motion_lock;
@@ -239,7 +240,10 @@ static VirtualMotion s_motion;
 // 0 gyro rate + direction + angle, 1 not the rate, 2 not the direction,
 // 3 not the angle, 4 gyro and a virtual right-stick push (default), 5 stick push only (yaw).
 static int mouse_variant() {
-    static const int value = [] { const char* p = std::getenv("RBREW_MOUSE_VARIANT"); return p && *p >= '0' && *p <= '5' ? *p - '0' : 4; }();
+    static const int value = [] {
+        const char* p = std::getenv("RBREW_MOUSE_VARIANT");
+        return p && *p >= '0' && *p <= '5' ? *p - '0' : 4;
+    }();
     return value;
 }
 // Degrees per second of mouse turn that fill the right stick (variants 4 and 5).
@@ -254,7 +258,10 @@ static float mouse_stick_rate() {
 // RBREW_GYRO_TRACE=<file> (diagnostic, off by default): direction resets and,
 // every 30 updates, the virtual pad's pitch/yaw, its inputs and the gravity.
 static FILE* gyro_trace() {
-    static FILE* const file = [] { const char* p = std::getenv("RBREW_GYRO_TRACE"); return p && *p ? std::fopen(p, "w") : nullptr; }();
+    static FILE* const file = [] {
+        const char* p = std::getenv("RBREW_GYRO_TRACE");
+        return p && *p ? std::fopen(p, "w") : nullptr;
+    }();
     return file;
 }
 // Pitch the virtual pad rests at after VPADSetGyroDirection (degrees, negative
@@ -293,9 +300,9 @@ static bool physical_gyro_enabled() {
 // Previously any gyro reading replaced the stick entirely, so with a
 // DualShock/DualSense the tutorial camera ignored the right stick and the
 // reported acceleration no longer matched the reported orientation.
-void vpad_update_motion(uint8_t* mem, uint32_t buf, float rx, float ry, float dt,
-                        const float* phys_gyro = nullptr, const float* /*phys_accel*/ = nullptr,
-                        bool tutorial = false, float mouse_yaw = 0.0f, float mouse_pitch = 0.0f) {
+void vpad_update_motion(uint8_t* mem, uint32_t buf, float rx, float ry, float dt, const float* phys_gyro = nullptr,
+                        const float* /*phys_accel*/ = nullptr, bool tutorial = false, float mouse_yaw = 0.0f,
+                        float mouse_pitch = 0.0f) {
     std::lock_guard lock(s_motion_lock);
     VirtualMotion& v = s_motion;
     // Squared response keeps small deflections precise. Outside the tutorial
@@ -305,7 +312,7 @@ void vpad_update_motion(uint8_t* mem, uint32_t buf, float rx, float ry, float dt
     // X (and the mouse) yaw the pad, otherwise the camera only moves up and
     // down. Stick Y: see below.
     // RBREW_STICK_GYRO_YAW=1 yaws everywhere, =0 never (unset: tutorial only).
-    static const int stick_yaw_mode = [] {   // 0 never, 1 always, 2 tutorial
+    static const int stick_yaw_mode = [] { // 0 never, 1 always, 2 tutorial
         const char* v = std::getenv("RBREW_STICK_GYRO_YAW");
         return v && v[0] == '1' ? 1 : v && v[0] == '0' ? 0 : 2;
     }();
@@ -347,9 +354,11 @@ void vpad_update_motion(uint8_t* mem, uint32_t buf, float rx, float ry, float dt
         yaw_rate += invert_yaw ? -rate(phys_gyro[1]) : rate(phys_gyro[1]);
     }
     // Mouse: an angle this step (degrees), reported to the game as rate too.
-    if (mouse_variant() == 5) mouse_yaw = 0.0f;   // yaw goes through the stick only
-    if (dt > 0) yaw_rate += mouse_yaw / dt;
-    else v.yaw += mouse_yaw;
+    if (mouse_variant() == 5) mouse_yaw = 0.0f; // yaw goes through the stick only
+    if (dt > 0)
+        yaw_rate += mouse_yaw / dt;
+    else
+        v.yaw += mouse_yaw;
     v.yaw = std::fmod(v.yaw + yaw_rate * dt, 360.0f);
     v.mouse_acc += mouse_yaw;
     const int variant = mouse_variant();
@@ -357,9 +366,13 @@ void vpad_update_motion(uint8_t* mem, uint32_t buf, float rx, float ry, float dt
     const float report_rate = yaw_rate - (variant == 1 ? mouse_rate : 0.0f);
     const float dir_yaw = v.yaw - (variant == 2 ? v.mouse_acc : 0.0f);
     // RBREW_MOUSE_TRACE=<file> (diagnostic, off by default): one line per read that carries mouse motion.
-    static FILE* const mouse_trace = [] { const char* p = std::getenv("RBREW_MOUSE_TRACE"); return p && *p ? std::fopen(p, "w") : nullptr; }();
+    static FILE* const mouse_trace = [] {
+        const char* p = std::getenv("RBREW_MOUSE_TRACE");
+        return p && *p ? std::fopen(p, "w") : nullptr;
+    }();
     if (mouse_trace && (mouse_yaw != 0.0f || mouse_pitch != 0.0f)) {
-        std::fprintf(mouse_trace, "dt=%.4f mouse_yaw=%.3f mouse_pitch=%.3f yaw_rate=%.1f yaw=%.2f tutorial=%d\n", dt, mouse_yaw, mouse_pitch, yaw_rate, v.yaw, int(tutorial));
+        std::fprintf(mouse_trace, "dt=%.4f mouse_yaw=%.3f mouse_pitch=%.3f yaw_rate=%.1f yaw=%.2f tutorial=%d\n", dt,
+                     mouse_yaw, mouse_pitch, yaw_rate, v.yaw, int(tutorial));
         std::fflush(mouse_trace);
     }
     const float pitch = std::fmax(-kPitchLimit, std::fmin(kPitchLimit, v.pitch + pitch_rate * dt + mouse_pitch));
@@ -373,7 +386,7 @@ void vpad_update_motion(uint8_t* mem, uint32_t buf, float rx, float ry, float dt
     float gyro[3], gravity[3];
     for (int axis = 0; axis < 3; ++axis) {
         gyro[axis] = (r.m[0][axis] * world[0] + r.m[1][axis] * world[1] + r.m[2][axis] * world[2]) / 360.0f;
-        gravity[axis] = -r.m[1][axis];  // R^T (0, -1, 0)
+        gravity[axis] = -r.m[1][axis]; // R^T (0, -1, 0)
         v.angle[axis] += (gyro[axis] - (variant == 3 ? r.m[1][axis] * mouse_rate / 360.0f : 0.0f)) * dt;
     }
     for (int axis = 0; axis < 3; ++axis) {
@@ -404,8 +417,11 @@ static void VPADSetGyroDirection(CPUState* cpu) {
             s_motion.base.m[component][axis] = float(rbrew_read_f32(MEM, dir + 12 * axis + 4 * component));
     if (FILE* f = gyro_trace()) {
         const auto& m = s_motion.base.m;
-        std::fprintf(f, "SetGyroDirection lr=%08X after pitch=%.1f yaw=%.1f  x(%.2f %.2f %.2f) y(%.2f %.2f %.2f) z(%.2f %.2f %.2f)\n",
-                     cpu->lr, s_motion.pitch, s_motion.yaw, m[0][0], m[1][0], m[2][0], m[0][1], m[1][1], m[2][1], m[0][2], m[1][2], m[2][2]);
+        std::fprintf(f,
+                     "SetGyroDirection lr=%08X after pitch=%.1f yaw=%.1f  x(%.2f %.2f %.2f) y(%.2f %.2f %.2f) z(%.2f "
+                     "%.2f %.2f)\n",
+                     cpu->lr, s_motion.pitch, s_motion.yaw, m[0][0], m[1][0], m[2][0], m[0][1], m[1][1], m[2][1],
+                     m[0][2], m[1][2], m[2][2]);
         std::fflush(f);
     }
     s_motion.yaw = 0;
@@ -494,10 +510,10 @@ static void VPADRead(CPUState* cpu) {
                        std::fabs(ry) > 0.5f;
     }
 
-    const int scene_type = rbrew_control_defaults::active_scene_type(MEM);   // 5 TutForShow, 6 Tutorial
+    const int scene_type = rbrew_control_defaults::active_scene_type(MEM); // 5 TutForShow, 6 Tutorial
     const bool tutorial = scene_type == 5 || scene_type == 6;
     const bool motion_aim = tutorial || rbrew_control_defaults::motion_controls(MEM) == 1;
-    float mouse_yaw = 0.0f, mouse_pitch = 0.0f;   // degrees this read (mouse via the virtual pad)
+    float mouse_yaw = 0.0f, mouse_pitch = 0.0f; // degrees this read (mouse via the virtual pad)
 
     // -----------------------------------------------------------------------
     // Keyboard + mouse input (Splatoon layout, active in TV view)
@@ -552,10 +568,12 @@ static void VPADRead(CPUState* cpu) {
                               keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT]);
             mdx = mdy = 0;
         }
-        const float mouse_scale = rbrew_settings::g_mouse_scale.load(std::memory_order_relaxed);   // ESC menu
+        const float mouse_scale = rbrew_settings::g_mouse_scale.load(std::memory_order_relaxed); // ESC menu
         // rx/ry still hold only the controller's stick here.
-        if (mdx || mdy) s_mouse_aims = true;
-        else if (std::fabs(rx) > 0.25f || std::fabs(ry) > 0.25f) s_mouse_aims = false;
+        if (mdx || mdy)
+            s_mouse_aims = true;
+        else if (std::fabs(rx) > 0.25f || std::fabs(ry) > 0.25f)
+            s_mouse_aims = false;
         if (rbrew_settings::g_mouse_direct.load(std::memory_order_relaxed)) {
             // PC aiming (ESC menu "Mouse aim: Direct"): straight to the motion aiming, not the stick.
             std::lock_guard lock(s_motion_lock);
@@ -564,19 +582,26 @@ static void VPADRead(CPUState* cpu) {
             s_mouse_pitch += float(mdy) * kMouseDegreesPerCount * mouse_scale;
         } else if (motion_aim) {
             mouse_yaw = -(float)mdx * KBM_MOUSE_DEGREES * mouse_scale;
-            mouse_pitch = (float)mdy * KBM_MOUSE_DEGREES * mouse_scale;   // negative pitch looks up
-            if (mouse_variant() >= 4) {   // also push the right stick, as if the mouse were a stick (60 reads/s)
+            mouse_pitch = (float)mdy * KBM_MOUSE_DEGREES * mouse_scale; // negative pitch looks up
+            if (mouse_variant() >= 4) { // also push the right stick, as if the mouse were a stick (60 reads/s)
                 rx += -mouse_yaw * 60.0f / mouse_stick_rate();
-                if (rx < -1.0f) rx = -1.0f; if (rx > 1.0f) rx = 1.0f;
+                if (rx < -1.0f) rx = -1.0f;
+                if (rx > 1.0f) rx = 1.0f;
             }
         } else {
             float mrx = (float)mdx * KBM_MOUSE_SENSITIVITY * mouse_scale;
             float mry = -(float)mdy * KBM_MOUSE_SENSITIVITY * mouse_scale;
-            if (mrx < -1.0f) mrx = -1.0f; if (mrx > 1.0f) mrx = 1.0f;
-            if (mry < -1.0f) mry = -1.0f; if (mry > 1.0f) mry = 1.0f;
+            if (mrx < -1.0f) mrx = -1.0f;
+            if (mrx > 1.0f) mrx = 1.0f;
+            if (mry < -1.0f) mry = -1.0f;
+            if (mry > 1.0f) mry = 1.0f;
             // Blend: mouse delta is added to controller stick, clamped
-            rx += mrx; if (rx < -1.0f) rx = -1.0f; if (rx > 1.0f) rx = 1.0f;
-            ry += mry; if (ry < -1.0f) ry = -1.0f; if (ry > 1.0f) ry = 1.0f;
+            rx += mrx;
+            if (rx < -1.0f) rx = -1.0f;
+            if (rx > 1.0f) rx = 1.0f;
+            ry += mry;
+            if (ry < -1.0f) ry = -1.0f;
+            if (ry > 1.0f) ry = 1.0f;
         }
 
         // Buttons (defaults: left click ZR = fire, right click ZL = squid,
@@ -715,7 +740,7 @@ static void VPADRead(CPUState* cpu) {
             std::copy_n(pad.gyro, 3, phys_gyro);
             has_phys_gyro = has_phys_gyro || replayed;
             has_phys_accel = false;
-            if (replayed) mouse_yaw = mouse_pitch = 0.0f;   // recording only: the live mouse stays
+            if (replayed) mouse_yaw = mouse_pitch = 0.0f; // recording only: the live mouse stays
             live_touch = false;
             auto_touched = pad.touched != 0;
             auto_tx = vpad_touch_raw_x(uint16_t(pad.x));
@@ -749,8 +774,9 @@ static void VPADRead(CPUState* cpu) {
     write_float(MEM, buf + 0x18, ry);
 
     set_camera_follow(MEM, !s_mouse_aims);
-    vpad_update_motion(MEM, buf, rx, ry, motion_dt >= 0 ? motion_dt : motion_seconds(), has_phys_gyro ? phys_gyro : nullptr, has_phys_accel ? phys_accel : nullptr,
-                       tutorial, mouse_yaw, mouse_pitch);
+    vpad_update_motion(MEM, buf, rx, ry, motion_dt >= 0 ? motion_dt : motion_seconds(),
+                       has_phys_gyro ? phys_gyro : nullptr, has_phys_accel ? phys_accel : nullptr, tutorial, mouse_yaw,
+                       mouse_pitch);
     rbrew_write8(MEM, buf + kVpadSlideVolume, 0xFF);
     rbrew_write8(MEM, buf + kVpadSlideVolumeEx, 0xFF);
     rbrew_write8(MEM, buf + kVpadBattery, 0xC0); // full
@@ -793,7 +819,10 @@ static void VPADGetTPCalibratedPoint(CPUState* cpu) {
 // player 1 rumbles for the pattern's duration, at the strength of its share
 // of set bits. RBREW_RUMBLE=0 turns rumble off.
 static bool rumble_enabled() {
-    static const bool on = [] { const char* v = std::getenv("RBREW_RUMBLE"); return !(v && v[0] == '0'); }();
+    static const bool on = [] {
+        const char* v = std::getenv("RBREW_RUMBLE");
+        return !(v && v[0] == '0');
+    }();
     return on;
 }
 static void VPADControlMotor(CPUState* cpu) {
@@ -801,7 +830,8 @@ static void VPADControlMotor(CPUState* cpu) {
 #if defined(HAVE_SDL2)
     const uint32_t pattern = ARG1, bits = std::min<uint32_t>(ARG2 & 0xFFu, 120u);
     ControllerDevice* dev = get_controller(0);
-    if (!rumble_enabled() || !dev || !dev->gc || !bits || !rbrew_memory_accessible(MEM, pattern, (bits + 7) / 8)) return;
+    if (!rumble_enabled() || !dev || !dev->gc || !bits || !rbrew_memory_accessible(MEM, pattern, (bits + 7) / 8))
+        return;
     uint32_t on = 0;
     for (uint32_t i = 0; i < bits; ++i) on += (MEM[pattern + i / 8] >> (7 - i % 8)) & 1u;
     const Uint16 strength = Uint16(0xFFFFu * on / bits);

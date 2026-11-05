@@ -36,9 +36,9 @@ constexpr uint32_t ipv4(uint8_t a, uint8_t b, uint8_t c, uint8_t d) {
 constexpr uint32_t kLoopback = ipv4(127, 0, 0, 1);
 // Allow-list limits (online mode only). Bounded so a hostile peer cannot grow it forever.
 constexpr size_t kMaxAllowed = 256;
-constexpr double kLearnedTtl = 300.0;      // seconds an announced peer stays allowed
+constexpr double kLearnedTtl = 300.0; // seconds an announced peer stays allowed
 
-inline double steady_seconds() {           // monotonic, injection point for tests
+inline double steady_seconds() { // monotonic, injection point for tests
     static const auto start = std::chrono::steady_clock::now();
     return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
 }
@@ -54,8 +54,7 @@ public:
     // overrides: "name=a.b.c.d,name2=a.b.c.d" (RBREW_DNS_OVERRIDE); names compare
     // case-insensitively. Malformed entries are ignored. `fixed` seeds the allow-list with
     // the addresses announced at startup (NEX host, nncs1/nncs2), used online only.
-    explicit Policy(const char* overrides = nullptr, bool online = false,
-                    Clock clock = steady_seconds,
+    explicit Policy(const char* overrides = nullptr, bool online = false, Clock clock = steady_seconds,
                     const std::vector<uint32_t>& fixed = std::vector<uint32_t>())
         : online_(online), clock_(clock ? clock : steady_seconds) {
         if (overrides) {
@@ -75,7 +74,7 @@ public:
     }
     // Host-order IPv4 destination of a datagram.
     bool allow_destination(uint32_t addr) const {
-        if (is_loopback(addr)) return true;      // lab and online: this PC always works
+        if (is_loopback(addr)) return true; // lab and online: this PC always works
         return online_ && contains(addr);
     }
     // Address a socket may bind. Lab: wildcard and foreign addresses become loopback.
@@ -89,7 +88,8 @@ public:
     std::optional<uint32_t> resolve(const std::string& name) const {
         const std::string key = lower(name);
         std::lock_guard lock(mutex_);
-        for (const auto& [n, addr] : names_) if (n == key) return addr;
+        for (const auto& [n, addr] : names_)
+            if (n == key) return addr;
         uint32_t literal = 0;
         if (parse_ipv4(name, literal) && is_loopback(literal)) return literal;
         return std::nullopt;
@@ -98,7 +98,11 @@ public:
     void set_override(const std::string& name, uint32_t addr) {
         const std::string key = lower(name);
         std::lock_guard lock(mutex_);
-        for (auto& [n, value] : names_) if (n == key) { value = addr; return; }
+        for (auto& [n, value] : names_)
+            if (n == key) {
+                value = addr;
+                return;
+            }
         names_.push_back({key, addr});
     }
     // Addresses carried by the overrides (the caller allow-lists them online).
@@ -112,7 +116,8 @@ public:
     bool allow(uint32_t addr) {
         if (!acceptable(addr)) return false;
         std::lock_guard lock(mutex_);
-        for (const auto& entry : fixed_) if (entry.addr == addr) return true;
+        for (const auto& entry : fixed_)
+            if (entry.addr == addr) return true;
         if (fixed_.size() + learned_.size() >= kMaxAllowed) return false;
         fixed_.push_back({addr, 0.0});
         return true;
@@ -124,7 +129,11 @@ public:
         if (!acceptable(addr)) return false;
         std::lock_guard lock(mutex_);
         const double expires = clock_() + kLearnedTtl;
-        for (auto& entry : learned_) if (entry.addr == addr) { entry.expires = expires; return true; }
+        for (auto& entry : learned_)
+            if (entry.addr == addr) {
+                entry.expires = expires;
+                return true;
+            }
         if (fixed_.size() + learned_.size() >= kMaxAllowed) {
             prune();
             if (fixed_.size() + learned_.size() >= kMaxAllowed) return false;
@@ -156,59 +165,77 @@ public:
     static bool parse_ipv4(const std::string& s, uint32_t& out) {
         uint32_t parts[4] = {}, n = 0, value = 0, digits = 0;
         for (char c : s) {
-            if (c >= '0' && c <= '9') { value = value * 10 + uint32_t(c - '0'); if (++digits > 3 || value > 255) return false; }
-            else if (c == '.' && digits && n < 3) { parts[n++] = value; value = digits = 0; }
-            else return false;
+            if (c >= '0' && c <= '9') {
+                value = value * 10 + uint32_t(c - '0');
+                if (++digits > 3 || value > 255) return false;
+            } else if (c == '.' && digits && n < 3) {
+                parts[n++] = value;
+                value = digits = 0;
+            } else
+                return false;
         }
         if (n != 3 || !digits) return false;
         parts[3] = value;
         out = parts[0] << 24 | parts[1] << 16 | parts[2] << 8 | parts[3];
         return true;
     }
-private:
-    struct Entry { uint32_t addr; double expires; };
 
-    size_t live_learned() const {          // caller holds mutex_
+private:
+    struct Entry {
+        uint32_t addr;
+        double expires;
+    };
+
+    size_t live_learned() const { // caller holds mutex_
         const double now = clock_();
         size_t count = 0;
-        for (const auto& entry : learned_) if (entry.expires > now) ++count;
+        for (const auto& entry : learned_)
+            if (entry.expires > now) ++count;
         return count;
     }
     bool contains(uint32_t addr) const {
         std::lock_guard lock(mutex_);
-        for (const auto& entry : fixed_) if (entry.addr == addr) return true;
+        for (const auto& entry : fixed_)
+            if (entry.addr == addr) return true;
         const double now = clock_();
         for (const auto& entry : learned_)
             if (entry.addr == addr && entry.expires > now) return true;
         return false;
     }
-    void prune() const {                   // caller holds mutex_
+    void prune() const { // caller holds mutex_
         const double now = clock_();
         size_t kept = 0;
         for (const auto& entry : learned_)
             if (entry.expires > now) learned_[kept++] = entry;
         learned_.resize(kept);
     }
-    static std::string lower(std::string s) { for (auto& c : s) if (c >= 'A' && c <= 'Z') c = char(c - 'A' + 'a'); return s; }
+    static std::string lower(std::string s) {
+        for (auto& c : s)
+            if (c >= 'A' && c <= 'Z') c = char(c - 'A' + 'a');
+        return s;
+    }
 
     bool online_ = false;
     Clock clock_ = steady_seconds;
     mutable std::mutex mutex_;
     std::vector<std::pair<std::string, uint32_t>> names_;
-    mutable std::vector<Entry> fixed_;     // mutable: peers are added through the const policy
+    mutable std::vector<Entry> fixed_; // mutable: peers are added through the const policy
     mutable std::vector<Entry> learned_;
 };
 
 // Guest socket descriptors. Wii U descriptors are small integers and the guest's fd_set is
 // one 32-bit word, while Windows SOCKET values are large handles: select() could never see
 // them. Guest fds 0..31 map to host handles.
-template <class Handle, Handle Invalid>
-class FdTable {
+template <class Handle, Handle Invalid> class FdTable {
 public:
     static constexpr int kSize = 32;
     int add(Handle h) {
         std::lock_guard lock(mutex_);
-        for (int fd = 0; fd < kSize; ++fd) if (slots_[fd] == Invalid) { slots_[fd] = h; return fd; }
+        for (int fd = 0; fd < kSize; ++fd)
+            if (slots_[fd] == Invalid) {
+                slots_[fd] = h;
+                return fd;
+            }
         return -1;
     }
     Handle get(int fd) const {
@@ -218,11 +245,18 @@ public:
     Handle remove(int fd) {
         std::lock_guard lock(mutex_);
         if (fd < 0 || fd >= kSize) return Invalid;
-        const Handle h = slots_[fd]; slots_[fd] = Invalid; return h;
+        const Handle h = slots_[fd];
+        slots_[fd] = Invalid;
+        return h;
     }
+
 private:
     mutable std::mutex mutex_;
-    std::array<Handle, kSize> slots_ = [] { std::array<Handle, kSize> a; a.fill(Invalid); return a; }();
+    std::array<Handle, kSize> slots_ = [] {
+        std::array<Handle, kSize> a;
+        a.fill(Invalid);
+        return a;
+    }();
 };
 
-}  // namespace rbrew_net
+} // namespace rbrew_net

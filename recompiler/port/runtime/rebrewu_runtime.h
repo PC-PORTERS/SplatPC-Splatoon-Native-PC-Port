@@ -115,6 +115,9 @@ struct CPUState {
 
 // Paired-single instruction (opcode 4/56/57/60/61, or mtspr/mfspr of a GQR)
 // executed on the register file; implemented per decaf-emu's interpreter.
+// The _mem form is what generated code calls: it passes the arena base
+// explicitly so host compilers know a paired-single may touch guest memory.
+extern "C" RBREW_HOST_API void rbrew_ps_mem(CPUState* cpu, uint8_t* mem, uint32_t word);
 extern "C" RBREW_HOST_API void rbrew_ps(CPUState* cpu, uint32_t word);
 // tw/twi: evaluate the TO condition (signed lt/gt, eq, unsigned lt/gt) and,
 // when it holds, stop with a guest-trap error instead of continuing.
@@ -129,6 +132,8 @@ static inline void rbrew_init_thread_gqrs(CPUState* cpu) {
     cpu->gqr[5] = 0x70007u;
 }
 
+extern "C" RBREW_HOST_API uint32_t rbrew_lwarx_mem(CPUState* cpu, uint8_t* mem, uint32_t addr);
+extern "C" RBREW_HOST_API void rbrew_stwcx_mem(CPUState* cpu, uint8_t* mem, uint32_t addr, uint32_t value);
 extern "C" RBREW_HOST_API uint32_t rbrew_lwarx(CPUState* cpu, uint32_t addr);
 extern "C" RBREW_HOST_API void rbrew_stwcx(CPUState* cpu, uint32_t addr, uint32_t value);
 // Guest-memory writers use this shared monitor so even an ABA write breaks
@@ -202,7 +207,50 @@ static inline void rbrew_fctiwz(CPUState* cpu, double& destination, double sourc
 // the original logic including the out-of-bounds behaviour. Plain stores
 // copy directly; with a write observer on this thread or strict reservations
 // they go through rbrew_write_memory as before.
+//
+// Guest memory is shared between the host threads that run guest code:
+// every access must happen exactly once, in program order. The raw helpers
+// therefore use volatile packed references — same single instruction as a
+// memcpy, but the compiler may not cache, merge or hoist them (a guest spin
+// loop must see another thread's store).
 // ---------------------------------------------------------------------------
+
+#pragma pack(push, 1)
+struct RbrewRaw16 {
+    uint16_t v;
+};
+struct RbrewRaw32 {
+    uint32_t v;
+};
+struct RbrewRaw64 {
+    uint64_t v;
+};
+#pragma pack(pop)
+
+static inline uint8_t rbrew_load8_raw(const uint8_t* mem, uint32_t addr) {
+    return *reinterpret_cast<const volatile uint8_t*>(mem + addr);
+}
+static inline uint16_t rbrew_load16_raw(const uint8_t* mem, uint32_t addr) {
+    return reinterpret_cast<const volatile RbrewRaw16*>(mem + addr)->v;
+}
+static inline uint32_t rbrew_load32_raw(const uint8_t* mem, uint32_t addr) {
+    return reinterpret_cast<const volatile RbrewRaw32*>(mem + addr)->v;
+}
+static inline uint64_t rbrew_load64_raw(const uint8_t* mem, uint32_t addr) {
+    return reinterpret_cast<const volatile RbrewRaw64*>(mem + addr)->v;
+}
+static inline void rbrew_store8_raw(uint8_t* mem, uint32_t addr, uint8_t v) {
+    *reinterpret_cast<volatile uint8_t*>(mem + addr) = v;
+}
+static inline void rbrew_store16_raw(uint8_t* mem, uint32_t addr, uint16_t v) {
+    reinterpret_cast<volatile RbrewRaw16*>(mem + addr)->v = v;
+}
+static inline void rbrew_store32_raw(uint8_t* mem, uint32_t addr, uint32_t v) {
+    reinterpret_cast<volatile RbrewRaw32*>(mem + addr)->v = v;
+}
+static inline void rbrew_store64_raw(uint8_t* mem, uint32_t addr, uint64_t v) {
+    reinterpret_cast<volatile RbrewRaw64*>(mem + addr)->v = v;
+}
 
 #if defined(_MSC_VER)
 #define RBREW_NOINLINE __declspec(noinline)
@@ -232,8 +280,17 @@ static inline uint64_t rbrew_bswap64(uint64_t v) {
 #endif
 }
 // rbrew_memory_accessible's first case: [addr, addr + size) in the arena.
+// HYPER_OPTIMIZE: the host aperture covers the whole 32-bit guest address
+// space (plus access-size slop) and is committed at startup, so every guest
+// effective address is a plain offset with no translation and no check.
 static inline bool rbrew_arena_access(const uint8_t* mem, uint32_t addr, uint32_t size) {
+#if defined(RBREW_HYPER_OPTIMIZE)
+    (void)addr;
+    (void)size;
+    return mem != nullptr;
+#else
     return mem != nullptr && addr <= RBREW_APPLICATION_ARENA_END - size;
+#endif
 }
 
 static RBREW_NOINLINE uint8_t rbrew_read8_checked(uint8_t* mem, uint32_t addr) {
@@ -241,84 +298,119 @@ static RBREW_NOINLINE uint8_t rbrew_read8_checked(uint8_t* mem, uint32_t addr) {
         RBREW_LOG_INFO("rbrew", "OOB read8  addr=0x%08X\n", addr);
         return 0;
     }
-    return mem[addr];
+    return rbrew_load8_raw(mem, addr);
 }
 static RBREW_NOINLINE uint16_t rbrew_read16_checked(uint8_t* mem, uint32_t addr) {
     if (!rbrew_memory_accessible(mem, addr, 2)) {
         RBREW_LOG_INFO("rbrew", "OOB read16 addr=0x%08X\n", addr);
         return 0;
     }
-    uint16_t v;
-    memcpy(&v, mem + addr, 2);
-    return rbrew_bswap16(v);
+    return rbrew_bswap16(rbrew_load16_raw(mem, addr));
 }
 static RBREW_NOINLINE uint32_t rbrew_read32_checked(uint8_t* mem, uint32_t addr) {
     if (!rbrew_memory_accessible(mem, addr, 4)) {
         RBREW_LOG_INFO("rbrew", "OOB read32 addr=0x%08X\n", addr);
         return 0;
     }
-    uint32_t v;
-    memcpy(&v, mem + addr, 4);
-    return rbrew_bswap32(v);
+    return rbrew_bswap32(rbrew_load32_raw(mem, addr));
 }
 static RBREW_NOINLINE uint64_t rbrew_read64_checked(uint8_t* mem, uint32_t addr) {
     if (!rbrew_memory_accessible(mem, addr, 8)) {
         RBREW_LOG_INFO("rbrew", "OOB read64 addr=0x%08X\n", addr);
         return 0;
     }
-    uint64_t v;
-    memcpy(&v, mem + addr, 8);
-    return rbrew_bswap64(v);
+    return rbrew_bswap64(rbrew_load64_raw(mem, addr));
 }
 
-static inline uint8_t rbrew_read8(uint8_t* mem, uint32_t addr) {
-    if (rbrew_arena_access(mem, addr, 1)) return mem[addr];
+static inline uint8_t rbrew_read8(uint8_t* __restrict mem, uint32_t addr) {
+    if (rbrew_arena_access(mem, addr, 1)) return rbrew_load8_raw(mem, addr);
     return rbrew_read8_checked(mem, addr);
 }
-static inline uint16_t rbrew_read16(uint8_t* mem, uint32_t addr) {
-    if (rbrew_arena_access(mem, addr, 2)) {
-        uint16_t v;
-        memcpy(&v, mem + addr, 2);
-        return rbrew_bswap16(v);
-    }
+static inline uint16_t rbrew_read16(uint8_t* __restrict mem, uint32_t addr) {
+    if (rbrew_arena_access(mem, addr, 2)) return rbrew_bswap16(rbrew_load16_raw(mem, addr));
     return rbrew_read16_checked(mem, addr);
 }
-static inline uint32_t rbrew_read32(uint8_t* mem, uint32_t addr) {
-    if (rbrew_arena_access(mem, addr, 4)) {
-        uint32_t v;
-        memcpy(&v, mem + addr, 4);
-        return rbrew_bswap32(v);
-    }
+static inline uint32_t rbrew_read32(uint8_t* __restrict mem, uint32_t addr) {
+    if (rbrew_arena_access(mem, addr, 4)) return rbrew_bswap32(rbrew_load32_raw(mem, addr));
     return rbrew_read32_checked(mem, addr);
 }
-static inline uint64_t rbrew_read64(uint8_t* mem, uint32_t addr) {
-    if (rbrew_arena_access(mem, addr, 8)) {
-        uint64_t v;
-        memcpy(&v, mem + addr, 8);
-        return rbrew_bswap64(v);
-    }
+static inline uint64_t rbrew_read64(uint8_t* __restrict mem, uint32_t addr) {
+    if (rbrew_arena_access(mem, addr, 8)) return rbrew_bswap64(rbrew_load64_raw(mem, addr));
     return rbrew_read64_checked(mem, addr);
 }
-static inline double rbrew_read_f32(uint8_t* mem, uint32_t addr) {
+static inline double rbrew_read_f32(uint8_t* __restrict mem, uint32_t addr) {
     uint32_t bits = rbrew_read32(mem, addr);
     float f;
     memcpy(&f, &bits, 4);
     return (double)f;
 }
-static inline double rbrew_read_f64(uint8_t* mem, uint32_t addr) {
+static inline double rbrew_read_f64(uint8_t* __restrict mem, uint32_t addr) {
     uint64_t bits = rbrew_read64(mem, addr);
     double d;
     memcpy(&d, &bits, 8);
     return d;
 }
 
+// Byte-reversed loads (lhbrx/lwbrx): on a little-endian host these are plain
+// host-order copies — no bswap on top of the copy.
+static inline uint16_t rbrew_read16_rev(uint8_t* __restrict mem, uint32_t addr) {
+    return rbrew_load16_raw(mem, addr);
+}
+static inline uint32_t rbrew_read32_rev(uint8_t* __restrict mem, uint32_t addr) {
+    return rbrew_load32_raw(mem, addr);
+}
+
+// dcbz: zero one 32-byte cache line.
+static inline void rbrew_zero32(uint8_t* __restrict mem, uint32_t addr) {
+    if (rbrew_arena_access(mem, addr, 32)) {
+        for (uint32_t off = 0; off < 32; off += 4) rbrew_store32_raw(mem, addr + off, 0);
+        return;
+    }
+    uint8_t zero[32] = {};
+    rbrew_write_memory(mem, addr, zero, 32);
+}
+
 // Stores in guest byte order (bytes already swapped).
-static inline void rbrew_store_bytes(uint8_t* mem, uint32_t addr, const void* bytes, uint32_t size) {
+static inline void rbrew_store_bytes(uint8_t* __restrict mem, uint32_t addr, const void* bytes, uint32_t size) {
+#if defined(RBREW_HYPER_OPTIMIZE)
+    // Hot stores copy straight through: write observers and strict
+    // reservation tracking are diagnostics and use rbrew_write_memory.
+    switch (size) {
+    case 1: rbrew_store8_raw(mem, addr, *static_cast<const uint8_t*>(bytes)); break;
+    case 2: rbrew_store16_raw(mem, addr, *static_cast<const uint16_t*>(bytes)); break;
+    case 4: rbrew_store32_raw(mem, addr, *static_cast<const uint32_t*>(bytes)); break;
+    case 8: rbrew_store64_raw(mem, addr, *static_cast<const uint64_t*>(bytes)); break;
+    default: {
+        const uint8_t* src = static_cast<const uint8_t*>(bytes);
+        for (uint32_t i = 0; i < size; ++i) rbrew_store8_raw(mem, addr + i, src[i]);
+        break;
+    }
+    }
+#else
     if (rbrew_thread_write_observed || rbrew_strict_reservations_active.load(std::memory_order_relaxed)) {
         rbrew_write_memory(mem, addr, bytes, size);
         return;
     }
-    memcpy(mem + addr, bytes, size);
+    switch (size) {
+    case 1: rbrew_store8_raw(mem, addr, *static_cast<const uint8_t*>(bytes)); break;
+    case 2: rbrew_store16_raw(mem, addr, *static_cast<const uint16_t*>(bytes)); break;
+    case 4: rbrew_store32_raw(mem, addr, *static_cast<const uint32_t*>(bytes)); break;
+    case 8: rbrew_store64_raw(mem, addr, *static_cast<const uint64_t*>(bytes)); break;
+    default: {
+        const uint8_t* src = static_cast<const uint8_t*>(bytes);
+        for (uint32_t i = 0; i < size; ++i) rbrew_store8_raw(mem, addr + i, src[i]);
+        break;
+    }
+    }
+#endif
+}
+
+// Byte-reversed stores (sthbrx/stwbrx): plain host-order copies.
+static inline void rbrew_write16_rev(uint8_t* __restrict mem, uint32_t addr, uint16_t v) {
+    rbrew_store_bytes(mem, addr, &v, 2);
+}
+static inline void rbrew_write32_rev(uint8_t* __restrict mem, uint32_t addr, uint32_t v) {
+    rbrew_store_bytes(mem, addr, &v, 4);
 }
 static RBREW_NOINLINE void rbrew_write8_checked(uint8_t* mem, uint32_t addr, uint8_t v) {
     if (!rbrew_memory_accessible(mem, addr, 1)) {
@@ -352,14 +444,14 @@ static RBREW_NOINLINE void rbrew_write64_checked(uint8_t* mem, uint32_t addr, ui
     rbrew_write_memory(mem, addr, &be, 8);
 }
 
-static inline void rbrew_write8(uint8_t* mem, uint32_t addr, uint8_t v) {
+static inline void rbrew_write8(uint8_t* __restrict mem, uint32_t addr, uint8_t v) {
     if (rbrew_arena_access(mem, addr, 1)) {
         rbrew_store_bytes(mem, addr, &v, 1);
         return;
     }
     rbrew_write8_checked(mem, addr, v);
 }
-static inline void rbrew_write16(uint8_t* mem, uint32_t addr, uint16_t v) {
+static inline void rbrew_write16(uint8_t* __restrict mem, uint32_t addr, uint16_t v) {
     if (rbrew_arena_access(mem, addr, 2)) {
         uint16_t be = rbrew_bswap16(v);
         rbrew_store_bytes(mem, addr, &be, 2);
@@ -367,7 +459,7 @@ static inline void rbrew_write16(uint8_t* mem, uint32_t addr, uint16_t v) {
     }
     rbrew_write16_checked(mem, addr, v);
 }
-static inline void rbrew_write32(uint8_t* mem, uint32_t addr, uint32_t v) {
+static inline void rbrew_write32(uint8_t* __restrict mem, uint32_t addr, uint32_t v) {
     if (rbrew_arena_access(mem, addr, 4)) {
         uint32_t be = rbrew_bswap32(v);
         rbrew_store_bytes(mem, addr, &be, 4);
@@ -375,7 +467,7 @@ static inline void rbrew_write32(uint8_t* mem, uint32_t addr, uint32_t v) {
     }
     rbrew_write32_checked(mem, addr, v);
 }
-static inline void rbrew_write64(uint8_t* mem, uint32_t addr, uint64_t v) {
+static inline void rbrew_write64(uint8_t* __restrict mem, uint32_t addr, uint64_t v) {
     if (rbrew_arena_access(mem, addr, 8)) {
         uint64_t be = rbrew_bswap64(v);
         rbrew_store_bytes(mem, addr, &be, 8);
@@ -383,13 +475,13 @@ static inline void rbrew_write64(uint8_t* mem, uint32_t addr, uint64_t v) {
     }
     rbrew_write64_checked(mem, addr, v);
 }
-static inline void rbrew_write_f32(uint8_t* mem, uint32_t addr, double d) {
+static inline void rbrew_write_f32(uint8_t* __restrict mem, uint32_t addr, double d) {
     float f = (float)d;
     uint32_t bits;
     memcpy(&bits, &f, 4);
     rbrew_write32(mem, addr, bits);
 }
-static inline void rbrew_write_f64(uint8_t* mem, uint32_t addr, double d) {
+static inline void rbrew_write_f64(uint8_t* __restrict mem, uint32_t addr, double d) {
     uint64_t bits;
     memcpy(&bits, &d, 8);
     rbrew_write64(mem, addr, bits);
@@ -461,6 +553,30 @@ static inline uint32_t rbrew_rlwinm(uint32_t v, uint32_t sh, uint32_t mb, uint32
     return r & mask;
 }
 
+// Carrying arithmetic (addic/addze/subfic/...): one widened addition gives
+// both the sum and the carry-out, instead of compare chains.
+static inline uint32_t rbrew_add_ci32(uint32_t a, uint32_t b, uint32_t cin) {
+    return a + b + (cin & 1u);
+}
+static inline uint32_t rbrew_carry_out32(uint32_t a, uint32_t b, uint32_t cin) {
+    return uint32_t((uint64_t(a) + b + (cin & 1u)) >> 32);
+}
+
+// sraw/srawi: arithmetic right shift (amount is taken modulo 64; amounts of
+// 32 or more fill with the sign bit). XER.CA is set when the value is
+// negative and any 1-bit is shifted out — at 32 or more every bit of rS
+// leaves the shifter, the sign bit included.
+static inline uint32_t rbrew_sraw_result(uint32_t v, uint32_t amount) {
+    const uint32_t n = amount & 63u;
+    return n >= 32 ? uint32_t(int32_t(v) >> 31) : uint32_t(int32_t(v) >> n);
+}
+static inline uint32_t rbrew_sraw_carry(uint32_t v, uint32_t amount) {
+    const uint32_t n = amount & 63u;
+    if (n == 0) return 0;
+    const uint32_t lost = n >= 32 ? v : (v & ((1u << n) - 1u));
+    return (int32_t(v) < 0 && lost != 0) ? 1u : 0u;
+}
+
 // ---------------------------------------------------------------------------
 // Comparison helpers
 // Returns a 4-bit CR field value: bit3=LT, bit2=GT, bit1=EQ, bit0=SO
@@ -492,33 +608,106 @@ static inline double rbrew_fround(double v) {
 }
 
 extern RBREW_HOST_API const bool rbrew_paired_inline_enabled;
+
+// psq quantization: the 2^[-31,32] scale factor is built exactly (no libm),
+// matching the ldexp reference for every GQR scale.
+static inline int rbrew_psq_signed_scale(uint32_t scale) {
+    const int e = int(scale & 0x3F);
+    return e - ((e & 32) << 1);
+}
+static inline double rbrew_psq_factor(uint32_t scale, bool store) {
+    const int k = rbrew_psq_signed_scale(scale);
+    const uint64_t bits = uint64_t(1023 + (store ? k : -k)) << 52;
+    double f;
+    memcpy(&f, &bits, sizeof(f));
+    return f;
+}
+// Saturating quantized store of one element (signed-NaN picks the sign's bound).
+static inline void rbrew_psq_store_int(uint8_t* __restrict mem, uint32_t ea, double v, double factor, int32_t lo,
+                                       int32_t hi, bool wide) {
+    uint64_t bits;
+    memcpy(&bits, &v, sizeof(bits));
+    int32_t q;
+    if ((bits & 0x7FFFFFFFFFFFFFFFull) > 0x7FF0000000000000ull) // NaN
+        q = (bits >> 63) ? lo : hi;
+    else {
+        const double scaled = v * factor;
+        q = scaled < double(lo) ? lo : scaled > double(hi) ? hi : int32_t(scaled);
+    }
+    if (wide)
+        rbrew_write16(mem, ea, uint16_t(q));
+    else
+        rbrew_write8(mem, ea, uint8_t(q));
+}
+// Values below the single exponent range store a signed zero (decaf).
+static inline void rbrew_psq_store_float(uint8_t* __restrict mem, uint32_t ea, double v) {
+    uint64_t bits;
+    memcpy(&bits, &v, sizeof(bits));
+    if (((bits >> 52) & 2047) <= 896)
+        rbrew_write32(mem, ea, uint32_t(bits >> 32) & 0x80000000u);
+    else
+        rbrew_write_f32(mem, ea, v);
+}
+
 // Generated instruction words are constant: decode once at compile time.
-template <uint32_t w> static inline void rbrew_ps_constant(CPUState* cpu) {
-    if (!rbrew_paired_inline_enabled) return rbrew_ps(cpu, w);
+// The (cpu, mem) form is what generated code calls; the arena base is passed
+// explicitly so host compilers can keep guest registers in host registers
+// across the inline loads/stores.
+template <uint32_t w> static inline void rbrew_ps_constant(CPUState* cpu, uint8_t* __restrict mem) {
+    if (!rbrew_paired_inline_enabled) return rbrew_ps_mem(cpu, mem, w);
     constexpr uint32_t op = w >> 26, d = (w >> 21) & 31, a = (w >> 16) & 31;
     if constexpr (op == 56 || op == 57 || op == 60 || op == 61) {
         constexpr bool load = op < 60, update = op == 57 || op == 61, single = (w >> 15) & 1;
         const uint32_t gqr = cpu->gqr[(w >> 12) & 7];
-        if (((gqr >> (load ? 16 : 0)) & 7) != 0) return rbrew_ps(cpu, w);
+        const uint32_t type = (gqr >> (load ? 16 : 0)) & 7;
+        const uint32_t scale = (gqr >> (load ? 24 : 8)) & 0x3F;
         constexpr int32_t disp = int32_t((w & 4095u) << 20) >> 20;
         const uint32_t ea = (update || a ? cpu->r[a] : 0u) + uint32_t(disp);
         if constexpr (load) {
-            const double p0 = rbrew_read_f32(cpu->mem, ea);
-            const double p1 = single ? 1.0 : rbrew_read_f32(cpu->mem, ea + 4);
-            cpu->f[d] = p0;
-            cpu->ps1[d] = p1;
+            const double factor = type == 0 ? 1.0 : rbrew_psq_factor(scale, false);
+            switch (type) {
+            case 0: // float
+                cpu->f[d] = rbrew_read_f32(mem, ea);
+                cpu->ps1[d] = single ? 1.0 : rbrew_read_f32(mem, ea + 4);
+                break;
+            case 4: // u8
+                cpu->f[d] = double(rbrew_read8(mem, ea)) * factor;
+                cpu->ps1[d] = single ? 1.0 : double(rbrew_read8(mem, ea + 1)) * factor;
+                break;
+            case 5: // u16
+                cpu->f[d] = double(rbrew_read16(mem, ea)) * factor;
+                cpu->ps1[d] = single ? 1.0 : double(rbrew_read16(mem, ea + 2)) * factor;
+                break;
+            case 6: // s8
+                cpu->f[d] = double(int8_t(rbrew_read8(mem, ea))) * factor;
+                cpu->ps1[d] = single ? 1.0 : double(int8_t(rbrew_read8(mem, ea + 1))) * factor;
+                break;
+            case 7: // s16
+                cpu->f[d] = double(int16_t(rbrew_read16(mem, ea))) * factor;
+                cpu->ps1[d] = single ? 1.0 : double(int16_t(rbrew_read16(mem, ea + 2))) * factor;
+                break;
+            default: return rbrew_ps_mem(cpu, mem, w);
+            }
         } else {
-            auto store = [&](uint32_t address, double value) {
-                uint64_t bits;
-                memcpy(&bits, &value, 8);
-                // Console stores flush values below the single exponent range.
-                if (((bits >> 52) & 2047) <= 896)
-                    rbrew_write32(cpu->mem, address, uint32_t(bits >> 32) & 0x80000000u);
-                else
-                    rbrew_write_f32(cpu->mem, address, value);
+            if (type != 0 && type < 4) return rbrew_ps_mem(cpu, mem, w); // undefined quantization
+            const double factor = type == 0 ? 1.0 : rbrew_psq_factor(scale, true);
+            auto store_one = [&](uint32_t address, double value) {
+                switch (type) {
+                case 0: rbrew_psq_store_float(mem, address, value); break;
+                case 4: rbrew_psq_store_int(mem, address, value, factor, 0, 255, false); break;
+                case 5: rbrew_psq_store_int(mem, address, value, factor, 0, 65535, true); break;
+                case 6: rbrew_psq_store_int(mem, address, value, factor, -128, 127, false); break;
+                case 7: rbrew_psq_store_int(mem, address, value, factor, -32768, 32767, true); break;
+                default: break;
+                }
             };
-            store(ea, cpu->f[d]);
-            if constexpr (!single) store(ea + 4, cpu->ps1[d]);
+            store_one(ea, cpu->f[d]);
+            if constexpr (!single) {
+                if (type == 0)
+                    store_one(ea + 4, cpu->ps1[d]);
+                else
+                    store_one(ea + ((type & 1) ? 2u : 1u), cpu->ps1[d]); // 8-bit types 4/6, 16-bit 5/7
+            }
         }
         if constexpr (update) cpu->r[a] = ea;
         return;
@@ -561,13 +750,16 @@ template <uint32_t w> static inline void rbrew_ps_constant(CPUState* cpu) {
             p0 = fma(a0, c0, b0);
             p1 = fma(a1, c1, b1);
         } else
-            return rbrew_ps(cpu, w);
+            return rbrew_ps_mem(cpu, mem, w);
         cpu->f[d] = double(float(p0));
         cpu->ps1[d] = double(float(p1));
         if constexpr (w & 1) cpu->cr[1] = (cpu->fpscr >> 28) & 15;
         return;
     }
-    rbrew_ps(cpu, w);
+    rbrew_ps_mem(cpu, mem, w);
+}
+template <uint32_t w> static inline void rbrew_ps_constant(CPUState* cpu) {
+    rbrew_ps_constant<w>(cpu, cpu->mem);
 }
 
 // ---------------------------------------------------------------------------
@@ -578,9 +770,14 @@ template <uint32_t w> static inline void rbrew_ps_constant(CPUState* cpu) {
 extern "C" {
 #endif
 
+// The _mem forms are what generated code calls: the arena base is passed
+// explicitly so host compilers know these may touch guest memory (and only
+// that) while keeping guest registers cached in host registers.
+RBREW_HOST_API void rbrew_dispatch_mem(CPUState* cpu, uint8_t* mem, uint32_t guest_addr) noexcept(false);
 RBREW_HOST_API void rbrew_dispatch(CPUState* cpu, uint32_t guest_addr) noexcept(false);
 // Only use at proven linked-call/entry boundaries with an explicit LR return.
 // Legacy local/tail dispatch retains its existing behavior.
+RBREW_HOST_API void rbrew_dispatch_linked_mem(CPUState* cpu, uint8_t* mem, uint32_t guest_addr) noexcept(false);
 RBREW_HOST_API void rbrew_dispatch_linked(CPUState* cpu, uint32_t guest_addr) noexcept(false);
 // Invoke the module's declared entry with loader arguments and return its result.
 int32_t rbrew_run_entry(CPUState* cpu, uint32_t entry, uint32_t argc, uint32_t argv);
@@ -588,7 +785,9 @@ int32_t rbrew_run_entry(CPUState* cpu, uint32_t entry, uint32_t argc, uint32_t a
 // reentrant initialization and a later guest startup cannot run it twice.
 // The caller supplies the program's table and completion-flag addresses.
 uint32_t rbrew_run_constructors(CPUState* cpu, uint32_t table, uint32_t done_flag);
+RBREW_HOST_API void rbrew_call_indirect_mem(CPUState* cpu, uint8_t* mem, uint32_t guest_addr) noexcept(false);
 RBREW_HOST_API void rbrew_call_indirect(CPUState* cpu, uint32_t guest_addr) noexcept(false);
+RBREW_HOST_API void rbrew_call_mem(CPUState* cpu, uint8_t* mem, uint32_t guest_addr) noexcept(false);
 RBREW_HOST_API void rbrew_call(CPUState* cpu, uint32_t guest_addr) noexcept(false);
 
 // Called by OS stubs to register a host function at a guest address

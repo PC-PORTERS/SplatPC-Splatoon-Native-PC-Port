@@ -6,6 +6,7 @@
 #include "os/gx2/gx2_weather_shaders.h"
 #include "os/gx2/vk/gx2_vk_shader.h"
 #include "runtime/port_settings.h"
+#include "rebrewu/logger.hpp"
 #include <bit>
 #include <cmath>
 #include <cstdio>
@@ -220,11 +221,9 @@ void math() {
             v.frame_rate = fps;
             v.plaza_60fps = false;
             rbrew_settings::normalize(v);
-            // The online edition hides the graphics presets: normalize() always turns them off.
-            require(v.shader_quality == rbrew_settings::kShadersOff, "shader presets were not forced off");
-            require(v.frame_rate == fps, "the frame rate was changed while the shaders are off");
-            require(v.fps120 == (fps >= 120), "interpolation does not follow the frame rate");
-            require(!v.plaza_60fps, "the plaza's 30 FPS setting was changed while the shaders are off");
+            require(v.frame_rate == (quality ? 60 : fps), "shader mode did not enforce exactly 60 FPS");
+            require(v.fps120 == (!quality && fps >= 120), "shader mode left interpolation enabled");
+            require(v.plaza_60fps == (quality != 0), "shader mode allowed the plaza's 30 FPS simulation");
         }
     rbrew_settings::Values bad;
     bad.shader_quality = 99;
@@ -233,7 +232,7 @@ void math() {
     bad.day_length = 0;
     bad.bloom = 1000;
     rbrew_settings::normalize(bad);
-    require(bad.shader_quality == rbrew_settings::kShadersOff && bad.weather == 0 && bad.time_of_day == 1439 && bad.day_length == 5 &&
+    require(bad.shader_quality == 3 && bad.weather == 0 && bad.time_of_day == 1439 && bad.day_length == 5 &&
                 bad.bloom == 100,
             "weather settings escaped supported bounds");
     std::puts("weather: camera validation, clock rollover, sun path and mandatory shader FPS cap passed");
@@ -789,7 +788,7 @@ int main(int argc, char** argv) {
         collision();
         return 0;
     } catch (const std::exception& e) {
-        std::fprintf(stderr, "FAILED: %s\n", e.what());
+        RBREW_LOG_ERROR("test", "FAILED: %s", e.what());
         return 1;
     }
 }

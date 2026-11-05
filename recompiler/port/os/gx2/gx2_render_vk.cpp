@@ -31,6 +31,7 @@
 #include <SDL.h>
 #include <SDL_vulkan.h>
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -211,7 +212,7 @@ bool texture_content_hash(uint8_t* mem, const uint8_t* data, uint64_t& hash) {
     const uint64_t total =
         uint64_t(descriptor_word(data, GX2SURF_IMAGE_SIZE)) + descriptor_word(data, GX2SURF_MIPMAP_SIZE);
     gx2_perf_bytes(kBytesTexHash, total);
-    if (gx2_perf_enabled()) {
+    if (gx2_perf_file()) { // detail map+lock belongs to the RBREW_PERF file, not the live overlay
         std::lock_guard lock(s_perf_detail_mutex);
         auto& h = s_perf_hashed[descriptor_word(data, GX2SURF_IMAGE)];
         ++h.calls;
@@ -296,13 +297,6 @@ VkClearColorValue zero_color() {
 // ---------------------------------------------------------------------------
 // Formats (gx2_wire_format)
 // ---------------------------------------------------------------------------
-// An integer colour target whose texels are compressed blocks of block_bytes.
-static bool block_encoder_target(uint32_t target_format, uint32_t block_bytes) {
-    if (block_bytes == 16) return target_format == 0x122u || target_format == 0x322u;
-    if (block_bytes == 8) return target_format == 0x11Fu;
-    return false;
-}
-
 Format gx2r::gx2_vk_format(uint32_t f) {
     Format r;
     auto set = [&](VkFormat format, uint32_t bpp, uint32_t internal, uint32_t wire_format, uint32_t wire_type) {
@@ -794,6 +788,8 @@ void gx2_render_set_target_channel_masks(uint32_t masks) {
     S.target_masks = masks;
     apply_channel_masks();
     bind_target_framebuffer();
+    ++S.uniform_generation[0];
+    ++S.uniform_generation[1];
 }
 
 static bool color_format_renderable(VkFormat format) {
@@ -808,12 +804,15 @@ void gx2_render_set_color_buffer(uint32_t cb_addr, uint8_t* mem, const uint8_t* 
     }
     if (!gx2vk::ready() || target >= 8) return;
     if (!cb_addr) {
+        if (!S.color_targets[target]) return;
         S.color_targets[target] = nullptr;
+        S.color_target_keys[target] = {};
         bind_target_framebuffer();
         return;
     }
     const auto* data = descriptor ? descriptor : mem + cb_addr;
     auto key = color_image_key(cb_addr, mem, data);
+    if (S.color_targets[target] && S.color_target_keys[target] == key) return;
     auto it = S.cb_map.find(key);
     if (it == S.cb_map.end()) {
         uint32_t w = descriptor_word(data, GX2SURF_WIDTH), h = descriptor_word(data, GX2SURF_HEIGHT);
@@ -869,8 +868,11 @@ void gx2_render_set_color_buffer(uint32_t cb_addr, uint8_t* mem, const uint8_t* 
                             cb_addr, w, h, fmt, S.depth_map.find(key)->second.gx2_format);
     }
     S.color_targets[target] = &it->second;
+    S.color_target_keys[target] = key;
     TXDIAG(txdiag::target(mem, data, it->second.image, it->second.id, "color"));
     bind_target_framebuffer();
+    ++S.uniform_generation[0];
+    ++S.uniform_generation[1];
 }
 
 void gx2_render_set_depth_buffer(uint32_t db_addr, uint8_t* mem, const uint8_t* descriptor) {
@@ -878,12 +880,15 @@ void gx2_render_set_depth_buffer(uint32_t db_addr, uint8_t* mem, const uint8_t* 
     if (g_trace_active)
         RBREW_LOG_DEBUG("ftrace", "render set depth db=%08X descriptor=%p\n", db_addr, (const void*)descriptor);
     if (!db_addr) {
+        if (!S.depth_target) return;
         S.depth_target = nullptr;
+        S.depth_target_key = {};
         bind_target_framebuffer();
         return;
     }
     const auto* data = descriptor ? descriptor : mem + db_addr;
     const auto key = color_image_key(db_addr, mem, data);
+    if (S.depth_target && S.depth_target_key == key) return;
     auto [it, inserted] = S.depth_map.try_emplace(key);
     if (inserted) ++S.depth_view_revision;
     auto& e = it->second;
@@ -939,6 +944,7 @@ void gx2_render_set_depth_buffer(uint32_t db_addr, uint8_t* mem, const uint8_t* 
         note_framebuffer_changed();
     }
     S.depth_target = &e;
+    S.depth_target_key = key;
     bind_target_framebuffer();
     TXDIAG(txdiag::target(mem, data, e.image, e.id, "depth"));
     if (s_clear_color_as_depth &&
@@ -1241,6 +1247,7 @@ void gx2_render_set_viewport(float x, float y, float w, float h, float near_z, f
     S.regs[0xA112] = bits(y + h * 0.5f);
     S.regs[0xA113] = bits((far_z - near_z) * 0.5f);
     S.regs[0xA114] = bits((far_z + near_z) * 0.5f);
+    ++S.reg_generation;
     update_native_viewport();
 }
 
@@ -1256,6 +1263,7 @@ void gx2_render_set_scissor(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
     S.raster.scissor[1] = int32_t(y);
     S.raster.scissor[2] = int32_t(right >= x ? right - x : 0);
     S.raster.scissor[3] = int32_t(bottom >= y ? bottom - y : 0);
+    ++S.reg_generation;
 }
 
 void gx2_render_set_depth_stencil_control(bool depth_test, bool depth_write, uint32_t gx2_cmp) {
@@ -1265,12 +1273,14 @@ void gx2_render_set_depth_stencil_control(bool depth_test, bool depth_write, uin
     S.raster.depth_test = depth_test;
     if (depth_test) S.raster.depth_func = gx2_compare_to_gl(gx2_cmp);
     S.raster.depth_write = depth_write;
+    ++S.reg_generation;
     // Material draws often change the comparison/write mask without changing
     // active targets; only enable transitions reattach the depth image.
     if (attachments_changed) bind_target_framebuffer();
 }
 
 void gx2_render_set_polygon_control(uint32_t front_face, bool cull_front, bool cull_back) {
+    ++S.reg_generation;
     S.raster.front_face = front_face == GX2_FRONT_FACE_CW ? wire::CW : wire::CCW;
     if (cull_front && cull_back) {
         S.raster.cull = true;
@@ -1461,24 +1471,40 @@ void gx2_render_set_sampler_comparison(uint32_t native_slot, bool compare) {
 }
 
 void gx2_render_apply_registers(const Gx2RegisterWrite* w, size_t n) {
-    std::array<bool, 54> samplers{};
+    uint64_t sampler_mask = 0;
+    bool any_changed = false;
+    bool any_raster = false;
     for (size_t i = 0; i < n; ++i) {
-        if (w[i].index >= S.regs.size()) continue;
-        S.regs[w[i].index] = w[i].value;
-        if (w[i].index == 0xA216) S.vs_from_regs = true;
-        if (w[i].index == 0xA210) S.ps_from_regs = true;
-        if (w[i].index >= 0xF000 && w[i].index < 0xF000 + 54 * 3) {
-            const unsigned s = (w[i].index - 0xF000) / 3;
-            samplers[s] = true;
-            S.samplers[s].valid = true;
+        const uint32_t idx = w[i].index;
+        if (idx >= S.regs.size()) continue;
+        const uint32_t val = w[i].value;
+        const bool changed = (S.regs[idx] != val);
+        S.regs[idx] = val;
+        any_changed |= changed;
+        if (idx == 0xA216) S.vs_from_regs = true;
+        if (idx == 0xA210) S.ps_from_regs = true;
+        if (idx >= 0xF000 && idx < 0xF000 + 54 * 3) {
+            const unsigned s = (idx - 0xF000) / 3;
+            if (changed || !S.samplers[s].valid) {
+                sampler_mask |= 1ull << s;
+                S.samplers[s].valid = true;
+            }
+        } else if (idx >= 0xA400 && idx < 0xA400 + 2 * 0x80 + 18 * 4) {
+            const unsigned off = idx - 0xA400;
+            const unsigned stage = off >> 7;
+            const unsigned rem = off & 0x7Fu;
+            if (stage < 3 && rem < 18 * 4 && changed) sampler_mask |= 1ull << (stage * 18 + (rem >> 2));
+        } else if (idx >= 0xA080 && idx <= 0xA390) {
+            any_raster = true;
         }
-        for (unsigned stage = 0; stage < 3; ++stage)
-            if (w[i].index >= 0xA400 + stage * 0x80 && w[i].index < 0xA400 + stage * 0x80 + 18 * 4)
-                samplers[stage * 18 + (w[i].index - 0xA400 - stage * 0x80) / 4] = true;
     }
-    for (unsigned s = 0; s < 54; ++s)
-        if (samplers[s] && S.samplers[s].valid) apply_native_sampler(s);
-    apply_native_raster_registers(w, n);
+    if (any_changed) ++S.reg_generation;
+    while (sampler_mask) {
+        const unsigned s = unsigned(std::countr_zero(sampler_mask));
+        sampler_mask &= sampler_mask - 1;
+        if (S.samplers[s].valid) apply_native_sampler(s);
+    }
+    if (any_raster) apply_native_raster_registers(w, n);
 }
 uint32_t gx2_render_register(uint32_t index) {
     return index < S.regs.size() ? S.regs[index] : 0;
@@ -1504,6 +1530,12 @@ void gx2_render_invalidate_textures(uint32_t addr, uint32_t size) {
     TXDIAG(txdiag::count(txdiag::Invalidations); if (txdiag::sample("invalidate", uint64_t(addr) << 32 | size))
                txdiag::event("invalidate", "\"address\":%u,\"size\":%u", addr, size));
     Gx2PerfScope perf_scope(kPerfInvalidate);
+    // Global blanket invalidation (the Wii U passes size == 0xFFFFFFFF for
+    // "every texture"): there is no range to walk, and marking the whole set
+    // made every bound texture content-hash at its next bind — ~15 ms of
+    // render-thread time per frame for proofs nothing needed. Cemu ignores
+    // these the same way: a real CPU write always flushes its own range.
+    if (size == 0xFFFFFFFFu) return;
     const uint64_t end = uint64_t(addr) + size;
     uint64_t marked = 0;
     // Same overlap test as a scan of every texture's image and mip ranges,
@@ -1542,7 +1574,7 @@ void gx2_render_invalidate_textures(uint32_t addr, uint32_t size) {
             range.entry->verify = true;
         }
     }
-    if (gx2_perf_enabled()) {
+    if (gx2_perf_file()) { // detail map+lock belongs to the RBREW_PERF file, not the live overlay
         std::lock_guard lock(s_perf_detail_mutex);
         auto& flush = s_perf_flushes[{addr, size}];
         ++flush.calls;
@@ -1641,16 +1673,19 @@ static bool copy_color_view(ColorTarget& source, gx2vk::Image& destination, cons
     return true;
 }
 
+extern bool g_gx2_has_pending_streamouts;                                             // gx2_render_vk_draw.cpp
 void gx2r_streamout_flush_if_overlaps(uint8_t* mem, uint32_t address, uint64_t size); // gx2_render_vk_draw.cpp
 void gx2_render_upload_texture(uint32_t tex_addr, uint32_t slot, uint8_t* mem, const uint8_t* descriptor) {
     Gx2PerfScope perf_scope(kPerfTexture);
     if (!tex_addr || !gx2vk::ready() || slot >= S.bound_textures.size()) return;
     const auto* data = descriptor ? descriptor : mem + tex_addr;
     // A texture over a pending stream-out export needs its results first.
-    gx2r_streamout_flush_if_overlaps(mem, descriptor_word(data, GX2SURF_IMAGE),
-                                     descriptor_word(data, GX2SURF_IMAGE_SIZE));
-    gx2r_streamout_flush_if_overlaps(mem, descriptor_word(data, GX2SURF_MIPMAPS),
-                                     descriptor_word(data, GX2SURF_MIPMAP_SIZE));
+    if (g_gx2_has_pending_streamouts) {
+        gx2r_streamout_flush_if_overlaps(mem, descriptor_word(data, GX2SURF_IMAGE),
+                                         descriptor_word(data, GX2SURF_IMAGE_SIZE));
+        gx2r_streamout_flush_if_overlaps(mem, descriptor_word(data, GX2SURF_MIPMAPS),
+                                         descriptor_word(data, GX2SURF_MIPMAP_SIZE));
+    }
     TXDIAG(txdiag::count(txdiag::Lookups));
 #ifdef RBREW_TEXTURE_DIAGNOSTICS
     txdiag::TextureScope diagnostic_scope{mem, data, tex_addr, slot};
@@ -1662,17 +1697,30 @@ void gx2_render_upload_texture(uint32_t tex_addr, uint32_t slot, uint8_t* mem, c
 
     auto& cached = S.texture_entries[slot];
     if (!cached.entry || cached.mem != mem || std::memcmp(cached.layout.data(), data, cached.layout.size()) != 0) {
-        TextureEntryIndexKey index_key{mem};
-        std::memcpy(index_key.layout.data(), data, index_key.layout.size());
-        auto [indexed, inserted] = S.texture_entry_index.try_emplace(index_key, nullptr);
-        if (inserted) {
-            ++C.texture_entry_searches;
-            indexed->second = &S.tex_map[texture_image_key(mem, data)];
+        uint64_t k0, k1, k2;
+        std::memcpy(&k0, data + 0x10, 8);
+        std::memcpy(&k1, data + 0x20, 8);
+        std::memcpy(&k2, data + 0x74, 8);
+        const size_t mru_slot =
+            size_t(((k1 * 0x9E3779B97F4A7C15ull) ^ (k0 * 0xBF58476D1CE4E5B9ull) ^ k2 ^ uintptr_t(mem)) >> 32) &
+            (S.texture_entry_mru.size() - 1);
+        auto& mru = S.texture_entry_mru[mru_slot];
+        if (mru.entry && mru.mem == mem && std::memcmp(mru.layout.data(), data, mru.layout.size()) == 0) {
+            cached = mru;
+        } else {
+            TextureEntryIndexKey index_key{mem};
+            std::memcpy(index_key.layout.data(), data, index_key.layout.size());
+            auto [indexed, inserted] = S.texture_entry_index.try_emplace(index_key, nullptr);
+            if (inserted) {
+                ++C.texture_entry_searches;
+                indexed->second = &S.tex_map[texture_image_key(mem, data)];
+            }
+            cached.entry = indexed->second;
+            TXDIAG(txdiag::count(txdiag::Misses));
+            cached.mem = mem;
+            cached.layout = index_key.layout;
+            mru = cached;
         }
-        cached.entry = indexed->second;
-        TXDIAG(txdiag::count(txdiag::Misses));
-        cached.mem = mem;
-        cached.layout = index_key.layout;
     }
     auto& entry = *cached.entry;
     if (!entry.tex.id) {
@@ -1711,12 +1759,24 @@ void gx2_render_upload_texture(uint32_t tex_addr, uint32_t slot, uint8_t* mem, c
     entry.created = true;
     entry.tex.target = target;
 
-    if (entry.depth_revision != S.depth_view_revision) {
+    static const bool s_cube_probe = rbrew_diagnostic_env("RBREW_CUBE_PROBE") != nullptr;
+    const uint64_t eff_depth_rev = S.effective_depth_revision();
+    const uint64_t eff_color_rev = S.effective_color_revision();
+    if (!s_cube_probe && entry.hash_valid && !entry.verify && entry.depth_revision == eff_depth_rev &&
+        entry.no_depth_alias && entry.color_revision == eff_color_rev && entry.no_color_alias) {
+        entry.tex.swizzle = word4;
+        bind_unit(slot, &entry.tex);
+        return;
+    }
+
+    if (entry.depth_revision != eff_depth_rev) {
+        const auto depth_range = image_views(S.depth_map, img_ptr);
+        entry.no_depth_alias = (depth_range.begin() == depth_range.end());
         entry.depth_candidates.clear();
-        if (target == wire::TEXTURE_2D || (target == wire::TEXTURE_2D_ARRAY && layers == 1))
-            for (const auto& candidate : image_views(S.depth_map, img_ptr))
+        if (!entry.no_depth_alias && (target == wire::TEXTURE_2D || (target == wire::TEXTURE_2D_ARRAY && layers == 1)))
+            for (const auto& candidate : depth_range)
                 if (texture_view_matches(candidate.first, data)) entry.depth_candidates.push_back(&candidate);
-        entry.depth_revision = S.depth_view_revision;
+        entry.depth_revision = eff_depth_rev;
     }
     for (const auto* candidate : entry.depth_candidates) {
         const auto& [key, depth] = *candidate;
@@ -1764,7 +1824,7 @@ void gx2_render_upload_texture(uint32_t tex_addr, uint32_t slot, uint8_t* mem, c
             return;
         }
     }
-    if (target == wire::TEXTURE_2D_ARRAY) {
+    if (target == wire::TEXTURE_2D_ARRAY && !entry.no_depth_alias) {
         // Cascaded shadows render one depth slice at a time, then sample the
         // allocation as an array. Those native single-slice images cannot be
         // bound as a multi-layer view, and guest RAM has none of their GPU writes.
@@ -1841,137 +1901,146 @@ void gx2_render_upload_texture(uint32_t tex_addr, uint32_t slot, uint8_t* mem, c
     }
     // Render-to-texture: a texture over a color buffer's image reads what the
     // GPU drew there, which lives only in the native image.
-    const auto compressed = gx2_vk_format(fmt);
     const bool dest32 = fmt == 0x122u || fmt == 0x322u || fmt == 0x823u;
-    if (entry.color_revision != S.color_view_revision) {
+    if (entry.color_revision != eff_color_rev) {
+        const auto color_range = image_views(S.cb_map, img_ptr);
+        entry.no_color_alias = (color_range.begin() == color_range.end());
         entry.color_candidates.clear();
-        if (target == wire::TEXTURE_2D) for (const auto& candidate : image_views(S.cb_map, img_ptr)) {
-            const auto& [key, cb] = candidate;
-            const bool source32 = key[1] == 0x122u || key[1] == 0x322u || key[1] == 0x823u;
-            const bool blocks = compressed.compressed && block_encoder_target(key[1], compressed.block) && cb.width == (w + 3) / 4 && cb.height == (h + 3) / 4 &&
-                key[4] == descriptor_word(data, GX2SURF_PITCH) && key[5] == descriptor_word(data, GX2TEX_VIEW_MIP) &&
-                key[6] == first_slice && key[8] == descriptor_word(data, GX2SURF_AA);
-            if (blocks || texture_view_matches(key, data) ||
-                (source32 && dest32 && texture_view_matches(key, data, true)))
-                entry.color_candidates.push_back(&candidate);
+        if (!entry.no_color_alias && target == wire::TEXTURE_2D) {
+            const auto compressed = gx2_vk_format(fmt);
+            for (const auto& candidate : color_range) {
+                const auto& [key, cb] = candidate;
+                const bool source32 = key[1] == 0x122u || key[1] == 0x322u || key[1] == 0x823u;
+                const bool blocks = compressed.compressed && compressed.block == 16 &&
+                                    (key[1] == 0x122u || key[1] == 0x322u) && cb.width == (w + 3) / 4 &&
+                                    cb.height == (h + 3) / 4 && key[4] == descriptor_word(data, GX2SURF_PITCH) &&
+                                    key[5] == descriptor_word(data, GX2TEX_VIEW_MIP) && key[6] == first_slice &&
+                                    key[8] == descriptor_word(data, GX2SURF_AA);
+                if (blocks || texture_view_matches(key, data) ||
+                    (source32 && dest32 && texture_view_matches(key, data, true)))
+                    entry.color_candidates.push_back(&candidate);
+            }
         }
-        entry.color_revision = S.color_view_revision;
+        entry.color_revision = eff_color_rev;
     }
-    for (const auto* candidate : entry.color_candidates) {
-        const auto& [key, cbc] = *candidate;
-        auto& cb = const_cast<ColorTarget&>(cbc);
-        ++C.alias_probes;
-        if (target == wire::TEXTURE_2D && compressed.compressed && block_encoder_target(key[1], compressed.block) && key[0] == img_ptr && cb.width == (w + 3) / 4 && cb.height == (h + 3) / 4 &&
-            key[4] == descriptor_word(data, GX2SURF_PITCH) && key[5] == descriptor_word(data, GX2TEX_VIEW_MIP) &&
-            key[6] == first_slice && key[8] == descriptor_word(data, GX2SURF_AA)) {
-            // Native GPU block encoders write compressed blocks through an
-            // integer color target: copy its live words into the compressed
-            // view (the GPU back-end reads them back and re-uploads them).
-            // 16-byte blocks (BC2/3/5) come from R32G32B32A32 targets, 8-byte
-            // blocks (BC1/4) from R16G16B16A16_UINT (0x11F): the map name
-            // banner of the stage intro (400x30 blocks, 1600x120).
-            if (ensure_texture_storage(entry, wire::TEXTURE_2D, compressed.format, w, h, 1, 1, false) && live_copy_needed(entry, cb)) {
-                end_rendering();
-                VkCommandBuffer cbuf = gx2vk::cmd();
-                gx2vk::barrier_if_dirty();
-                // An image-to-image copy covers whole blocks (cb.width * 4
-                // texels), which overruns a texture whose size is not a
-                // multiple of 4 (Splatoon's 250x150 button labels): invalid in
-                // Vulkan, and the driver dropped it, leaving the labels blank.
-                // A buffer copy may end in partial edge blocks.
-                // RBREW_BLOCK_COPY_DIRECT=1 restores the image-to-image copy.
-                static const bool direct = [] {
-                    const char* v = std::getenv("RBREW_BLOCK_COPY_DIRECT");
-                    return v && v[0] == '1';
-                }();
-                if (!direct && (w % 4 || h % 4)) {
-                    static gx2vk::Buffer s_block_staging;
-                    const VkDeviceSize bytes = VkDeviceSize(cb.width) * cb.height * compressed.block;
-                    if (s_block_staging.size < bytes) {
-                        const VkBuffer old_staging = s_block_staging.buffer;
-                        gx2vk::destroy_buffer(s_block_staging);
-                        s_block_staging =
-                            gx2vk::create_buffer(std::max<VkDeviceSize>(bytes, 1 << 16),
-                                                 VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                                 gx2vk::MemoryUse::DeviceLocal);
-                        gx2vk::capture::register_staging(s_block_staging.buffer, old_staging);
+    if (!entry.color_candidates.empty()) {
+        const auto compressed = gx2_vk_format(fmt);
+        for (const auto* candidate : entry.color_candidates) {
+            const auto& [key, cbc] = *candidate;
+            auto& cb = const_cast<ColorTarget&>(cbc);
+            ++C.alias_probes;
+            if (target == wire::TEXTURE_2D && compressed.compressed && compressed.block == 16 &&
+                (key[1] == 0x122u || key[1] == 0x322u) && key[0] == img_ptr && cb.width == (w + 3) / 4 &&
+                cb.height == (h + 3) / 4 && key[4] == descriptor_word(data, GX2SURF_PITCH) &&
+                key[5] == descriptor_word(data, GX2TEX_VIEW_MIP) && key[6] == first_slice &&
+                key[8] == descriptor_word(data, GX2SURF_AA)) {
+                // Native GPU block encoders write compressed blocks through an
+                // integer color target: copy its live words into the compressed
+                // view (the GPU back-end reads them back and re-uploads them).
+                if (ensure_texture_storage(entry, wire::TEXTURE_2D, compressed.format, w, h, 1, 1, false) &&
+                    live_copy_needed(entry, cb)) {
+                    end_rendering();
+                    VkCommandBuffer cbuf = gx2vk::cmd();
+                    gx2vk::barrier_if_dirty();
+                    // An image-to-image copy covers whole blocks (cb.width * 4
+                    // texels), which overruns a texture whose size is not a
+                    // multiple of 4 (Splatoon's 250x150 button labels): invalid in
+                    // Vulkan, and the driver dropped it, leaving the labels blank.
+                    // A buffer copy may end in partial edge blocks.
+                    // RBREW_BLOCK_COPY_DIRECT=1 restores the image-to-image copy.
+                    static const bool direct = [] {
+                        const char* v = std::getenv("RBREW_BLOCK_COPY_DIRECT");
+                        return v && v[0] == '1';
+                    }();
+                    if (!direct && (w % 4 || h % 4)) {
+                        static gx2vk::Buffer s_block_staging;
+                        const VkDeviceSize bytes = VkDeviceSize(cb.width) * cb.height * 16;
+                        if (s_block_staging.size < bytes) {
+                            const VkBuffer old_staging = s_block_staging.buffer;
+                            gx2vk::destroy_buffer(s_block_staging);
+                            s_block_staging = gx2vk::create_buffer(std::max<VkDeviceSize>(bytes, 1 << 16),
+                                                                   VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                                                       VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                                                   gx2vk::MemoryUse::DeviceLocal);
+                            gx2vk::capture::register_staging(s_block_staging.buffer, old_staging);
+                        }
+                        if (s_block_staging.buffer) {
+                            VkBufferImageCopy out{};
+                            out.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+                            out.imageExtent = {cb.width, cb.height, 1};
+                            vkCmdCopyImageToBuffer(cbuf, cb.image.image, VK_IMAGE_LAYOUT_GENERAL,
+                                                   s_block_staging.buffer, 1, &out);
+                            VkMemoryBarrier2 between{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+                            between.srcStageMask = between.dstStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+                            between.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+                            between.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
+                            VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+                            dependency.memoryBarrierCount = 1;
+                            dependency.pMemoryBarriers = &between;
+                            vkCmdPipelineBarrier2(cbuf, &dependency);
+                            VkBufferImageCopy in{};
+                            in.bufferRowLength = cb.width * 4;
+                            in.bufferImageHeight = cb.height * 4; // texels, whole blocks
+                            in.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+                            in.imageExtent = {w, h, 1}; // ends at the image edge: partial blocks allowed
+                            vkCmdCopyBufferToImage(cbuf, s_block_staging.buffer, entry.image.image,
+                                                   VK_IMAGE_LAYOUT_GENERAL, 1, &in);
+                            gx2vk::note_gpu_write(entry.image);
+                        }
+                    } else {
+                        VkImageCopy region{};
+                        region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+                        region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+                        region.extent = {cb.width, cb.height, 1};
+                        vkCmdCopyImage(cbuf, cb.image.image, VK_IMAGE_LAYOUT_GENERAL, entry.image.image,
+                                       VK_IMAGE_LAYOUT_GENERAL, 1, &region);
                     }
-                    if (s_block_staging.buffer) {
-                        VkBufferImageCopy out{};
-                        out.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-                        out.imageExtent = {cb.width, cb.height, 1};
-                        vkCmdCopyImageToBuffer(cbuf, cb.image.image, VK_IMAGE_LAYOUT_GENERAL, s_block_staging.buffer, 1,
-                                               &out);
-                        VkMemoryBarrier2 between{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
-                        between.srcStageMask = between.dstStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
-                        between.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-                        between.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
-                        VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-                        dependency.memoryBarrierCount = 1;
-                        dependency.pMemoryBarriers = &between;
-                        vkCmdPipelineBarrier2(cbuf, &dependency);
-                        VkBufferImageCopy in{};
-                        in.bufferRowLength = cb.width * 4;
-                        in.bufferImageHeight = cb.height * 4; // texels, whole blocks
-                        in.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-                        in.imageExtent = {w, h, 1}; // ends at the image edge: partial blocks allowed
-                        vkCmdCopyBufferToImage(cbuf, s_block_staging.buffer, entry.image.image, VK_IMAGE_LAYOUT_GENERAL,
-                                               1, &in);
-                        gx2vk::note_gpu_write(entry.image);
-                    }
-                } else {
-                    VkImageCopy region{};
-                    region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-                    region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-                    region.extent = {cb.width, cb.height, 1};
-                    vkCmdCopyImage(cbuf, cb.image.image, VK_IMAGE_LAYOUT_GENERAL, entry.image.image,
-                                   VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+                    live_copy_recorded(entry, cb);
+                    entry.tex.view_format = compressed.format;
+                    entry.tex.levels = 1;
+                    entry.tex.layers = 1;
+                    entry.tex.compressed = true;
+                    entry.tex.integer = false;
+                    entry.tex.depth = false;
+                    entry.tex.complete_storage = true;
+                    entry.tex.params.min_filter = entry.tex.params.mag_filter = wire::LINEAR;
+                    entry.tex.params.wrap_s = entry.tex.params.wrap_t = wire::CLAMP_TO_EDGE;
+                    entry.tex.params.max_level = 0;
                 }
-                live_copy_recorded(entry, cb);
-                entry.tex.view_format = compressed.format;
-                entry.tex.levels = 1;
-                entry.tex.layers = 1;
-                entry.tex.compressed = true;
-                entry.tex.integer = false;
-                entry.tex.depth = false;
-                entry.tex.complete_storage = true;
-                entry.tex.params.min_filter = entry.tex.params.mag_filter = wire::LINEAR;
-                entry.tex.params.wrap_s = entry.tex.params.wrap_t = wire::CLAMP_TO_EDGE;
-                entry.tex.params.max_level = 0;
+                entry.tex.swizzle = word4;
+                bind_unit(slot, &entry.tex);
+                return;
             }
-            entry.tex.swizzle = word4;
-            bind_unit(slot, &entry.tex);
-            return;
-        }
-        if (target == wire::TEXTURE_2D && texture_view_matches(key, data) && cb.image.image) {
-            cb.tex.swizzle = word4;
-            bind_unit(slot, &cb.tex);
-            static unsigned s_logged_aliases;
-            if (s_logged_aliases++ < 8 || g_trace_active)
-                RBREW_LOG_DEBUG("tex", "slot %u samples render target image %08X (gl tex %u %ux%u fmt %X)\n", slot,
-                                img_ptr, cb.id, cb.width, cb.height, key[1]);
-            return;
-        }
-        const bool source32 = key[1] == 0x122u || key[1] == 0x322u || key[1] == 0x823u;
-        if (target == wire::TEXTURE_2D && source32 && dest32 && texture_view_matches(key, data, true)) {
-            // glTextureView reinterpretation of the target's 128-bit texels.
-            auto& view = S.color_views[{cb.id, fmt, word4}];
-            const auto gf = gx2_vk_format(fmt);
-            if (!view.tex.id) {
-                view.tex.id = S.next_object_id++;
-                view.tex.image = &cb.image;
-                view.tex.target = wire::TEXTURE_2D;
-                view.tex.view_format = gf.format;
-                view.tex.levels = 1;
-                view.tex.layers = 1;
-                view.tex.integer = gf.integer;
-                view.tex.params = render_target_params(gf.integer);
-                view.tex.params.max_level = 1000; // glTextureView with one level
-                view.tex.coordinate_scale = cb.tex.coordinate_scale;
+            if (target == wire::TEXTURE_2D && texture_view_matches(key, data) && cb.image.image) {
+                cb.tex.swizzle = word4;
+                bind_unit(slot, &cb.tex);
+                static unsigned s_logged_aliases;
+                if (s_logged_aliases++ < 8 || g_trace_active)
+                    RBREW_LOG_DEBUG("tex", "slot %u samples render target image %08X (gl tex %u %ux%u fmt %X)\n", slot,
+                                    img_ptr, cb.id, cb.width, cb.height, key[1]);
+                return;
             }
-            view.tex.swizzle = word4;
-            bind_unit(slot, &view.tex);
-            return;
+            const bool source32 = key[1] == 0x122u || key[1] == 0x322u || key[1] == 0x823u;
+            if (target == wire::TEXTURE_2D && source32 && dest32 && texture_view_matches(key, data, true)) {
+                // glTextureView reinterpretation of the target's 128-bit texels.
+                auto& view = S.color_views[{cb.id, fmt, word4}];
+                const auto gf = gx2_vk_format(fmt);
+                if (!view.tex.id) {
+                    view.tex.id = S.next_object_id++;
+                    view.tex.image = &cb.image;
+                    view.tex.target = wire::TEXTURE_2D;
+                    view.tex.view_format = gf.format;
+                    view.tex.levels = 1;
+                    view.tex.layers = 1;
+                    view.tex.integer = gf.integer;
+                    view.tex.params = render_target_params(gf.integer);
+                    view.tex.params.max_level = 1000; // glTextureView with one level
+                    view.tex.coordinate_scale = cb.tex.coordinate_scale;
+                }
+                view.tex.swizzle = word4;
+                bind_unit(slot, &view.tex);
+                return;
+            }
         }
     }
     entry.tex.swizzle = word4;
@@ -2207,7 +2276,7 @@ void gx2_render_upload_texture(uint32_t tex_addr, uint32_t slot, uint8_t* mem, c
             entry.tex.complete_storage = false;
         }
     }
-    if (target == wire::TEXTURE_CUBE_MAP_ARRAY && fmt == 0x816u && rbrew_diagnostic_env("RBREW_CUBE_PROBE")) {
+    if (target == wire::TEXTURE_CUBE_MAP_ARRAY && fmt == 0x816u && s_cube_probe) {
         static unsigned probe_reports = 0;
         if (probe_reports < 300) {
             ++probe_reports;
@@ -2223,7 +2292,7 @@ void gx2_render_upload_texture(uint32_t tex_addr, uint32_t slot, uint8_t* mem, c
                                (unsigned long long)cbc.image.content_generation);
         }
     }
-    if (target != wire::TEXTURE_2D && entry.image.image) {
+    if (!entry.no_color_alias && target != wire::TEXTURE_2D && entry.image.image) {
         bool copied = false;
         for (auto& [key, cbc] : image_views(S.cb_map, img_ptr)) {
             ++C.alias_probes;
@@ -2263,9 +2332,16 @@ void gx2r::refresh_bound_render_texture(uint32_t unit, uint8_t* mem) {
     const auto& bound = S.bound_textures[unit];
     if (!bound.address) return;
     const auto image = descriptor_word(bound.descriptor.data(), GX2SURF_IMAGE);
+    const uint64_t eff_color_rev = S.effective_color_revision();
+    const uint64_t eff_depth_rev = S.effective_depth_revision();
+    auto& memo = S.bound_alias_memo[unit];
+    if (memo.image == image && memo.color_rev == eff_color_rev && memo.depth_rev == eff_depth_rev) return;
     const auto depth = image_views(S.depth_map, image);
     const auto color = image_views(S.cb_map, image);
-    if (depth.begin() == depth.end() && color.begin() == color.end()) return;
+    if (depth.begin() == depth.end() && color.begin() == color.end()) {
+        memo = {image, eff_color_rev, eff_depth_rev};
+        return;
+    }
     // A binding names guest storage, not a frozen copy. Shadow cascades,
     // color-correction volumes and environment faces can be rendered after
     // binding. Refresh copied views at consumption, including targets created
@@ -2295,6 +2371,8 @@ void gx2_render_save_context_state(uint32_t context_state) {
     NativeContextSnapshot snapshot;
     snapshot.color_targets = S.color_targets;
     snapshot.depth_target = S.depth_target;
+    snapshot.color_target_keys = S.color_target_keys;
+    snapshot.depth_target_key = S.depth_target_key;
     snapshot.bound_textures = S.bound_textures;
     for (unsigned slot = 0; slot < 32; ++slot)
         snapshot.attrib_buffers[slot] = {S.attrib[slot].guest_addr, S.attrib[slot].size, S.attrib[slot].stride};
@@ -2322,10 +2400,15 @@ void gx2_render_restore_context_state(uint32_t context_state, uint8_t* mem) {
                         (void*)snapshot.color_targets[0]);
     S.color_targets = snapshot.color_targets;
     S.depth_target = snapshot.depth_target;
+    S.color_target_keys = snapshot.color_target_keys;
+    S.depth_target_key = snapshot.depth_target_key;
     S.cur_vs = snapshot.vertex_shader;
     S.cur_ps = snapshot.pixel_shader;
     S.vs_from_regs = snapshot.vertex_shader_from_registers;
     S.ps_from_regs = snapshot.pixel_shader_from_registers;
+    ++S.reg_generation;
+    ++S.shader_generation;
+    const auto prev_textures = S.bound_textures;
     S.bound_textures = snapshot.bound_textures;
     for (unsigned slot = 0; slot < 32; ++slot) {
         auto& buffer = S.attrib[slot];
@@ -2344,9 +2427,15 @@ void gx2_render_restore_context_state(uint32_t context_state, uint8_t* mem) {
     S.active_fetch = snapshot.fetch_shader;
     for (unsigned slot = 0; slot < S.bound_textures.size(); ++slot) {
         const auto& bound = snapshot.bound_textures[slot];
-        if (bound.address) gx2_render_upload_texture(bound.address, slot, mem, bound.descriptor.data());
+        if (bound.address &&
+            (prev_textures[slot].address != bound.address ||
+             std::memcmp(prev_textures[slot].descriptor.data(), bound.descriptor.data(), GX2TEX_SIZEOF) != 0)) {
+            gx2_render_upload_texture(bound.address, slot, mem, bound.descriptor.data());
+        }
     }
     bind_target_framebuffer();
+    ++S.uniform_generation[0];
+    ++S.uniform_generation[1];
 }
 
 // ---------------------------------------------------------------------------
@@ -2624,6 +2713,8 @@ void gx2_render_copy_surface(const uint8_t* src, uint32_t src_mip, uint32_t src_
     S.color_targets = color_targets;
     S.depth_target = depth_target;
     bind_target_framebuffer();
+    ++S.uniform_generation[0];
+    ++S.uniform_generation[1];
 }
 
 // ---------------------------------------------------------------------------
@@ -2883,8 +2974,8 @@ static void dump_frame(gx2vk::Image& image, uint32_t width, uint32_t height, con
     if (!gx2vk::read_image(image, VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, width, height, raw)) return;
     previous = frame;
     if (replay_position)
-        std::fprintf(stderr, "[capture] %s recorded=%u live=%u\n", prefix, frame,
-                     rbrew_benchmark::frame.load(std::memory_order_relaxed));
+        RBREW_LOG_DEBUG("capture", "%s recorded=%u live=%u", prefix, frame,
+                        rbrew_benchmark::frame.load(std::memory_order_relaxed));
     rbrew_benchmark::captured_frame.store(rbrew_benchmark::frame.load(), std::memory_order_relaxed);
     char name[64];
     std::snprintf(name, sizeof(name), "%s_%05u", prefix, frame);
@@ -3181,12 +3272,18 @@ void gx2_render_save_fetch_shader(uint32_t fs_addr, uint32_t attrib_count, uint3
     if (rbrew_memory_accessible(mem, fs_addr, size)) fetch.program.assign(mem + fs_addr, mem + fs_addr + size);
     fetch.revision = S.next_fetch_revision++;
     S.fetch_shaders[fs_addr] = std::move(fetch);
+    S.invalidate_fetch_cache();
 }
 void gx2_render_set_active_fetch_shader(uint32_t fs_addr) {
+    if (S.active_fetch == fs_addr) return;
     S.active_fetch = fs_addr;
+    ++S.shader_generation;
     static std::set<uint32_t> s_unknown;
-    if (fs_addr && !S.fetch_shaders.count(fs_addr) && s_unknown.insert(fs_addr).second && s_unknown.size() <= 20)
+    if (fs_addr && !S.find_fetch_info(fs_addr) && s_unknown.size() < 20 && s_unknown.insert(fs_addr).second)
         RBREW_LOG_INFO("gx2_render", "fetch shader program %08X has no GX2InitFetchShaderEx layout\n", fs_addr);
+}
+uint32_t gx2_render_active_fetch_shader() {
+    return S.active_fetch;
 }
 void gx2_render_store_fetch_attributes(uint32_t program, const std::vector<R700FetchAttribute>& attributes) {
     if (!program || attributes.empty()) return;
@@ -3194,6 +3291,7 @@ void gx2_render_store_fetch_attributes(uint32_t program, const std::vector<R700F
     fetch.attributes = attributes;
     fetch.revision = S.next_fetch_revision++;
     fetch.program.clear();
+    S.invalidate_fetch_cache();
 }
 void gx2_render_store_fetch_attributes(uint32_t program, const std::vector<R700FetchAttribute>& attributes,
                                        const uint8_t* bytes, uint32_t size) {
@@ -3208,37 +3306,45 @@ void gx2_render_store_fetch_attributes(uint32_t program, const std::vector<R700F
     fetch.attributes = attributes;
     fetch.revision = S.next_fetch_revision++;
     fetch.program.assign(bytes, bytes + size);
+    S.invalidate_fetch_cache();
 }
 bool gx2_render_fetch_program_current(uint32_t program, const uint8_t* bytes, uint32_t size) {
-    auto it = S.fetch_shaders.find(program);
-    if (it == S.fetch_shaders.end() || it->second.attributes.empty()) return false;
-    const auto& known = it->second.program;
+    const auto* info = S.find_fetch_info(program);
+    if (!info || info->attributes.empty()) return false;
+    const auto& known = info->program;
     return known.empty() || (known.size() == size && std::memcmp(known.data(), bytes, size) == 0);
 }
 uint32_t gx2_render_active_fetch_attribute_count() {
-    auto it = S.fetch_shaders.find(S.active_fetch);
-    return it == S.fetch_shaders.end() ? 0u : uint32_t(it->second.attributes.size());
+    const auto* info = S.active_fetch_info();
+    return info ? uint32_t(info->attributes.size()) : 0u;
 }
 void gx2_render_set_attrib_buffer(uint32_t slot, uint32_t guest_addr, uint32_t size, uint32_t stride) {
     if (slot >= 32) return;
     auto& ab = S.attrib[slot];
+    if (ab.guest_addr == guest_addr && ab.size == size && ab.stride == stride) return;
     ab.guest_addr = guest_addr;
     ab.size = size;
     ab.stride = stride;
 }
 void gx2_render_set_vertex_shader(uint32_t vs_addr, uint8_t* mem) {
     if (!vs_addr) return;
+    if (S.cur_vs == vs_addr && !S.vs_from_regs) return;
     S.cur_vs = vs_addr;
     S.vs_from_regs = false;
     auto p = gx2_shader_program({mem, WIIU_MEM_SIZE}, vs_addr, false);
     S.cur_vs_attribs = p.attribute_count;
     r700_shader_registers(S.regs.data(), mem + vs_addr, false);
+    ++S.shader_generation;
+    ++S.reg_generation;
 }
 void gx2_render_set_pixel_shader(uint32_t ps_addr, uint8_t* mem) {
     if (!ps_addr) return;
+    if (S.cur_ps == ps_addr && !S.ps_from_regs) return;
     S.cur_ps = ps_addr;
     S.ps_from_regs = false;
     r700_shader_registers(S.regs.data(), mem + ps_addr, true);
+    ++S.shader_generation;
+    ++S.reg_generation;
 }
 void gx2_render_set_uniform_reg(bool is_pixel, uint32_t index, uint32_t src_addr, uint32_t count, uint8_t* mem) {
     // gx2.rpl 0202f608/0202f754: offset and count are DWORD units.
@@ -3246,11 +3352,13 @@ void gx2_render_set_uniform_reg(bool is_pixel, uint32_t index, uint32_t src_addr
     index &= 0x7fff;
     if (index >= 1024 || count > 1024 - index) return;
     gx2_copy_be_words(S.uniform_words[is_pixel].data() + index, mem + src_addr, count);
+    ++S.uniform_generation[is_pixel ? 1 : 0];
 }
 void gx2_render_set_uniform_words(bool is_pixel, uint32_t index, const uint32_t* words, uint32_t count) {
     index &= 0x7FFF;
     if (!words || !count || index >= 1024 || count > 1024 - index) return;
-    for (unsigned i = 0; i < count; ++i) S.uniform_words[is_pixel][index + i] = int32_t(words[i]);
+    std::memcpy(S.uniform_words[is_pixel].data() + index, words, count * sizeof(uint32_t));
+    ++S.uniform_generation[is_pixel ? 1 : 0];
 }
 uint32_t gx2_render_uniform_word(bool is_pixel, uint32_t index) {
     return index < 1024 ? uint32_t(S.uniform_words[is_pixel][index]) : 0;
@@ -3258,8 +3366,10 @@ uint32_t gx2_render_uniform_word(bool is_pixel, uint32_t index) {
 void gx2_render_set_uniform_block(bool is_pixel, uint32_t block_index, uint32_t src_addr, uint32_t size, uint8_t* mem) {
     if (block_index >= 16 || !src_addr || !size || (size & 3) || !rbrew_memory_accessible(mem, src_addr, size)) return;
     auto& block = S.uniform_blocks[is_pixel][block_index];
+    if (block.address == src_addr && block.size == size) return;
     block.address = src_addr;
     block.size = size;
+    ++S.uniform_generation[is_pixel ? 1 : 0];
 }
 uint64_t gx2_render_uniform_lookup_count() {
     return C.uniform_lookups;
@@ -3716,7 +3826,7 @@ static void save_photo(const std::vector<uint8_t>& rgba, uint32_t width, uint32_
         if (factory) factory->Release();
         CoUninitialize();
     }).join();
-    std::fprintf(stderr, "[photo] %s %ls (%ux%u)\n", ok ? "saved" : "could not save", path.c_str(), width, height);
+    RBREW_LOG_INFO("photo", "%s %ls (%ux%u)", ok ? "saved" : "could not save", path.c_str(), width, height);
 #else
     (void)rgba;
     (void)width;

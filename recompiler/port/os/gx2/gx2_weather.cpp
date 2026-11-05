@@ -10,6 +10,7 @@
 // game's own fog, bloom, lens flare and colour grading apply to it and
 // transparent effects drawn later stay on top.
 #include "gx2_weather.h"
+#include "gx2_perf.h"
 #include "../../runtime/rebrewu_runtime.h"
 #include "gx2_weather_math.h"
 #include "gx2_weather_collision.h"
@@ -25,6 +26,7 @@
 #include <fstream>
 #include <future>
 #include <map>
+#include <unordered_map>
 
 namespace gx2weather {
 namespace {
@@ -91,7 +93,7 @@ constexpr float kAdaptReference = 0.07f;
 
 bool fail(const char* what) {
     s_failed = true;
-    std::fprintf(stderr, "[weather] %s unavailable; keeping the original sky\n", what);
+    RBREW_LOG_WARN("weather", "%s unavailable; keeping the original sky", what);
     return false;
 }
 
@@ -410,7 +412,7 @@ void fill(Params& p, const Frame& f, uint32_t w, uint32_t h) {
     p.post[1] = f.settings.film_look ? 0.015f : 0.f;
     p.post[2] = f.settings.film_look ? 2.f / float(std::max(w, 1u)) : 0.f; // subpixel fringes at every resolution
     p.post[3] = float(s_frame_index % 997);
-    // The wiggle moves the real camera now (gx2_env_light.cpp camera hook);
+    // The wiggle moves the real camera now (hooks/gx2_camera_hooks.cpp);
     // RBREW_IMAGE_SWAY=1: the old shift of the picture in cinema mode.
     static const bool image_sway = [] {
         const char* v = std::getenv("RBREW_IMAGE_SWAY");
@@ -635,7 +637,7 @@ VkPipeline sky_pipeline(const VkFormat* colors, VkFormat depth, bool stencil) {
     info.layout = s_layout;
     if (vkCreateGraphicsPipelines(gx2vk::device(), gx2vk::pipeline_cache(), 1, &info, nullptr, &entry->second) !=
         VK_SUCCESS)
-        std::fprintf(stderr, "[weather] Sky pipeline unavailable\n");
+        RBREW_LOG_ERROR("weather", "Sky pipeline unavailable");
     return entry->second;
 }
 
@@ -700,7 +702,7 @@ VkPipeline rain_pipeline(VkFormat format) {
     info.layout = s_layout;
     if (vkCreateGraphicsPipelines(gx2vk::device(), gx2vk::pipeline_cache(), 1, &info, nullptr, &entry->second) !=
         VK_SUCCESS)
-        std::fprintf(stderr, "[weather] Rain pipeline unavailable\n");
+        RBREW_LOG_ERROR("weather", "Rain pipeline unavailable");
     return entry->second;
 }
 
@@ -756,15 +758,15 @@ bool apply(gx2vk::Image& color, gx2vk::Image& depth, const Camera& camera, const
     if (s_cover_loading.valid() && s_cover_loading.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
         try {
             if (!set_rain_cover(s_cover_loading.get()))
-                std::fprintf(stderr, "[weather] Collision cover unavailable; rain stays off\n");
+                RBREW_LOG_WARN("weather", "Collision cover unavailable; rain stays off");
         } catch (const std::exception&) {
-            std::fprintf(stderr, "[weather] Could not load the collision cover; rain stays off\n");
+            RBREW_LOG_WARN("weather", "Could not load the collision cover; rain stays off");
         }
     }
     static bool format_logged = false;
     if (!format_logged && std::getenv("RBREW_WEATHER_LOG")) {
         format_logged = true;
-        std::fprintf(stderr, "[weather] final image format %d\n", int(color.desc.format));
+        RBREW_LOG_DEBUG("weather", "final image format %d", int(color.desc.format));
     }
     Frame f = s_frame;
     f.camera = camera;
@@ -969,6 +971,7 @@ bool apply(gx2vk::Image& color, gx2vk::Image& depth, const Camera& camera, const
                 vkCmdSetScissor(cb, 0, 1, &scissor);
                 const unsigned grid = unsigned(p.effects[2]);
                 vkCmdDraw(cb, 12, grid * grid, 0, 0);
+                gx2_count_gpu_draw();
                 vkCmdEndRendering(cb);
                 gx2vk::note_gpu_write(color);
             }
@@ -994,7 +997,7 @@ bool apply(gx2vk::Image& color, gx2vk::Image& depth, const Camera& camera, const
                     std::fwrite(raw.data(), 1, raw.size(), out);
                     std::fclose(out);
                 }
-                std::fprintf(stderr, "[weather] dumped %s %ux%u\n", name, image->desc.width, image->desc.height);
+                RBREW_LOG_INFO("weather", "dumped %s %ux%u", name, image->desc.width, image->desc.height);
             }
         }
     }
@@ -1009,9 +1012,19 @@ bool find_camera(uint8_t* memory, Camera& camera); // below
 // far (a big sphere or hemisphere). Distant buildings are not spherical
 // around their origin, so this does not catch them.
 bool is_dome(uint8_t* memory, uint32_t addr, uint32_t size, uint32_t stride) {
-    static std::map<uint64_t, bool> cache;
+    struct DomeMru {
+        uint64_t key = UINT64_MAX;
+        bool dome = false;
+    };
+    static std::array<DomeMru, 64> mru{};
+    static std::unordered_map<uint64_t, bool> cache;
     const uint64_t key = (uint64_t(addr) << 32) | size;
-    if (auto it = cache.find(key); it != cache.end()) return it->second;
+    auto& slot = mru[((addr >> 6) ^ size) & 63];
+    if (slot.key == key) return slot.dome;
+    if (auto it = cache.find(key); it != cache.end()) {
+        slot = {key, it->second};
+        return it->second;
+    }
     bool dome = false;
     const uint32_t n = size / stride;
     if (n >= 64 && rbrew_memory_accessible(memory, addr, size)) {
@@ -1048,33 +1061,35 @@ bool is_dome(uint8_t* memory, uint32_t addr, uint32_t size, uint32_t stride) {
         }
     }
     cache.emplace(key, dome);
-    if (dome) std::fprintf(stderr, "[weather] sky dome found (%u vertices, %u bytes)\n", n, size);
+    slot = {key, dome};
+    if (dome) RBREW_LOG_INFO("weather", "sky dome found (%u vertices, %u bytes)", n, size);
     return dome;
 }
 bool sky_draw(uint8_t* memory, uint32_t count) {
-    if (atmosphere_off() || !rbrew_settings::g_shader_quality.load(std::memory_order_relaxed)) return false;
-    const auto& s = gx2r::state();
-    const auto& a = s.attrib[0];
-    if (!a.guest_addr || !s.framebuffer.depth || s.framebuffer.depth->width < 640 ||
-        std::abs(double(s.framebuffer.depth->width) * 9.0 - double(s.framebuffer.depth->height) * 16.0) >
-            0.02 * double(s.framebuffer.depth->height) * 16.0)
+    if (count < 200 || atmosphere_off() || !rbrew_settings::g_shader_quality.load(std::memory_order_relaxed))
         return false;
     const bool plaza_scene = s_frame.sky.plaza;
-    if (plaza_scene && (!s.raster.depth_test || s.raster.depth_range[0] != 0 || s.raster.depth_range[1] != 1))
-        return false;
-    if (plaza_scene) { // the plaza's VR_Sky
-        if (count != 2280 || a.size != 7024 || a.stride != 16 || !rbrew_memory_accessible(memory, a.guest_addr, a.size))
-            return false;
-        return is_sky_mesh(mesh_hash(memory + a.guest_addr, a.size), a.size, a.stride, count) && prepare();
-    }
+    if (plaza_scene && count != 2280) return false;
     // Other scenes with the shaders (Octo Valley, tutorial): their own dome,
     // found by its shape. RBREW_SKY_ANYWHERE=0: keep the game's sky there.
     static const bool anywhere = [] {
         const char* v = std::getenv("RBREW_SKY_ANYWHERE");
         return !(v && v[0] == '0');
     }();
-    if (!anywhere || !s_frame.sky.active || s_frame.sky.post_only || count < 200 || a.stride < 12 || a.stride > 64)
+    if (!plaza_scene && (!anywhere || !s_frame.sky.active || s_frame.sky.post_only)) return false;
+    const auto& s = gx2r::state();
+    const auto& a = s.attrib[0];
+    if (!a.guest_addr || !s.framebuffer.depth || s.framebuffer.depth->width < 640 ||
+        std::abs(double(s.framebuffer.depth->width) * 9.0 - double(s.framebuffer.depth->height) * 16.0) >
+            0.02 * double(s.framebuffer.depth->height) * 16.0)
         return false;
+    if (plaza_scene) { // the plaza's VR_Sky
+        if (!s.raster.depth_test || s.raster.depth_range[0] != 0 || s.raster.depth_range[1] != 1 || a.size != 7024 ||
+            a.stride != 16 || !rbrew_memory_accessible(memory, a.guest_addr, a.size))
+            return false;
+        return is_sky_mesh(mesh_hash(memory + a.guest_addr, a.size), a.size, a.stride, count) && prepare();
+    }
+    if (a.stride < 12 || a.stride > 64) return false;
     return is_dome(memory, a.guest_addr, a.size, a.stride) && prepare();
 }
 
@@ -1118,6 +1133,7 @@ bool draw_sky(uint8_t* memory, VkCommandBuffer cb, const VkFormat* colors, VkFor
     vkCmdSetViewport(cb, 0, 1, &viewport);
     vkCmdSetScissor(cb, 0, 1, &scissor);
     vkCmdDraw(cb, 3, 1, 0, 0);
+    gx2_count_gpu_draw();
     gx2vk::note_gpu_write(target->image);
     s_hdr = &target->image;
     s_hdr_frame = gx2vk::present_count();
@@ -1153,11 +1169,12 @@ bool find_camera(uint8_t* memory, Camera& camera) {
         }
         if (std::getenv("RBREW_WEATHER_LOG") && now == logged && calls++ < 3) {
             const auto& iv = camera.inverse_view;
-            std::fprintf(stderr,
-                         "[weather-camera] frame %llu bank %d hook %d fov %.2f clip %.2f %.1f view %.3f %.3f %.3f pos "
-                         "%.1f %.1f %.1f target %u\n",
-                         (unsigned long long)now, bank, int(fresh), v.fovy_deg, camera.projection[2],
-                         camera.projection[3], -iv[2], -iv[6], -iv[10], iv[3], iv[7], iv[11], target ? target->id : 0);
+            RBREW_LOG_DEBUG("weather-camera",
+                            "frame %llu bank %d hook %d fov %.2f clip %.2f %.1f view %.3f %.3f %.3f pos "
+                            "%.1f %.1f %.1f target %u",
+                            (unsigned long long)now, bank, int(fresh), v.fovy_deg, camera.projection[2],
+                            camera.projection[3], -iv[2], -iv[6], -iv[10], iv[3], iv[7], iv[11],
+                            target ? target->id : 0);
         }
     };
     if (hook_camera && fresh && look_at_camera(v.pos, v.at, v.up, v.fovy_deg, v.near_z, v.far_z, aspect, camera)) {
@@ -1176,7 +1193,7 @@ bool find_camera(uint8_t* memory, Camera& camera) {
     }
     for (int i = 0; i < 16; ++i)
         if (i != last_bank && try_bank(i)) {
-            if (i != last_bank) std::fprintf(stderr, "[weather] camera block in vertex bank %d\n", i);
+            if (i != last_bank) RBREW_LOG_DEBUG("weather", "camera block in vertex bank %d", i);
             last_bank = i;
             log(i);
             return true;
@@ -1185,8 +1202,9 @@ bool find_camera(uint8_t* memory, Camera& camera) {
     return false;
 }
 bool hud_hidden() {
+    if (!s_hud_hidden) return false;
     const auto& s = gx2r::state();
-    return s_hud_hidden && s.framebuffer.colors[0] && s.framebuffer.colors[0]->id == s.scan_tv_source_id;
+    return s.framebuffer.colors[0] && s.framebuffer.colors[0]->id == s.scan_tv_source_id;
 }
 void observe_draw(uint8_t* memory, uint32_t primitive, uint32_t count) {
     // Cinema mode on its own: it only needs the game's frame structure (the
@@ -1194,6 +1212,8 @@ void observe_draw(uint8_t* memory, uint32_t primitive, uint32_t count) {
     // so it also works with the shaders off and outside the plaza. The HUD
     // is every later draw into the TV image (hud_hidden). RBREW_CINEMA_ANY=0
     // limits it to the plaza with shaders on, as before.
+    auto& s = gx2r::state();
+    const uint32_t now = uint32_t(gx2vk::present_count());
     {
         static const bool any_scene = [] {
             const char* v = std::getenv("RBREW_CINEMA_ANY");
@@ -1203,8 +1223,6 @@ void observe_draw(uint8_t* memory, uint32_t primitive, uint32_t count) {
         static unsigned depth_draws = 0;
         static bool cinema = false;
         static uint32_t found_at = 0; // last frame the scene composite was found
-        const auto& s = gx2r::state();
-        const uint32_t now = uint32_t(gx2vk::present_count());
         if (now != cine_frame) {
             cine_frame = now;
             depth_draws = 0;
@@ -1226,14 +1244,12 @@ void observe_draw(uint8_t* memory, uint32_t primitive, uint32_t count) {
         }
     }
     if (atmosphere_off() || !rbrew_settings::g_shader_quality.load(std::memory_order_relaxed)) return;
-    auto& s = gx2r::state();
     static uint32_t frame = UINT32_MAX;
     static gx2vk::Image* depth = nullptr;
     static unsigned world_draws = 0;
     static uint32_t scene_width = 16, scene_height = 9;
     static bool applied = false, allowed = false;
     static rbrew_settings::Values settings;
-    const uint32_t now = uint32_t(gx2vk::present_count());
     if (now != frame) {
         for (const auto& [key, color] : s.cb_map)
             if (color.id == s.scan_tv_source_id && color.image.desc.height) {
@@ -1261,7 +1277,7 @@ void observe_draw(uint8_t* memory, uint32_t primitive, uint32_t count) {
             try {
                 s_cover_loading = std::async(std::launch::async, load_cover);
             } catch (const std::exception&) {
-                std::fprintf(stderr, "[weather] Could not start loading the collision cover; rain stays off\n");
+                RBREW_LOG_WARN("weather", "Could not start loading the collision cover; rain stays off");
             }
         }
     }
@@ -1281,12 +1297,12 @@ void observe_draw(uint8_t* memory, uint32_t primitive, uint32_t count) {
     if (why) {
         if (now != why_frame) {
             if (why_frame != UINT32_MAX && why_frame % 300 == 0)
-                std::fprintf(stderr,
-                             "[weather-why] frame %u allowed %d applied %d draws %u depth %u bank %u (size %u) cam %u "
-                             "tv-tris %u rejected %u target %ux%u depth %ux%u\n",
-                             why_frame, int(allowed), int(applied), w_last.draws, w_last.depth_draws, w_last.bank_ok,
-                             w_last.bank_size, w_last.cam_ok, w_last.tv_tris, w_last.tri_rejected, w_last.tw, w_last.th,
-                             w_last.dw, w_last.dh);
+                RBREW_LOG_DEBUG("weather-why",
+                                "frame %u allowed %d applied %d draws %u depth %u bank %u (size %u) cam %u "
+                                "tv-tris %u rejected %u target %ux%u depth %ux%u",
+                                why_frame, int(allowed), int(applied), w_last.draws, w_last.depth_draws, w_last.bank_ok,
+                                w_last.bank_size, w_last.cam_ok, w_last.tv_tris, w_last.tri_rejected, w_last.tw,
+                                w_last.th, w_last.dw, w_last.dh);
             why_frame = now;
             w_now = {};
         }
@@ -1356,10 +1372,9 @@ void observe_draw(uint8_t* memory, uint32_t primitive, uint32_t count) {
         static uint32_t last = 0;
         if (now - last >= 120) {
             last = now;
-            std::fprintf(stderr,
-                         "[graphics] scene %d:%d applied %d color %ux%u depth %ux%u quality %d original_sky %d\n",
-                         s_frame.sky.scene_type, s_frame.sky.scene_id, int(applied), target->width, target->height,
-                         depth->desc.width, depth->desc.height, settings.shader_quality, int(s_frame.sky.post_only));
+            RBREW_LOG_INFO("graphics", "scene %d:%d applied %d color %ux%u depth %ux%u quality %d original_sky %d",
+                           s_frame.sky.scene_type, s_frame.sky.scene_id, int(applied), target->width, target->height,
+                           depth->desc.width, depth->desc.height, settings.shader_quality, int(s_frame.sky.post_only));
         }
     }
     // RBREW_CAM_SCAN=<frame> (diagnostics): guest addresses holding the
@@ -1423,7 +1438,7 @@ void observe_draw(uint8_t* memory, uint32_t primitive, uint32_t count) {
     }
     if (std::getenv("RBREW_WEATHER_LOG") && now % 120 == 0) {
         const auto& iv = s_frame.camera.inverse_view;
-        std::fprintf(stderr, "[weather] frame %u forward %.3f %.3f %.3f\n", now, -iv[2], -iv[6], -iv[10]);
+        RBREW_LOG_DEBUG("weather", "frame %u forward %.3f %.3f %.3f", now, -iv[2], -iv[6], -iv[10]);
     }
     // Cinema mode: the HUD draws that follow the final scene pass are skipped.
     if (applied && settings.cinema_mode) s_hud_hidden = true;

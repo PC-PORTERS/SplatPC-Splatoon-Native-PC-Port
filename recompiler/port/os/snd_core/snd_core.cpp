@@ -19,6 +19,7 @@
 
 #include "../os_common.h"
 #include "../gx2/gx2_perf.h"
+#include "../../runtime/splatoon_diagnostics.h"
 #include "../../runtime/port_settings.h"
 #include <stdio.h>
 #include <string.h>
@@ -443,6 +444,7 @@ static void ax_final_mix_callbacks(float* output) {
 // not depend on the arbitrary buffer size requested by the audio driver.
 void snd_core_render_frames(float* output, uint32_t frames) {
     Gx2PerfScope audio_scope(kPerfAudioRender);
+    SplatoonDiagnostics::SampleThreadCpu("audio");
     // Guest callbacks can acquire guest locks or wait for threads that call AX.
     // Hold the voice-state mutex only for mixing, never across guest execution.
     std::lock_guard render_lock(s_render_audio_mutex);
@@ -652,7 +654,7 @@ static void AXInit(CPUState* cpu) {
     }
 
     if (ma_device_init(&s_ma_context, &cfg, &s_ma_device) != MA_SUCCESS) {
-        RBREW_LOGF(stderr, "[snd_core] miniaudio: failed to open playback device\n");
+        RBREW_LOG_ERROR("snd_core", "miniaudio: failed to open playback device\n");
     } else {
         // Test-only playback silence: retain mixing, device callbacks and
         // timing so profiling is representative. No system volume changes.
@@ -661,12 +663,12 @@ static void AXInit(CPUState* cpu) {
                 RBREW_LOG_INFO("snd_core", "Test playback muted (mixer active)\n");
         }
         if (ma_device_start(&s_ma_device) != MA_SUCCESS) {
-            RBREW_LOGF(stderr, "[snd_core] miniaudio: failed to start playback device\n");
+            RBREW_LOG_ERROR("snd_core", "miniaudio: failed to start playback device\n");
             ma_device_uninit(&s_ma_device);
         } else {
-            s_device_open=true;
-            RBREW_LOGF(stderr, "[snd_core] AXInit: miniaudio stereo 32000 Hz, 96-sample AX frames\n");
-            RBREW_LOGF(stderr,"[snd_core] Playback device: %s\n",s_ma_device.playback.name);
+            s_device_open = true;
+            RBREW_LOG_INFO("snd_core", "AXInit: miniaudio stereo 32000 Hz, 96-sample AX frames\n");
+            RBREW_LOG_INFO("snd_core", "Playback device: %s\n", s_ma_device.playback.name);
         }
     }
 #else

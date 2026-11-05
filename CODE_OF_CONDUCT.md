@@ -35,7 +35,7 @@ To protect the project, maintainers, and contributors, strict adherence to intel
 - **NO ROM/DUMP DISTRIBUTION:** This repository does not provide, host, or assist in obtaining illegal game copies, keys, or ROMs. Do not request or share links to copyrighted ROMs or game dumps.
 
 ## 7. Contribution Guidelines
-- **Code Style:** Ensure all code contributions strictly adhere to the project's coding standards and naming conventions (e.g., using **PascalCase** for classes, methods, and public members).
+- **Code Style:** Ensure all code contributions strictly adhere to the project's coding standards and naming conventions (e.g., follow the rules specified by .clang-format).
 - **Code Comments:** All code comments, documentation strings, commit messages, and technical explanations must be written **strictly in English**, regardless of your native language.
 - **Quality & Integrity:** Test your changes locally before submitting a pull request to verify that the code compiles clean and does not introduce regressions or security hazards.
 

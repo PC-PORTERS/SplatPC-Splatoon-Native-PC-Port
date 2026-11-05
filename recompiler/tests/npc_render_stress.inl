@@ -7,6 +7,7 @@
 // character, the colour pass draws material by material (characters
 // interleave). Every shape owns a 16x16 tile whose colour encodes the exact
 // palette, shape, material and scene words the GPU read in the final frame.
+#include "rebrewu/logger.hpp"
 void gx2_render_vk_test_npc(unsigned characters, bool push) {
     using namespace render_stress;
     using Clock = std::chrono::steady_clock;
@@ -337,9 +338,8 @@ void gx2_render_vk_test_npc(unsigned characters, bool push) {
                         const auto expected = expected_rgb(n, s, frames - 1);
                         for (unsigned c = 0; c < 3; ++c) {
                             if (pixels[px * 4 + c] != expected[c])
-                                std::fprintf(stderr,
-                                             "npc pixel character=%u shape=%u component=%u actual=%u expected=%u\n", n,
-                                             s, c, pixels[px * 4 + c], expected[c]);
+                                RBREW_LOG_WARN("npc", "pixel character=%u shape=%u component=%u actual=%u expected=%u",
+                                               n, s, c, pixels[px * 4 + c], expected[c]);
                             require(pixels[px * 4 + c] == expected[c], "npc skinned uniform output mismatch");
                             checksum = checksum * 1099511628211ull + pixels[px * 4 + c];
                         }
