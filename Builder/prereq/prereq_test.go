@@ -126,11 +126,15 @@ func TestPythonInfoCommand(t *testing.T) {
 	}
 
 	cmd := py.Command(context.Background(), "-c", "print('hello')")
-	if cmd.Path != "py" {
-		t.Errorf("Expected executable 'py', got %q", cmd.Path)
+	if cmd.Args[0] != "py" {
+		t.Errorf("Expected Args[0] 'py', got %q", cmd.Args[0])
 	}
-	if len(cmd.Args) < 3 || cmd.Args[1] != "-3" || cmd.Args[2] != "-c" {
-		t.Errorf("Expected args [-3, -c, ...], got %v", cmd.Args)
+	base := filepath.Base(cmd.Path)
+	if base != "py" && base != "py.exe" {
+		t.Errorf("Expected base executable 'py' or 'py.exe', got %q", base)
+	}
+	if len(cmd.Args) < 4 || cmd.Args[1] != "-3" || cmd.Args[2] != "-c" || cmd.Args[3] != "print('hello')" {
+		t.Errorf("Expected args ['py', '-3', '-c', 'print(\\'hello\\')'], got %v", cmd.Args)
 	}
 }
 
