@@ -49,7 +49,7 @@ def bundle_assets(repo_root: str, output_zip: str):
                         count += 1
                         total_uncompressed += os.path.getsize(file_path)
 
-        for single_file in ["setup.sh", "build.sh", "CMakeLists.txt"]:
+        for single_file in ["setup.sh", "build.sh", "CMakeLists.txt", "Setup.bat"]:
             file_path = os.path.join(repo_root, single_file)
             if os.path.exists(file_path):
                 rel_path = single_file
