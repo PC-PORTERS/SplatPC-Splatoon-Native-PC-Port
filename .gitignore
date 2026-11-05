@@ -41,6 +41,7 @@ save/
 # Generated from Manifest/ at build time by recompiler/tools/plt_resolver.py.
 # The manifest is the source of truth; these files are outputs and must never
 # be committed. A clean checkout regenerates them when the port is configured.
+/recompiler/port/gambit_plt_stubs.cpp
 /recompiler/port/os/gambit_plt_auto.cpp
 /recompiler/port/os/coreinit/coreinit_addrs.h
 /recompiler/port/os/gx2/gx2_addrs.h
@@ -85,3 +86,4 @@ __pycache__/
 !/scripts/bundle_builder_assets.py
 !/scripts/tests/
 !/scripts/tests/**
+scripts/tests/**/__pycache__/
