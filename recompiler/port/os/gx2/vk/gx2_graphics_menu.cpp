@@ -329,6 +329,9 @@ Page build_main_rows(rs::Values& v, bool& dirty) {
     }
     ImGui::EndDisabled();
     dirty |= check("G-Sync / FreeSync", v.gsync, "For G-Sync/FreeSync monitors: frames are shown without waiting.");
+    dirty |= check("Separate GamePad window", v.gamepad_window,
+                   "The GamePad screen in its own window (move it to a second screen). Tab: the mouse aims or "
+                   "touches the GamePad window.");
     Page open = Page::None;
     if (kShaderPages) {
         if (button("Graphics (experimental)", "New shaders: clouds, sun rays, colours, picture quality."))

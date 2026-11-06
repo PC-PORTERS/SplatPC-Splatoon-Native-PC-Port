@@ -70,6 +70,7 @@ void gx2_render_copy_to_scan(uint32_t, uint32_t, uint8_t*, const uint8_t*) {}
 void gx2_render_set_scan_format(bool, uint32_t) {}
 void gx2_render_request_photo() {}
 void gx2_render_present(void*, bool) {}
+void gx2_render_pad_window(Gx2PadSink) {}
 void gx2_render_save_fetch_shader(uint32_t, uint32_t, uint32_t, uint8_t*) {}
 void gx2_render_set_active_fetch_shader(uint32_t) {}
 uint32_t gx2_render_active_fetch_attribute_count() {

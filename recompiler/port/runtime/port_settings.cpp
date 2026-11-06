@@ -106,6 +106,7 @@ void publish(const Values& v) {
     g_shader_quality.store(v.shader_quality, std::memory_order_relaxed);
     g_mouse_direct.store(v.mouse_direct, std::memory_order_relaxed);
     g_gsync.store(v.gsync, std::memory_order_relaxed);
+    g_gamepad_window.store(v.gamepad_window, std::memory_order_relaxed);
     g_gyro.store(v.gyro, std::memory_order_relaxed);
     g_gyro_invert_pitch.store(v.gyro_invert_pitch, std::memory_order_relaxed);
     g_gyro_scale.store(v.gyro_sensitivity / 100.0f, std::memory_order_relaxed);
@@ -223,7 +224,8 @@ std::string foreign_lines() {
         if (line.empty() || line[0] == '#' || eq == std::string::npos) continue;
         const std::string key = line.substr(0, eq);
         static const char* const kOwned[] = {
-            "resolution", "plaza_60fps", "frame_rate", "gsync", "fullscreen", "fps_overlay", "simple_overlay",
+            "resolution", "plaza_60fps", "frame_rate", "gsync", "fullscreen", "gamepad_window", "fps_overlay",
+            "simple_overlay",
             "gyro", "gyro_sensitivity", "gyro_invert_pitch", "mouse_sensitivity", "volume", "shader_quality",
             "weather", "time_of_day", "day_cycle", "day_length", "clouds", "sun_rays", "bloom", "antialiasing",
             "motion_blur", "camera_fov", "focus_blur", "vignette", "white_balance", "sway_strength", "cloud_speed",
@@ -249,6 +251,7 @@ void write(const Values& v) {
         << "frame_rate=" << v.frame_rate << "\n"
         << "gsync=" << v.gsync << "\n"
         << "fullscreen=" << v.fullscreen << "\n"
+        << "gamepad_window=" << v.gamepad_window << "\n"
         << "fps_overlay=" << v.fps_overlay << "\n"
         << "simple_overlay=" << v.simple_overlay << "\n"
         << "gyro=" << v.gyro << "\n"
@@ -327,6 +330,8 @@ void load() {
             v.gsync = number != 0;
         else if (key == "fullscreen")
             v.fullscreen = number != 0;
+        else if (key == "gamepad_window")
+            v.gamepad_window = number != 0;
         else if (key == "fps_overlay")
             v.fps_overlay = number != 0;
         else if (key == "simple_overlay")

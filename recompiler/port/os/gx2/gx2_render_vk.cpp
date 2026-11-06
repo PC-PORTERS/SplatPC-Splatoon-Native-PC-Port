@@ -3051,6 +3051,69 @@ void gx2_render_interp_present_mid() {
         gx2vk::present(s_interp_mid, s_interp_mid_w, s_interp_mid_h);
 }
 
+// GamePad window: a GPU copy of the GamePad picture into one of three host buffers per frame;
+// the newest one the GPU has finished goes to the sink (gx2_render.h).
+namespace {
+Gx2PadSink s_pad_sink = nullptr;
+struct PadReadback {
+    gx2vk::Buffer buffer;
+    uint64_t serial = 0; // recording serial of the copy, 0 = free
+    uint32_t width = 0, height = 0;
+};
+std::array<PadReadback, 3> s_pad_readbacks;
+unsigned s_pad_next = 0;
+
+void pad_deliver() {
+    const uint64_t done = gx2vk::known_completed_serial();
+    PadReadback* newest = nullptr;
+    for (auto& r : s_pad_readbacks)
+        if (r.serial && r.serial <= done && (!newest || r.serial > newest->serial)) newest = &r;
+    if (!newest) return;
+    if (s_pad_sink && gx2vk::invalidate_mapped(newest->buffer.memory))
+        s_pad_sink(newest->buffer.memory.mapped, newest->width, newest->height);
+    const uint64_t delivered = newest->serial;
+    for (auto& r : s_pad_readbacks)
+        if (r.serial && r.serial <= delivered) r.serial = 0;
+}
+void pad_capture(gx2vk::Image& source, uint32_t width, uint32_t height) {
+    auto& r = s_pad_readbacks[s_pad_next];
+    if (r.serial || !source.image || !width || !height) return; // GPU three frames behind: skip one
+    const VkDeviceSize bytes = VkDeviceSize(width) * height * 4;
+    if (!r.buffer.buffer || r.buffer.size < bytes) {
+        gx2vk::destroy_buffer(r.buffer);
+        r.buffer = gx2vk::create_buffer(bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, gx2vk::MemoryUse::Readback);
+        if (!r.buffer.buffer || !r.buffer.memory.mapped) return;
+    }
+    VkCommandBuffer cb = gx2vk::cmd();
+    gx2vk::barrier_if_dirty();
+    VkBufferImageCopy region{};
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.imageExtent = {width, height, 1};
+    vkCmdCopyImageToBuffer(cb, source.image, VK_IMAGE_LAYOUT_GENERAL, r.buffer.buffer, 1, &region);
+    VkMemoryBarrier2 host{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+    host.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+    host.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    host.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+    host.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+    VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dependency.memoryBarrierCount = 1;
+    dependency.pMemoryBarriers = &host;
+    vkCmdPipelineBarrier2(cb, &dependency);
+    r.serial = gx2vk::recording_serial();
+    r.width = width;
+    r.height = height;
+    s_pad_next = (s_pad_next + 1) % s_pad_readbacks.size();
+}
+} // namespace
+void gx2_render_pad_window(Gx2PadSink sink) {
+    s_pad_sink = sink;
+    if (!sink)
+        for (auto& r : s_pad_readbacks) {
+            gx2vk::destroy_buffer(r.buffer); // deferred until the GPU is done with it
+            r = {};
+        }
+}
+
 void gx2_render_present(void* sdl_window, bool gamepad_mode) {
     gx2interp::present_begin();
     TXDIAG(txdiag::present(gx2vk::recording_serial(), gx2vk::known_completed_serial()); txdiag::snapshot());
@@ -3118,7 +3181,20 @@ void gx2_render_present(void* sdl_window, bool gamepad_mode) {
         dump_frame(*S.scan_image[1], S.scan_w[1], S.scan_h[1], "gamepad");
     // 120 FPS (gx2_frame_interp.h): this frame is held and presented after
     // the in-between frame the render thread draws next.
-    if (gx2vk::has_surface() && gx2interp::frame_complete(index)) return;
+    // 120 FPS (gx2_frame_interp.h): this frame is held and presented after
+    // the in-between frame the render thread draws next.
+    const bool held = gx2vk::has_surface() && gx2interp::frame_complete(index);
+    // GamePad window: the GamePad picture, every frame, also when the main one is held.
+    if (s_pad_sink) {
+        pad_deliver();
+        // Raw 8-bit RGBA bytes (an sRGB scan buffer copies unconverted, as the main present shows it);
+        // other formats stay black. A held 120 FPS frame is skipped.
+        gx2vk::Image* pad = S.scan_image[1];
+        if (!held && pad && pad->image &&
+            (pad->desc.format == VK_FORMAT_R8G8B8A8_UNORM || pad->desc.format == VK_FORMAT_R8G8B8A8_SRGB))
+            pad_capture(*pad, S.scan_w[1], S.scan_h[1]);
+    }
+    if (held) return;
     if (gx2vk::has_surface()) {
         static gx2vk::Image none;
 #ifndef RBREW_DISABLE_LOGGING
