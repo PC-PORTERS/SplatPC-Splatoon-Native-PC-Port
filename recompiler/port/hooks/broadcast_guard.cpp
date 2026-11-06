@@ -5,7 +5,7 @@
 // a list of handlers called through a pointer-to-member). A memory snapshot showed sane
 // lists at that moment, so the walk does not end because the lists change while it runs.
 //
-// The recompiler wraps 0285C3D0 (profiles/agmp-v288.hooks) and this hook runs
+// The recompiler wraps 0285C3D0 (hook list of revision 288) and this hook runs
 // the same walk natively, step for step with the guest code:
 //   0285BD54(obj, -1); group = [key]; head H = obj+0x34+16*group, node offset [H+0xC];
 //   for each receiver e: [obj+0x218] = 0; its handler list H2 = [[[obj+0x30]+4*[e+8]]+8];
@@ -15,12 +15,13 @@
 // It adds a step limit: past it the walk stops, the details go to stderr once
 // per call site, and the game goes on (one message not delivered to everyone).
 // RBREW_BROADCAST_GUARD=0 runs the original code instead.
-#include "../../runtime/rebrewu_runtime.h"
+#include "../runtime/rebrewu_runtime.h"
 #include "rebrewu/logger.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
+#if RBREW_GAME_REVISION == 288
 namespace {
 constexpr uint32_t kBroadcast = 0x0285C3D0u;
 constexpr uint32_t kSetCurrent = 0x0285BD54u;   // called with (obj, -1) before and after the walk
@@ -100,12 +101,13 @@ done:
     cpu->r[1] = sp;
     cpu->lr = lr;
 }
-}
+} // namespace
 
 void broadcast_guard_install() {
-#if RBREW_GAME_REVISION == 288
     if (const char* v = std::getenv("RBREW_BROADCAST_GUARD"); v && std::strcmp(v, "0") == 0) return;
     if (!rbrew_set_guest_hook(kBroadcast, broadcast))
         RBREW_LOG_ERROR("broadcast", "could not register the hook\n");
-#endif
 }
+#else
+void broadcast_guard_install() {}
+#endif

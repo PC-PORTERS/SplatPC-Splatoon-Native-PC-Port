@@ -1,5 +1,6 @@
 add_library(rebrewu_ppc STATIC
     decoder/ppc_decode.cpp
+    assembler/ppc_asm.cpp
     semantics/ppc_semantics.cpp
 )
 

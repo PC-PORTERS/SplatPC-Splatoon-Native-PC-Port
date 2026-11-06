@@ -8,6 +8,7 @@
 //   gambit_guest_bench breakdown|instructions  per-kernel / per-form cost
 #include "runtime/rebrewu_runtime.h"
 #include "runtime/rebrewu_memory_observer.h"
+#include "rebrewu/logger.hpp"
 #include <algorithm>
 #include <atomic>
 #include <bit>
@@ -385,7 +386,7 @@ template <uint32_t word> void compare_paired() {
                           !std::memcmp(fast.r, reference.r, sizeof fast.r) &&
                           !std::memcmp(fast.cr, reference.cr, sizeof fast.cr) && fast.fpscr == reference.fpscr &&
                           memory == expected;
-        if (!same) std::fprintf(stderr, "paired mismatch word=%08X case=%u\n", word, n);
+        if (!same) RBREW_LOG_ERROR("guest", "paired mismatch word=%08X case=%u", word, n);
         require(same, "constant paired instruction differs from interpreter");
     }
 }
@@ -455,7 +456,7 @@ int main(int argc, char** argv) {
         }
         throw std::runtime_error("unknown mode");
     } catch (const std::exception& e) {
-        std::fprintf(stderr, "FAILED: %s\n", e.what());
+        RBREW_LOG_ERROR("test", "FAILED: %s", e.what());
         return 1;
     }
 }

@@ -6,6 +6,7 @@
 #include "os/gx2/gx2_detile.h"
 #include "os/gx2/vk/gx2_render_vk_state.h"
 #include "runtime/rebrewu_runtime.h"
+#include "rebrewu/logger.hpp"
 #include "Cafe/HW/Latte/LatteAddrLib/LatteAddrLib.h"
 #include <algorithm>
 #include <chrono>
@@ -360,7 +361,7 @@ int main(int argc, char** argv) {
             throw std::runtime_error("unknown synthetic workload");
         return 0;
     } catch (const std::exception& e) {
-        std::fprintf(stderr, "FAIL: %s\n", e.what());
+        RBREW_LOG_ERROR("test", "FAIL: %s", e.what());
         return 1;
     }
 }

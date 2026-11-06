@@ -47,13 +47,13 @@ struct CliOptions {
     bool verbose{false};
     bool color{true};
     bool no_codegen{false};
-    bool emit_ppc_image{false}; // relocated executable bytes for opt-in fallback
     bool discover_referenced_entries{false};
-    bool emit_coverage{false};  // RBREW_COVERAGE_* probes in generated code
-    std::string hints_file; // diagnostic: extra forced entry addresses (hex per line)
-    std::string analyzer_entries_file; // external analyzer starts, corroboration only
+    bool emit_ppc_image{false};        // relocated executable bytes for opt-in fallback
+    bool emit_coverage{false};         // RBREW_COVERAGE_* probes in generated code
+    std::string hints_file;            // diagnostic: extra forced entry addresses (hex per line)
+    std::string analyzer_entries_file; // extra analyzer starts; merged with [entries] corroborate
     std::optional<uint32_t> functions_per_file;
-    std::string hooks_file; // guest function entries given an opt-in host hook wrapper (hex per line)
+    std::string hooks_file; // extra host-hook entries; merged with [hooks]
 
     // Manifest: per-image guest data (identity, PLT map, entry hints). When no
     // path is given, every Manifest/*.manifest is a candidate and the RPX

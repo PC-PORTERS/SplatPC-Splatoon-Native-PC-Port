@@ -63,6 +63,10 @@ set(RBREW_PLT_OUTPUTS
     os/snd_core/snd_core_addrs.h
     os/stubs/stubs_addrs.h
     os/vpad/vpad_addrs.h)
+# runtime/game_revision.h is not generated here: it is tracked and selects the
+# revision at compile time (RBREW_GAME_REVISION), so the base-game and the 288
+# build trees can share the source tree (regenerate it with
+# recompiler/tools/generate_revision_header.py only when the 288 addresses change).
 
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(NOT RBREW_MANIFEST_PATH AND Python3_Interpreter_FOUND AND EXISTS "${RBREW_PLT_RESOLVER}")
@@ -164,6 +168,7 @@ add_library(gambit_runtime STATIC
     os/coreinit/coreinit_user_config.cpp
     os/erreula/erreula.cpp
     os/nn_act/nn_act.cpp
+    os/nn_nfp/nn_nfp.cpp
     os/sysapp/sysapp_title.cpp
     os/coreinit/coreinit_fs.cpp
     os/gx2/gx2_context.cpp
@@ -186,9 +191,10 @@ add_library(gambit_runtime STATIC
     os/stubs/acp_network_time.cpp
     os/stubs/fp_lab.cpp
     os/nsysnet/nsysnet.cpp
-    os/game/player_anim.cpp
-    os/game/branch_tables.cpp
-    os/game/broadcast_guard.cpp
+    hooks/gx2_camera_hooks.cpp
+    hooks/player_anim.cpp
+    hooks/branch_tables.cpp
+    hooks/broadcast_guard.cpp
     loader/gambit_loader.cpp
     loader/native_console_profile.cpp
     runtime/splatoon_diagnostics.cpp
@@ -412,6 +418,10 @@ if(RBREW_BUILD_TESTS)
     target_link_libraries(gambit_texture_pack_tests PRIVATE gambit_runtime)
     target_include_directories(gambit_texture_pack_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME native_texture_pack COMMAND gambit_texture_pack_tests)
+    add_executable(gambit_nfp_tests ../tests/test_nn_nfp.cpp)
+    target_link_libraries(gambit_nfp_tests PRIVATE gambit_runtime)
+    target_include_directories(gambit_nfp_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME native_nn_nfp COMMAND gambit_nfp_tests)
     # Local developer tests/tools below are optional (not in the public tree).
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../tests/test_frame_pacing.cpp")
         add_executable(gambit_frame_pacing_tests ../tests/test_frame_pacing.cpp)

@@ -8,9 +8,11 @@
 // are listed there) and registered by gambit_tables_register(); this file points each table slot at
 // the block it branches to. Address metadata only. Before the first generation that includes the
 // hints, gambit_tables_register falls back to a no-op and the slots stay unregistered, as before.
-#include "../../runtime/rebrewu_runtime.h"
+// The same tables are also listed in the `[branch_tables]` section of Manifest/Gambit_v288.manifest;
+// the values below are kept here so this file does not depend on the generated header.
+#include "../runtime/rebrewu_runtime.h"
 #include "rebrewu/logger.hpp"
-#include "../vpad/vpad_addrs.h"
+#include "../os/vpad/vpad_addrs.h"
 #include <cstdio>
 #include <vector>
 
@@ -20,9 +22,14 @@
 static_assert(ADDR_VPADRead == rbrew_game_address(0x02D08048u),
               "PLT headers were generated for another game revision: reconfigure this build tree");
 
+#if defined(_MSC_VER)
 extern "C" void gambit_tables_register(CPUState* cpu);
 extern "C" void gambit_tables_register_none(CPUState*) {}
 #pragma comment(linker, "/alternatename:gambit_tables_register=gambit_tables_register_none")
+#else
+// GCC/Clang: a weak no-op that the generated definition overrides.
+extern "C" __attribute__((weak)) void gambit_tables_register(CPUState*) {}
+#endif
 
 namespace {
 struct BranchTable { uint32_t base; unsigned count; std::vector<uint32_t> targets; };

@@ -5,6 +5,7 @@
 #include "os/gx2/vk/gx2_vk_shader.h"
 #include "os/gx2/vk/gx2_cache_io.h"
 #include "Cafe/HW/Latte/LatteAddrLib/LatteAddrLib.h"
+#include "rebrewu/logger.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -324,7 +325,7 @@ int main(int argc, char** argv) {
         return 0;
     } catch (const std::exception& e) {
         allocation_probe::enabled = false;
-        std::fprintf(stderr, "FAIL: %s\n", e.what());
+        RBREW_LOG_ERROR("test", "FAIL: %s", e.what());
         return 1;
     }
 }

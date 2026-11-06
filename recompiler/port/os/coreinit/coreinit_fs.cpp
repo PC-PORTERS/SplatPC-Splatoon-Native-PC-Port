@@ -91,8 +91,8 @@ static const char* remap_path(const char* guest, char* out, size_t outsz) {
         if (system_root && *system_root) root_env = "RBREW_SYSTEM_MLC_DIR";
     }
     const char* configured = std::getenv(root_env);
-    auto root=std::filesystem::path(configured && *configured ? configured : root_default).lexically_normal();
-    if(root.has_relative_path() && root.filename().empty())root=root.parent_path();
+    auto root = std::filesystem::path(configured && *configured ? configured : root_default).lexically_normal();
+    if (root.has_relative_path() && root.filename().empty()) root = root.parent_path();
     std::string path = (root / relative).string();
     // Content overlay: <root>/../mods/content/<relative> replaces a game file
     // without touching it (tools/mods). Checked per lookup, not cached at startup (B-09), so a
@@ -100,8 +100,8 @@ static const char* remap_path(const char* guest, char* out, size_t outsz) {
     if (std::strcmp(root_env, "RBREW_CONTENT_DIR") == 0) {
         std::error_code ec;
         const char* dir = std::getenv("RBREW_CONTENT_DIR");
-        auto content=std::filesystem::path(dir && *dir ? dir : "./content").lexically_normal();
-        if(content.has_relative_path() && content.filename().empty())content=content.parent_path();
+        auto content = std::filesystem::path(dir && *dir ? dir : "./content").lexically_normal();
+        if (content.has_relative_path() && content.filename().empty()) content = content.parent_path();
         if (std::filesystem::is_directory(content.parent_path() / "mods" / "content", ec)) {
             const auto candidate = root.parent_path() / "mods" / "content" / relative;
             if (std::filesystem::is_regular_file(candidate, ec)) path = candidate.string();
@@ -600,6 +600,28 @@ void coreinit_save_make_dir(CPUState* cpu) {
     }
     std::error_code error;
     std::filesystem::create_directories(path, error);
+    RET = error ? uint32_t(FS_STATUS_ACCESS_ERROR) : uint32_t(FS_STATUS_OK);
+}
+
+// SAVERemove(client, block, slot, path, errorMask): a file or an empty
+// directory. Gambit FUN_028129EC tests status == 0 and passes mask 0xA8A, so
+// a missing entry comes back as NOT_FOUND. The blank stub returned the client
+// pointer, which the game took as a failed removal after the amiibo save.
+void coreinit_save_remove(CPUState* cpu) {
+    std::lock_guard lock(s_fs_mutex);
+    std::filesystem::path path;
+    if (!save_path(cpu, ARG2, ARG3, path)) {
+        RET = uint32_t(FS_STATUS_PERMISSION_ERROR);
+        return;
+    }
+    std::error_code error;
+    if (!std::filesystem::exists(path, error)) {
+        RET = uint32_t(error ? FS_STATUS_ACCESS_ERROR : FS_STATUS_NOT_FOUND);
+        return;
+    }
+    std::filesystem::remove(path, error);
+    // The removal is real since amiibo support: keep a trace of what the game deleted from save/.
+    RBREW_LOG_INFO("fs", "SAVERemove %s: %s\n", path.string().c_str(), error ? error.message().c_str() : "removed");
     RET = error ? uint32_t(FS_STATUS_ACCESS_ERROR) : uint32_t(FS_STATUS_OK);
 }
 

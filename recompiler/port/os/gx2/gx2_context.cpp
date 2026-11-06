@@ -28,10 +28,11 @@
 #include "../../runtime/splatoon_diagnostics.h"
 #include "../../runtime/benchmark_input.h"
 #if RBREW_GAME_REVISION == 288
-#include "../game/plaza_frame_rate.h"
+#include "../../hooks/plaza_frame_rate.h"
 #endif
 #include "../../runtime/native_control_defaults.h"
 #include "../../runtime/discord_rpc.h"
+#include "../nn_nfp/nn_nfp.h"
 #include <cstdlib>
 #include <string>
 #include <stdio.h>
@@ -839,10 +840,13 @@ void plaza_mode_sync(CPUState* cpu) {
 }
 void install_plaza_60fps(CPUState* cpu) {
 #if RBREW_GAME_REVISION == 288
-    (void)cpu;   // revision 288 registers its own callsite (plaza_frame_rate_register)
+    (void)cpu; // revision 288 registers its own callsite (plaza_frame_rate_register)
     return;
 #else
-    static const bool enabled = [] { const char* v = std::getenv("RBREW_PLAZA_60FPS"); return !(v && v[0] == '0'); }();
+    static const bool enabled = [] {
+        const char* v = std::getenv("RBREW_PLAZA_60FPS");
+        return !(v && v[0] == '0');
+    }();
     static bool installed = false;
     constexpr uint32_t kSync = 0x02A092A8u;
     if (!enabled || installed || !cpu || (kSync >> 2) >= cpu->dispatch_size || !cpu->dispatch_table[kSync >> 2]) return;
@@ -858,7 +862,10 @@ void install_plaza_60fps(CPUState* cpu) {
 // Called every frame — pump SDL events, blit game FBO to window, swap buffers.
 static void GX2SwapScanBuffers(CPUState* cpu) {
 #if RBREW_GAME_REVISION == 288
-    static const bool regulator_ready = [] { plaza_frame_rate_register(); return true; }();
+    static const bool regulator_ready = [] {
+        plaza_frame_rate_register();
+        return true;
+    }();
     (void)regulator_ready;
     static float s_prev_guest_work_ms = 0.0f;
     uint32_t timing_flags = 0;
@@ -1105,6 +1112,7 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
         bool fullscreen = false;
         if (gx2_imgui::consume_fullscreen_request(fullscreen)) set_window_fullscreen(fullscreen);
         if (gx2_imgui::consume_quit_request()) gx2_close_requested();
+        if (rbrew_nfp::consume_search_started()) gx2_imgui::open_amiibo_picker();
         if (gx2_imgui::consume_menu_changed()) sync_overlay_mouse_mode();
         gx2_imgui::note_fullscreen(window_fullscreen());
         // The overlay window's close button flips visibility on the render

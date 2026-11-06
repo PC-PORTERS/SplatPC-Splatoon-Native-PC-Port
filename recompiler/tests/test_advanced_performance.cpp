@@ -5,6 +5,7 @@
 #include "os/gx2/vk/gx2_vk.h"
 #include "os/gx2/vk/gx2_last_lookup.h"
 #include "os/gx2/gx2_render.h"
+#include "rebrewu/logger.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -471,7 +472,7 @@ int main(int argc, char** argv) {
             throw std::runtime_error("unknown test");
         return 0;
     } catch (const std::exception& error) {
-        std::fprintf(stderr, "FAIL: %s\n", error.what());
+        RBREW_LOG_ERROR("test", "FAIL: %s", error.what());
         return 1;
     }
 }

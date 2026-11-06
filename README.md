@@ -21,6 +21,8 @@ Follow **[INSTALL.md](INSTALL.md)** (en francais : [INSTALL-FR.md](INSTALL-FR.md
 
 The launcher checks for updates when it starts and rebuilds only what changed.
 
+Supported game versions: [VersionDb.md](VersionDb.md) (base game v16 and update 288, EUR). Details of the 288 update: [docs/update-288.md](docs/update-288.md).
+
 ## Playing
 
 | Input | Action |
@@ -101,6 +103,8 @@ Suis **[INSTALL-FR.md](INSTALL-FR.md)** (English: [INSTALL.md](INSTALL.md)). En 
 3. Lance le jeu avec le raccourci **Splatoon PC Port** : choisis un pseudo et une langue, puis **JOUER**.
 
 Le lanceur cherche les mises à jour au démarrage et ne reconstruit que ce qui a changé.
+
+Versions du jeu prises en charge : [VersionDb.md](VersionDb.md) (jeu de base v16 et mise à jour 288, EUR). Détails de la mise à jour 288 : [docs/update-288.md](docs/update-288.md).
 
 ## Jouer
 
