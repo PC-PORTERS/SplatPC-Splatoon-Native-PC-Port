@@ -40,6 +40,56 @@ $Sdl=Join-Path $DependencyRoot 'build\deps\sdl2-vulkan\cmake'
 $Glslang=Join-Path $DependencyRoot 'build\deps\glslang-vulkan\lib\cmake\glslang'
 foreach($Required in @($Toolchain,$Sdl,$Glslang)){if(-not(Test-Path -LiteralPath $Required)){throw "Missing prepared dependency: $Required"}}
 $env:VCPKG_DOWNLOADS=Join-Path $env:TEMP 'SplatoonPortDownloads'
+# A ZIP update (Update-Apply.ps1) copies the files with the archive's date, older than the objects
+# already built: ninja and MSBuild would then see nothing to rebuild. Each source file's hash is
+# kept in build\source-hashes.txt; a file whose content changed gets the current date, so only it
+# is recompiled. Without that list (first build, or a git checkout) nothing is touched, except an
+# already built ZIP install: it asks GitHub which files changed since the first online version and
+# touches those (a few runtime files; touching every header would recompile the whole translated
+# game, about 20 minutes). Without an answer from GitHub, everything is touched once.
+function Get-ChangedSinceFirstRelease {
+ try{
+  $Repository=''
+  $Ini=Join-Path $Root 'update.ini'
+  if(Test-Path -LiteralPath $Ini){foreach($Line in Get-Content -LiteralPath $Ini){if($Line -match '^\s*repository\s*=\s*([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)\s*$'){$Repository=$matches[1]}}}
+  $Version=(Get-Content -LiteralPath (Join-Path $Root 'VERSION') -Raw).Trim()
+  if(-not $Repository -or $Version -notmatch '^\d+\.\d+(\.\d+)?$'){return $null}
+  [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12
+  # Only file dates depend on this answer, never what is built or run.
+  $Compare=Invoke-RestMethod -Uri "https://api.github.com/repos/$Repository/compare/online-v0.1.0...online-v$Version" -Headers @{'User-Agent'='splatoon-pc-launcher'} -TimeoutSec 10
+  if($Compare.files.Count -ge 300){return $null}   # the API stops at 300 files: list incomplete
+  return @($Compare.files | ForEach-Object { ([string]$_.filename) -replace '/','\' })
+ }catch{return $null}
+}
+function Sync-SourceDates {
+ $List=Join-Path $Work 'source-hashes.txt'
+ $Known=@{}
+ if(Test-Path -LiteralPath $List -PathType Leaf){
+  foreach($Line in Get-Content -LiteralPath $List){if($Line -match '^([0-9A-F]{64}) (.+)$'){$Known[$matches[2]]=$matches[1]}}
+ }
+ $Unknown=($Known.Count -eq 0) -and -not (Test-Path -LiteralPath (Join-Path $Root '.git')) -and
+  ((Test-Path -LiteralPath (Join-Path $Work 'rebrewu')) -or @(Get-ChildItem -LiteralPath $Work -Directory -Filter 'game-v288-*' -ErrorAction SilentlyContinue).Count)
+ $Changed=$null
+ if($Unknown){$Changed=Get-ChangedSinceFirstRelease}
+ $TouchUnknown=$Unknown -and $null -eq $Changed
+ $Now=Get-Date
+ $Lines=New-Object System.Collections.Generic.List[string]
+ $Touched=0
+ foreach($Folder in @('recompiler','profiles','Manifest')){
+  $Path=Join-Path $Root $Folder
+  if(-not(Test-Path -LiteralPath $Path -PathType Container)){continue}
+  foreach($File in Get-ChildItem -LiteralPath $Path -Recurse -File){
+   $Name=$File.FullName.Substring($Root.Length+1)
+   $Hash=(Get-FileHash -LiteralPath $File.FullName -Algorithm SHA256).Hash
+   $Lines.Add("$Hash $Name")
+   if(($Known.Count -and $Known[$Name] -ne $Hash) -or $TouchUnknown -or ($Changed -and $Changed -contains $Name)){$File.LastWriteTime=$Now;$Touched++}
+  }
+ }
+ New-Item -ItemType Directory -Path $Work -Force | Out-Null
+ Set-Content -LiteralPath $List -Value $Lines -Encoding ASCII
+ if($Touched){Write-Output "Changed sources since the last build: $Touched"}
+}
+Sync-SourceDates
 # Steps 1-3 are skipped when their inputs did not change since the last build (stamp files), so an
 # update that only touches the runtime rebuilds in minutes instead of re-translating the whole game.
 function Get-InputsStamp([string[]]$Paths,[string[]]$Extra){
