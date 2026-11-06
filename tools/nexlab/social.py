@@ -7,16 +7,21 @@ A friend's presence is returned only when BOTH players listed each other (consen
 
 HTTP, JSON, behind the same HTTPS proxy as the sign-up (paths /social/*). A pid sent for authentication is
 "0x" + 8 hex digits, as the sign-up takes it (digits alone are read as decimal); pids in friend lists are plain hex.
-  /social/session  {pid, password}                -> {token}            (password checked once, then a token)
+  /social/session  {pid, password, client}         -> {token}            (password checked once, then a token)
+                   client = {version, code}: the game's version and the hash of its code (scripts/integrity.py);
+                   with integrity_mode "enforce" a PC that cannot prove a listed release gets 426
   /social/pseudo   {pid, password, pseudo}        -> {pseudo}           (409 when somebody else has it)
   /social/lookup   {token, pseudo}                -> {found, pid, pseudo, online}
   /social/presence {token, mode, friends:[pid]}   -> {friends:[{pid, name, mode}]}  (the heartbeat)
 """
 import ipaddress
+import logging
 import re
 import secrets
 import threading
 import time
+
+log = logging.getLogger("nexserver")
 
 PSEUDO_RE = re.compile(r"^[A-Za-z0-9 _.\-]{2,10}$")
 MODE_RE = re.compile(r"^[0-9a-f]{88}$")           # the game's 0x2C-byte GameMode, hex
@@ -27,6 +32,10 @@ MAX_TOKENS = 20000
 # Names nobody may take: they would pass for the project, the server or its staff.
 RESERVED = frozenset({"admin", "administrator", "moderator", "mod", "staff", "support", "server", "system", "nintendo",
                       "splatoon", "official", "owner", "root", "console", "player"})
+
+
+HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+VERSION_RE = re.compile(r"^\d{1,4}\.\d{1,4}(\.\d{1,4})?$")
 
 
 class SocialError(Exception):
@@ -81,9 +90,12 @@ class Limiter:
 
 
 class Social:
-    def __init__(self, accounts, clock=time.time):
+    def __init__(self, accounts, clock=time.time, integrity_mode="off", releases=None):
         self.accounts = accounts
         self.clock = clock
+        self.integrity_mode = integrity_mode      # off | log | enforce
+        self.releases = {str(v): set(h) for v, h in (releases or {}).items()}
+        self._attested = {}       # pid -> (when, version) of its last proof that it runs a listed release
         self._lock = threading.Lock()
         self._tokens = {}         # token -> (pid, expires)
         self._token_of = {}       # pid -> its one token (a new session replaces the old one)
@@ -115,11 +127,43 @@ class Social:
                 return None
             return entry[0]
 
-    def open_session(self, pid, password):
+    def check_client(self, client):
+        """(True, version) when the client's code hash belongs to a listed release, else (False, reason)."""
+        if not isinstance(client, dict):
+            return False, "no integrity proof (update the game)"
+        code, version = client.get("code"), client.get("version")
+        if not isinstance(code, str) or not HASH_RE.match(code):
+            return False, "no integrity proof (update the game)"
+        for listed, hashes in self.releases.items():
+            if code in hashes:
+                return True, listed
+        claimed = version if isinstance(version, str) and VERSION_RE.match(version) else "?"
+        return False, f"game files not recognised (version {claimed}): update the game, or restore the official files"
+
+    def is_attested(self, pid):
+        """False only when integrity is enforced and this player has not proved a listed release lately."""
+        if self.integrity_mode != "enforce":
+            return True
+        with self._lock:
+            entry = self._attested.get(pid)
+        return entry is not None and self.clock() - entry[0] <= TOKEN_TTL
+
+    def open_session(self, pid, password, client=None):
         """A token for a player whose password is right (checked once; the token does the rest)."""
         if not self.accounts.verify(pid, password):
             raise SocialError(401, "unknown player or wrong password")
         self._banned(pid)
+        if self.integrity_mode != "off":
+            ok, detail = self.check_client(client)
+            if ok:
+                with self._lock:
+                    self._attested[pid] = (self.clock(), detail)
+            else:
+                log.warning("integrity: pid %08x refused proof (%s) mode=%s", pid, detail, self.integrity_mode)
+                if self.integrity_mode == "enforce":
+                    with self._lock:
+                        self._attested.pop(pid, None)
+                    raise SocialError(426, detail)
         token = secrets.token_hex(16)
         now = self.clock()
         with self._lock:
@@ -188,6 +232,8 @@ class Social:
         now = self.clock()
         with self._lock:
             self._presence[pid] = (now, mode, frozenset(wanted))
+            if pid in self._attested:                 # still playing: the proof does not run out under a long session
+                self._attested[pid] = (now, self._attested[pid][1])
             self._prune(now)
             visible = []
             for friend in wanted:
@@ -207,6 +253,8 @@ class Social:
             self._presence.pop(pid, None)
         for token in [t for t, (_, expires) in self._tokens.items() if expires < now]:
             self._forget_token(token)
+        for pid in [p for p, (seen, _) in self._attested.items() if now - seen > TOKEN_TTL]:
+            self._attested.pop(pid, None)
         while len(self._tokens) >= MAX_TOKENS:
             self._forget_token(next(iter(self._tokens)))
 
@@ -214,6 +262,13 @@ class Social:
         entry = self._tokens.pop(token, None)
         if entry is not None and self._token_of.get(entry[0]) == token:
             del self._token_of[entry[0]]
+
+    def revoke(self, pid):
+        """Drop a player's session, presence and integrity proof (a ban takes effect at once)."""
+        with self._lock:
+            self._forget_token(self._token_of.get(pid, ""))
+            self._presence.pop(pid, None)
+            self._attested.pop(pid, None)
 
     def online_count(self):
         now = self.clock()

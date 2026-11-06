@@ -31,7 +31,7 @@ import anynet.udp
 import anynet.util
 from nintendo.nex import authentication, common, kerberos, matchmaking, notification, prudp, rmc, secure, settings
 from tools.nexlab import (accounts as account_store, matchmake, nexserver as lab, register_server,
-                          server_config)
+                          server_config, social as social_module)
 
 HOST = "127.0.0.1"
 PID_A = 0x1001
@@ -507,6 +507,32 @@ class ServerEndToEndTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(json.loads(response.read())["status"], "created")
             player = await self.add_player(newcomer, local_host="127.0.0.5")
             self.assertEqual(player.login_response.pid, newcomer)
+
+    async def test_public_integrity_enforce_gates_the_nex_login(self):
+        """integrity_mode enforce: the NEX login needs a recent proof of an official release from the sign-in."""
+        async with self.running_server(mode="public", registration=True):
+            social = self.registration.social
+            release = "ef" * 32
+            social.integrity_mode, social.releases = "enforce", {"0.1.3": {release}}
+            config = settings.default()
+            config.configure(lab.ACCESS_KEY, lab.NEX_VERSION)
+            async with rmc.connect(config, HOST, self.port) as client:
+                auth = authentication.AuthenticationClient(client)
+                with self.assertRaises(common.RMCError) as caught:
+                    await auth.login(str(PID_A))                       # no proof yet
+            self.assertEqual(caught.exception.name(), "RendezVous::InvalidUsername")
+
+            with self.assertRaises(social_module.SocialError):
+                social.open_session(PID_A, password_for(PID_A), {"code": "00" * 32})
+            social.open_session(PID_A, password_for(PID_A), {"version": "0.1.3", "code": release})
+            player = await self.add_player(PID_A)
+            self.assertEqual(player.login_response.pid, PID_A)
+
+            social.revoke(PID_A)                                       # a ban or a stale proof closes the door again
+            async with rmc.connect(config, HOST, self.port) as client:
+                auth = authentication.AuthenticationClient(client)
+                with self.assertRaises(common.RMCError):
+                    await auth.login(str(PID_A))
 
     async def test_public_eight_players_fill_one_session(self):
         """Public mode: strangers fill one classic match up to 8, then it is closed."""

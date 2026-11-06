@@ -243,6 +243,7 @@ class AuthServer(authentication.AuthenticationServer):
         self.lan_station = None       # set by serve(advertise_lan=...)
         self.mode = mode
         self.accounts = accounts        # public mode only, see accounts.py
+        self.attested = None            # pid -> bool, set by serve() (integrity_mode enforce, see social.py)
         # S-04: tickets and logins are the expensive part of the auth server.
         self.ip_rate = RateLimiter(MAX_LOGINS_PER_IP, 60.0)
         self.pid_rate = RateLimiter(MAX_TICKETS_PER_PID, 60.0)
@@ -281,6 +282,9 @@ class AuthServer(authentication.AuthenticationServer):
                 raise common.RMCError("RendezVous::InvalidUsername")
             if self.accounts.is_banned(pid=pid, ip=origin):
                 log.warning("banned login refused: pid %08x from %s", pid, origin)
+                raise common.RMCError("RendezVous::InvalidUsername")
+            if self.attested is not None and not self.attested(pid):
+                log.warning("login refused: pid %08x has not proved an official game version (integrity enforce)", pid)
                 raise common.RMCError("RendezVous::InvalidUsername")
             key = self.accounts.key(pid)
             if key is None:
@@ -569,6 +573,8 @@ async def serve(host="127.0.0.1", port=60000, *, advertise=None, secure_port=Non
     try:
         with trace_rmc_requests() if trace else contextlib.nullcontext():
             auth = AuthServer(s, secure_key, station, mode, accounts)
+            if registration is not None and registration.social is not None:
+                auth.attested = registration.social.is_attested
             # NEXLAB_ADVERTISE_LAN: this server's LAN address, given to players on private
             # addresses when it is hosted behind a home router (see AuthServer.station_for).
             if os.environ.get("NEXLAB_ADVERTISE_LAN"):
@@ -608,7 +614,9 @@ async def run(a, config):
                 config.registration_token if config.registration == "token" else None,
                 behind_proxy=config.registration_proxy,
                 min_client_version=config.min_client_version,
-                admin_token=config.admin_token)
+                admin_token=config.admin_token,
+                integrity_mode=config.integrity_mode,
+                integrity_releases=config.integrity_releases)
         log.info("accounts: %d in %s (registration %s, port %d)", accounts.count(),
                  config.accounts_db, config.registration, config.registration_port)
     try:

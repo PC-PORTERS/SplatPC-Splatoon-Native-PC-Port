@@ -19,6 +19,22 @@ import time
 import urllib.error
 import urllib.request
 
+
+def game_integrity():
+    """{'version', 'code'}: this install's version and the hash of its code (integrity.py, next to this file)."""
+    try:
+        try:
+            import integrity
+        except ImportError:                       # loaded by path (tests): the folder is not on sys.path
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("integrity", os.path.join(os.path.dirname(os.path.abspath(__file__)), "integrity.py"))
+            integrity = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(integrity)
+        return integrity.attestation()
+    except Exception:                             # a broken install simply cannot prove itself
+        return {"version": "", "code": ""}
+
+
 PSEUDO_RE = re.compile(r"^[A-Za-z0-9 _.\-]{2,10}$")
 ZERO_MODE = "00" * 44
 INTERVAL = 5.0
@@ -45,13 +61,14 @@ def write_atomic(path, text):
 
 
 class Relay:
-    def __init__(self, base_url, pid, password, pseudo, game_dir, timeout=6.0):
+    def __init__(self, base_url, pid, password, pseudo, game_dir, timeout=6.0, client=None):
         self.base = base_url.rstrip("/")
         self.pid, self.password, self.pseudo = pid, password, pseudo
         self.game_dir = game_dir
         self.dir = os.path.join(game_dir, "friends")
         self.list_path = os.path.join(game_dir, "friends.txt")
         self.timeout = timeout
+        self.client = client or {}              # the integrity proof sent with each sign-in (see integrity.py)
         self.token = None
         self.message = ""
         self.online = {}                        # pid hex -> (name, mode) from the last good heartbeat
@@ -75,11 +92,14 @@ class Relay:
     def ensure_session(self):
         if self.token:
             return True
-        status, answer = self.call("session", {"pid": f"0x{self.pid:08x}", "password": self.password})
+        status, answer = self.call("session", {"pid": f"0x{self.pid:08x}", "password": self.password, "client": self.client})
         if status == 200 and answer.get("token"):
             self.token = answer["token"]
             return True
-        self.message = "server unreachable" if status == 0 else "sign-in refused"
+        if status == 426:                       # the server only takes official, up-to-date game files
+            self.message = str(answer.get("error") or "update the game")[:120]
+        else:
+            self.message = "server unreachable" if status == 0 else "sign-in refused"
         return False
 
     def claim_pseudo(self):
@@ -247,7 +267,7 @@ def main(argv):
     if pid is None:
         sys.exit("no online identity yet")
     pseudo = read_kv(os.path.join(args.game_dir, "settings.ini")).get("pseudo", "")
-    relay = Relay(args.server, pid, password, pseudo, args.game_dir)
+    relay = Relay(args.server, pid, password, pseudo, args.game_dir, client=game_integrity())
     if pseudo:
         claimed, reason = relay.claim_pseudo()
         if not claimed:

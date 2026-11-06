@@ -90,6 +90,8 @@ server.json
 !/scripts/allowed_signers
 !/scripts/server.public.txt
 !/scripts/friends_relay.py
+!/scripts/integrity.py
+!/scripts/integrity-manifest.txt
 
 # The launcher shortcut that Setup may put in the install folder
 *.lnk

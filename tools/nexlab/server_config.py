@@ -22,7 +22,9 @@ Every key is optional. `_`-prefixed keys are ignored, so an example file can car
       "registration": "open",           # public: open | token | closed (default: closed)
       "registration_port": 60002,       # default: auth_port + 2 (0 when closed)
       "registration_token": "",         # required when registration is "token"
-      "admin_token": ""                 # operator routes (/admin/*) with open registration
+      "admin_token": "",                # operator routes (/admin/*) with open registration
+      "integrity_mode": "off",          # off | log | enforce (see scripts/integrity.py)
+      "integrity_releases": {"0.1.3": "<release_hash printed by integrity.py --make>"}
     }
 """
 import ipaddress
@@ -33,11 +35,13 @@ import re
 MODES = ("lab", "public")
 WILDCARDS = ("", "0.0.0.0", "::")
 REGISTRATIONS = ("open", "token", "closed")
+INTEGRITY_MODES = ("off", "log", "enforce")
 FIELDS = ("mode", "listen", "advertise", "auth_port", "secure_port", "natcheck",
           "natcheck_addresses", "identities", "identity_roots",
           "accounts_db", "registration", "registration_port", "registration_token",
           "fill_timeout", "natcheck_single_ip", "natcheck_same_socket", "registration_proxy",
-          "min_client_version", "random_session_key", "admin_token")
+          "min_client_version", "random_session_key", "admin_token",
+          "integrity_mode", "integrity_releases")
 
 
 class ConfigError(ValueError):
@@ -131,6 +135,25 @@ class ServerConfig:
         # Operator token for /admin/* when registration is open (the admin panel uses it).
         # Empty: the admin routes keep using registration_token, or do not exist.
         self.admin_token = str(values.get("admin_token") or "") or None
+        # Game integrity (scripts/integrity.py): the player's launcher sends its version and a hash of the
+        # game's code when it signs in. "log" only logs a mismatch; "enforce" also refuses the sign-in and the
+        # NEX login of a PC that has not proved it runs a listed release. Releases: version -> hash or [hashes].
+        self.integrity_mode = str(values.get("integrity_mode") or "off").strip().lower()
+        if self.integrity_mode not in INTEGRITY_MODES:
+            raise ConfigError(f"integrity_mode: '{self.integrity_mode}' is not one of {', '.join(INTEGRITY_MODES)}")
+        releases = values.get("integrity_releases") or {}
+        if not isinstance(releases, dict):
+            raise ConfigError("integrity_releases: expected {\"0.1.3\": \"<hash>\"}")
+        self.integrity_releases = {}
+        for version, hashes in releases.items():
+            if not re.fullmatch(r"\d+\.\d+(\.\d+)?", str(version).strip()):
+                raise ConfigError(f"integrity_releases: '{version}' is not a version like 0.2.0")
+            listed = [hashes] if isinstance(hashes, str) else list(hashes or [])
+            if not listed or not all(isinstance(h, str) and re.fullmatch(r"[0-9a-f]{64}", h) for h in listed):
+                raise ConfigError(f"integrity_releases: the hash of {version} must be 64 lowercase hex digits")
+            self.integrity_releases[str(version).strip()] = listed
+        if self.integrity_mode == "enforce" and not self.integrity_releases:
+            raise ConfigError("integrity_mode enforce needs at least one entry in integrity_releases")
         self.fill_timeout = values.get("fill_timeout", 20.0)
         self._normalize()
         self.validate()

@@ -117,6 +117,15 @@ class Accounts:
                                 reason TEXT,
                                 created REAL NOT NULL,
                                 UNIQUE(pid, ip))""")
+        if "expires" not in {row[1] for row in self._db.execute("PRAGMA table_info(bans)")}:
+            self._db.execute("ALTER TABLE bans ADD COLUMN expires REAL")        # NULL: permanent
+        # What the operators did (ban, unban, kick), newest last: who was acted on, why, when.
+        self._db.execute("""CREATE TABLE IF NOT EXISTS mod_log (
+                                at REAL NOT NULL,
+                                action TEXT NOT NULL,
+                                pid INTEGER,
+                                ip TEXT,
+                                detail TEXT)""")
         self._db.commit()
         self.restrict_permissions()
 
@@ -287,16 +296,58 @@ class Accounts:
         self.failure(ip)
 
     # -- operator bans (chantier 4) ----------------------------------------
-    def ban(self, pid=None, ip=None, reason=""):
+    def ban(self, pid=None, ip=None, reason="", hours=None):
+        """Ban a pid and/or an address, for `hours` hours or (None) for good. The ban is logged."""
         if pid is None and ip is None:
             raise InvalidIdentity("a ban needs a pid, an ip, or both")
         pid = parse_pid(pid) if pid is not None else None
         ip = check_ip(ip) if ip is not None else None
+        if ip == "unknown":                      # check_ip's answer to text that is not an address
+            raise InvalidIdentity("not an IP address")
+        now = self.clock()
+        expires = None
+        if hours is not None:
+            try:
+                hours = float(hours)
+            except (TypeError, ValueError):
+                raise InvalidIdentity("hours must be a number") from None
+            if not 0 < hours <= 24 * 365:
+                raise InvalidIdentity("hours must be between 0 and one year")
+            expires = now + hours * 3600.0
+        length = "permanent" if expires is None else "%g h" % hours
         with self._lock:
-            self._db.execute("INSERT OR REPLACE INTO bans (pid, ip, reason, created) "
-                             "VALUES (?, ?, ?, ?)", (pid, ip, str(reason)[:200], time.time()))
+            # UNIQUE(pid, ip) does not hold for NULLs: drop the same ban first, so a re-ban replaces it.
+            self._delete_ban(pid, ip)
+            self._db.execute("INSERT INTO bans (pid, ip, reason, created, expires) VALUES (?, ?, ?, ?, ?)",
+                             (pid, ip, str(reason)[:200], now, expires))
+            self._log("ban", pid, ip, "%s: %s" % (length, str(reason)[:200]))
             self._db.commit()
         return pid, ip
+
+    def _delete_ban(self, pid, ip):
+        if pid is not None and ip is not None:
+            self._db.execute("DELETE FROM bans WHERE pid = ? AND ip = ?", (pid, ip))
+        elif pid is not None:
+            self._db.execute("DELETE FROM bans WHERE pid = ? AND ip IS NULL", (pid,))
+        else:
+            self._db.execute("DELETE FROM bans WHERE ip = ? AND pid IS NULL", (ip,))
+
+    def _log(self, action, pid=None, ip=None, detail=""):
+        self._db.execute("INSERT INTO mod_log (at, action, pid, ip, detail) VALUES (?, ?, ?, ?, ?)",
+                         (self.clock(), action, pid, ip, str(detail)[:200]))
+        self._db.execute("DELETE FROM mod_log WHERE rowid <= (SELECT MAX(rowid) FROM mod_log) - 2000")   # bounded
+
+    def log_action(self, action, pid=None, ip=None, detail=""):
+        with self._lock:
+            self._log(str(action)[:20], pid, ip, detail)
+            self._db.commit()
+
+    def mod_log(self, limit=100):
+        """The latest operator actions, newest first."""
+        with self._lock:
+            rows = self._db.execute("SELECT at, action, pid, ip, detail FROM mod_log ORDER BY rowid DESC LIMIT ?",
+                                    (max(1, min(int(limit), 500)),)).fetchall()
+        return [{"at": r[0], "action": r[1], "pid": r[2], "ip": r[3], "detail": r[4]} for r in rows]
 
     def unban(self, pid=None, ip=None):
         if pid is None and ip is None:
@@ -304,28 +355,26 @@ class Accounts:
         pid = parse_pid(pid) if pid is not None else None
         ip = check_ip(ip) if ip is not None else None
         with self._lock:
-            if pid is not None and ip is not None:
-                self._db.execute("DELETE FROM bans WHERE pid = ? AND ip = ?", (pid, ip))
-            elif pid is not None:
-                self._db.execute("DELETE FROM bans WHERE pid = ? AND ip IS NULL", (pid,))
-            else:
-                self._db.execute("DELETE FROM bans WHERE ip = ? AND pid IS NULL", (ip,))
+            self._delete_ban(pid, ip)
+            self._log("unban", pid, ip)
             self._db.commit()
 
     def bans(self):
         with self._lock:
-            rows = self._db.execute("SELECT pid, ip, reason, created FROM bans "
-                                    "ORDER BY created DESC").fetchall()
-        return [{"pid": row[0], "ip": row[1], "reason": row[2], "created": row[3]} for row in rows]
+            rows = self._db.execute("SELECT pid, ip, reason, created, expires FROM bans "
+                                    "WHERE expires IS NULL OR expires > ? ORDER BY created DESC",
+                                    (self.clock(),)).fetchall()
+        return [{"pid": row[0], "ip": row[1], "reason": row[2], "created": row[3], "expires": row[4]} for row in rows]
 
     def is_banned(self, pid=None, ip=None):
         """A pid-only ban blocks the pid anywhere; an ip-only ban blocks the address; a pair
         blocks only that pair."""
         with self._lock:
             row = self._db.execute(
-                "SELECT 1 FROM bans WHERE (pid = ? AND ip IS NULL) "
-                "OR (ip = ? AND pid IS NULL) OR (pid = ? AND ip = ?) LIMIT 1",
-                (pid, ip, pid, ip)).fetchone()
+                "SELECT 1 FROM bans WHERE ((pid = ? AND ip IS NULL) "
+                "OR (ip = ? AND pid IS NULL) OR (pid = ? AND ip = ?)) "
+                "AND (expires IS NULL OR expires > ?) LIMIT 1",
+                (pid, ip, pid, ip, self.clock())).fetchone()
         return row is not None
 
     def forget_failures(self, ip):
@@ -351,7 +400,11 @@ def main(argv=None):
         command.add_argument("--pid", help="principal id (decimal or 0x-hex)")
         command.add_argument("--ip", help="source IPv4 address")
         command.add_argument("--reason", default="", help="short reason kept in the database")
-    sub.add_parser("bans", help="list bans")
+        if name == "ban":
+            command.add_argument("--hours", type=float, help="ban for this many hours (default: for good)")
+    sub.add_parser("bans", help="list active bans")
+    modlog = sub.add_parser("modlog", help="the latest operator actions")
+    modlog.add_argument("--limit", type=int, default=50)
     erase = sub.add_parser("delete", help="erase one account (right to erasure)")
     erase.add_argument("pid", help="decimal or 0x-hexadecimal principal id")
     backup = sub.add_parser("backup", help="copy the account database to a file")
@@ -370,13 +423,21 @@ def main(argv=None):
         if args.command == "bans":
             for entry in accounts.bans():
                 pid = f"{entry['pid']:08x}" if entry["pid"] is not None else "-"
-                print(f"pid={pid:<10} ip={entry['ip'] or '-':<16} {entry['reason']}")
+                until = ("for good" if entry["expires"] is None
+                         else time.strftime("until %Y-%m-%d %H:%M", time.localtime(entry["expires"])))
+                print(f"pid={pid:<10} ip={entry['ip'] or '-':<16} {until:<22} {entry['reason']}")
+            return 0
+        if args.command == "modlog":
+            for entry in reversed(accounts.mod_log(args.limit)):
+                pid = f"{entry['pid']:08x}" if entry["pid"] is not None else "-"
+                when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(entry["at"]))
+                print(f"{when} {entry['action']:<7} pid={pid:<10} ip={entry['ip'] or '-':<16} {entry['detail']}")
             return 0
         if args.command in ("ban", "unban"):
             if not args.pid and not args.ip:
                 parser.error(f"{args.command}: give --pid and/or --ip")
             if args.command == "ban":
-                accounts.ban(args.pid, args.ip, args.reason)
+                accounts.ban(args.pid, args.ip, args.reason, args.hours)
                 print("banned")
             else:
                 accounts.unban(args.pid, args.ip)

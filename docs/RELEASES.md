@@ -11,6 +11,7 @@ The launcher only installs an update whose tag `online-vX.Y.Z` is **signed** by 
 ## Each version
 
 1. Raise `VERSION`, commit, test.
+   Then run `py -3 scripts/integrity.py --make` (rewrites `scripts/integrity-manifest.txt`, prints the `release_hash`) and commit the manifest **last**: any later change to a covered file (`recompiler/`, `profiles/`, `Manifest/`, `scripts/`, `tools/boss/`, `VERSION`) makes it stale; `py -3 scripts/integrity.py --check` must print nothing. On the server, add `"<version>": "<release_hash>"` to `integrity_releases` in `server.json` (keep the previous version while players update), restart.
 2. Sign the tag: `git tag -s online-v0.2.0 -m "online-v0.2.0"`.
 3. Check it: `git -c gpg.ssh.allowedSignersFile=scripts/allowed_signers verify-tag online-v0.2.0`.
 4. Push the branch and the tag only when ready. Protect the tags `online-v*` in the GitHub settings (only maintainers may create them).
@@ -32,6 +33,7 @@ Le lanceur n'installe une mise à jour que si son tag `online-vX.Y.Z` est **sign
 ## À chaque version
 
 1. Augmente `VERSION`, commite, teste.
+   Puis lance `py -3 scripts/integrity.py --make` (réécrit `scripts/integrity-manifest.txt`, affiche le `release_hash`) et commite le manifeste **en dernier** : toute modification ensuite d'un fichier couvert (`recompiler/`, `profiles/`, `Manifest/`, `scripts/`, `tools/boss/`, `VERSION`) le périme ; `py -3 scripts/integrity.py --check` ne doit rien afficher. Sur le serveur, ajoute `"<version>": "<release_hash>"` à `integrity_releases` dans `server.json` (garde la version précédente pendant la mise à jour des joueurs), redémarre.
 2. Signe le tag : `git tag -s online-v0.2.0 -m "online-v0.2.0"`.
 3. Vérifie-le : `git -c gpg.ssh.allowedSignersFile=scripts/allowed_signers verify-tag online-v0.2.0`.
 4. Envoie la branche et le tag seulement quand tout est prêt. Protège les tags `online-v*` dans les réglages GitHub (seuls les mainteneurs peuvent les créer).

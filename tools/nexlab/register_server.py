@@ -63,9 +63,11 @@ class BoundedHTTPServer(ThreadingHTTPServer):
 
 class RegistrationServer:
     def __init__(self, accounts, host="127.0.0.1", port=60002, token=None, behind_proxy=False,
-                 min_client_version=None, admin_token=None):
+                 min_client_version=None, admin_token=None,
+                 integrity_mode="off", integrity_releases=None):
         self.accounts = accounts
-        self.social = social_module.Social(accounts) if accounts is not None else None
+        self.social = (social_module.Social(accounts, integrity_mode=integrity_mode, releases=integrity_releases)
+                       if accounts is not None else None)
         self.min_client_version = min_client_version
         self.token = token
         self.admin_token = admin_token or token
@@ -156,7 +158,7 @@ def _make_handler(server):
                            "errors": nexserver.METRICS["errors"], **matchmake.stats()}
                 self._reply(200, payload)
                 return
-            if path in ("/admin/sessions", "/admin/kick"):
+            if path in ("/admin/sessions", "/admin/kick", "/admin/bans", "/admin/log"):
                 if not self._admin_ok():
                     self._reply(401, {"error": "admin token required"})
                     return
@@ -164,6 +166,14 @@ def _make_handler(server):
                     from . import matchmake
                 except ImportError:
                     import matchmake
+                if path == "/admin/bans":
+                    self._reply(200, {"bans": [dict(b, pid=None if b["pid"] is None else f"{b['pid']:08x}")
+                                               for b in server.accounts.bans()]})
+                    return
+                if path == "/admin/log":
+                    self._reply(200, {"log": [dict(e, pid=None if e["pid"] is None else f"{e['pid']:08x}")
+                                              for e in server.accounts.mod_log(100)]})
+                    return
                 if path == "/admin/sessions":
                     sessions = []
                     for gid, session in matchmake.SESSIONS.by_gid.items():
@@ -184,6 +194,7 @@ def _make_handler(server):
                     self._reply(400, {"error": "invalid pid"})
                     return
                 matchmake.request_kick(pid)
+                server.accounts.log_action("kick", pid)
                 self._reply(200, {"kick": f"{pid:08x}"})
                 return
             self._reply(404, {"error": "not found"})
@@ -215,7 +226,7 @@ def _make_handler(server):
                         raise social_module.SocialError(403, "this player or address is banned")
                     password = str(payload.get("password", ""))
                     if path == "/social/session":
-                        self._reply(200, {"token": social.open_session(pid, password)})
+                        self._reply(200, {"token": social.open_session(pid, password, payload.get("client"))})
                     else:
                         self._reply(200, {"pseudo": social.claim_pseudo(pid, password, payload.get("pseudo"))})
                 elif path == "/social/lookup":
@@ -229,10 +240,46 @@ def _make_handler(server):
             except social_module.SocialError as error:
                 self._reply(error.status, {"error": error.message})
 
+        def _admin_post(self, route):
+            """Ban / unban from the panel or ops.py: {pid?, ip?, hours?, reason?}. A pid ban also kicks the player."""
+            if not self._admin_ok():
+                self._reply(401, {"error": "admin token required"})
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length).decode("utf-8")) if 0 < length <= MAX_BODY else None
+            except (ValueError, UnicodeDecodeError):
+                payload = None
+            if not isinstance(payload, dict):
+                self._reply(400, {"error": "invalid JSON"})
+                return
+            try:
+                pid = accounts_module.parse_pid(payload["pid"]) if payload.get("pid") else None
+                ip = payload.get("ip") or None
+                if route == "/admin/ban":
+                    server.accounts.ban(pid, ip, str(payload.get("reason", "")), payload.get("hours"))
+                    if pid is not None:
+                        try:
+                            from . import matchmake
+                        except ImportError:
+                            import matchmake
+                        matchmake.request_kick(pid)
+                        if server.social is not None:
+                            server.social.revoke(pid)
+                else:
+                    server.accounts.unban(pid, ip)
+            except accounts_module.InvalidIdentity as error:
+                self._reply(400, {"error": str(error)})
+                return
+            self._reply(200, {"ok": True})
+
         def do_POST(self):
             route = self.path.split("?")[0]
             if route.startswith("/social/"):
                 self._social(route)
+                return
+            if route in ("/admin/ban", "/admin/unban"):
+                self._admin_post(route)
                 return
             if route != "/register":
                 self._reply(404, {"error": "not found"})

@@ -10,5 +10,7 @@
   "accounts_db": "nexlab-accounts.sqlite3",
   "registration": "closed",
   "registration_port": 60002,
-  "fill_timeout": 20
+  "fill_timeout": 20,
+  "integrity_mode": "off",
+  "integrity_releases": {}
 }
