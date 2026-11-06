@@ -57,7 +57,7 @@ struct PlazaGovernor {
 };
 
 #if RBREW_GAME_REVISION == 288
-#include "../../runtime/rebrewu_runtime.h"
+#include "../runtime/rebrewu_runtime.h"
 #include "rebrewu/logger.hpp"
 #include <atomic>
 #include <cstdio>

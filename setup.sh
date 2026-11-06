@@ -24,8 +24,6 @@ DEPS="$WORK/deps"
 
 # Every Manifest/*.manifest describes one supported image; the RPX selects it.
 MANIFEST_DIR="$ROOT/Manifest"
-BOUNDARY_PROFILE="$ROOT/profiles/agmp-v16.entries"
-HOOK_PROFILE="$ROOT/profiles/agmp-v16.hooks"
 MINIMUM_FUNCTION_COUNT=96300
 
 # Open-source build dependencies (official upstream releases).
@@ -393,7 +391,9 @@ rpx_hash="$(sha256 "$rpx")"
 SELECTED_MANIFEST="$(select_manifest "$rpx")" || {
     fail "Unsupported game version. None of the manifests in $MANIFEST_DIR describes your code/Gambit.rpx (SHA-256 $rpx_hash). Add a manifest for this image, or use a supported dump."
 }
-good "Matched manifest: $SELECTED_MANIFEST"
+GAME_REVISION="$(awk -F= '/^[[:space:]]*app_version[[:space:]]*=/{gsub(/[[:space:]]|#.*/, "", $2); print $2; exit}' "$SELECTED_MANIFEST")"
+[ -n "$GAME_REVISION" ] || fail "The selected manifest has no app_version: $SELECTED_MANIFEST"
+good "Matched manifest: $SELECTED_MANIFEST (title version $GAME_REVISION)"
 
 if [ -z "$OUTPUT" ]; then OUTPUT="$ROOT/Game"; fi
 OUTPUT="$(readlink -f -- "$(dirname -- "$OUTPUT")")/$(basename -- "$OUTPUT")"
@@ -469,12 +469,11 @@ stage_done '5. RebrewU recompiler build'
 step 'Recompiling your Gambit.rpx into C++ (a few minutes)'
 GENERATED="$WORK/generated/Gambit"
 STAMP="$WORK/generated/source.sha256"
-[ -f "$BOUNDARY_PROFILE" ] || fail 'The supported-game boundary profile is missing. Extract the complete repository ZIP, including profiles, and retry.'
-[ -f "$HOOK_PROFILE" ] || fail 'The supported-game hook profile is missing. Extract the complete repository ZIP, including profiles, and retry.'
-# The profile is address metadata, not game code. The RPX hash above selects
-# its supported version; RebrewU still validates each boundary against the RPX.
-# Include the tool and profile hashes in the stamp so changes regenerate.
-current="$rpx_hash:$(sha256 "$REBREWU"):$(sha256 "$BOUNDARY_PROFILE"):$(sha256 "$HOOK_PROFILE"):$(sha256 "$SELECTED_MANIFEST")"
+# The manifest carries the entry boundaries, hook list and patches. The RPX
+# hash above selects its supported version; RebrewU still validates each
+# boundary against the RPX. Include the tool and manifest hashes in the stamp
+# so changes regenerate.
+current="$rpx_hash:$(sha256 "$REBREWU"):$(sha256 "$SELECTED_MANIFEST")"
 previous=""
 [ -f "$STAMP" ] && previous="$(cat -- "$STAMP")"
 if ! generated_module_complete "$GENERATED" || [ "$current" != "$previous" ]; then
@@ -483,7 +482,6 @@ if ! generated_module_complete "$GENERATED" || [ "$current" != "$previous" ]; th
     ensure_folder "$GENERATED"
     "$REBREWU" recompile --rpx "$rpx" --output "$GENERATED" \
         --manifest "$SELECTED_MANIFEST" \
-        --analyzer-entries "$BOUNDARY_PROFILE" --hooks "$HOOK_PROFILE" \
         || fail 'Recompiling Gambit.rpx'
     generated_module_complete "$GENERATED" \
         || fail 'The recompiler did not produce the complete supported-game function table. Installation stopped before building an incomplete game.'
@@ -504,6 +502,7 @@ GLSLANG_DIR="$DEPS/glslang-vulkan/lib/cmake/glslang"
 cmake -S "$RECOMPILER/port" -B "$GAME_BUILD" -G "$GENERATOR" \
     -DCMAKE_BUILD_TYPE=Release \
     -DRBREW_GRAPHICS_BACKEND=Vulkan \
+    -DRBREW_GAME_REVISION="$GAME_REVISION" \
     -DRBREW_RPX="$rpx" \
     -DGAMBIT_GENERATED_DIR="$GENERATED" \
     -DSDL2_DIR="$SDL2_DIR" \

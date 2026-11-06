@@ -103,7 +103,10 @@ void Heartbeat();
 
 // Live metrics for the ImGui performance overlay (F3)
 OverlayMetrics GetOverlayMetrics();
-void ManualCapture();      // F9: Save snapshot now
+void ManualCapture(); // F9: Save snapshot now
+// F9 also runs this (set by the executable's thread profiler) with a
+// "<Diagnostics>/<time>_threads.txt" path.
+void SetManualProfiler(void (*profiler)(const std::string& path));
 void ToggleManualRecord(); // F8: Extended recording
 bool IsManualRecording();
 

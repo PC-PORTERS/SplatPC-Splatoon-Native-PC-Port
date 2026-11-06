@@ -15,6 +15,7 @@
 #include "../../runtime/port_settings.h"
 #include "../../runtime/splatoon_diagnostics.h"
 #include "../../runtime/online_identity.h"
+#include "../../nn_nfp/nn_nfp.h"
 
 #include <imgui.h>
 #include <imgui_impl_sdl2.h>
@@ -56,7 +57,8 @@ std::atomic<bool> s_fullscreen_mirror{true};
 std::atomic<bool> s_fullscreen_requested{false};
 std::atomic<bool> s_fullscreen_value{false};
 std::atomic<bool> s_quit_requested{false};
-std::atomic<bool> s_capture_active{false}; // render thread waits for a rebinding input
+std::atomic<bool> s_capture_active{false};   // render thread waits for a rebinding input
+std::atomic<bool> s_amiibo_requested{false}; // open the menu on the amiibo picker
 
 std::mutex s_event_lock;
 std::vector<SDL_Event> s_events;
@@ -87,7 +89,7 @@ void update_shader_activity() {
     s_shader_compiling = ImGui::GetTime() - s_shader_last_change < 0.75;
 }
 
-enum class MenuPage { Main, Keyboard, Controller, Friends };
+enum class MenuPage { Main, Keyboard, Controller, Friends, Amiibo };
 // F4 (GX2 thread) asks for the Friends page: when the menu is closed it opens on that page; when it is open the
 // render thread switches to it (or closes the menu when already there).
 std::atomic<bool> s_friends_request{false};
@@ -297,7 +299,9 @@ void process_nav_event(const SDL_Event& e) {
     const bool back = (e.type == SDL_KEYDOWN && !e.key.repeat && !typing && e.key.keysym.scancode == SDL_SCANCODE_BACKSPACE) ||
                       (e.type == SDL_CONTROLLERBUTTONDOWN && e.cbutton.button == SDL_CONTROLLER_BUTTON_B);
     if (back) {
-        if (s_graphics_page != gx2_graphics_menu::Page::None)
+        if (s_menu_page == MenuPage::Amiibo)
+            set_menu_open(false); // back to the game's own "touch amiibo" screen
+        else if (s_graphics_page != gx2_graphics_menu::Page::None)
             s_graphics_page = gx2_graphics_menu::Page::None;
         else if (s_menu_page != MenuPage::Main)
             s_menu_page = MenuPage::Main;
@@ -606,6 +610,94 @@ void build_page() {
 }
 } // namespace friends_ui
 
+// The emulated GamePad touchpoint: a file browser for amiibo dumps (.bin).
+// The chosen dump is placed on the touchpoint and the game reads it through
+// nn::nfp on its next poll. Starts in Game/amiibo, then where the last dump was.
+struct AmiiboBrowser {
+    std::filesystem::path dir = "amiibo";
+    std::vector<std::filesystem::path> folders, dumps;
+    bool listed = false;
+    char path[1024] = "";
+    std::string error;
+};
+AmiiboBrowser s_amiibo;
+
+std::string utf8(const std::filesystem::path& path) {
+    const auto text = path.u8string();
+    return std::string(text.begin(), text.end());
+}
+
+void list_amiibo_dir() {
+    namespace fs = std::filesystem;
+    AmiiboBrowser& b = s_amiibo;
+    std::error_code ec;
+    fs::create_directories("amiibo", ec);
+    b.dir = fs::absolute(b.dir, ec);
+    b.folders.clear();
+    b.dumps.clear();
+    for (fs::directory_iterator it(b.dir, fs::directory_options::skip_permission_denied, ec), end; !ec && it != end;
+         it.increment(ec)) {
+        if (it->is_directory(ec))
+            b.folders.push_back(it->path());
+        else if (it->path().extension() == ".bin" || it->path().extension() == ".BIN")
+            b.dumps.push_back(it->path());
+    }
+    std::sort(b.folders.begin(), b.folders.end());
+    std::sort(b.dumps.begin(), b.dumps.end());
+    b.listed = true;
+}
+
+void place_amiibo(const std::filesystem::path& file) {
+    rbrew_nfp::Tag tag;
+    if (!rbrew_nfp::load_dump(file, tag, s_amiibo.error)) return;
+    s_amiibo.error.clear();
+    s_amiibo.dir = file.parent_path();
+    s_amiibo.listed = false;
+    if (rbrew_nfp::touch(tag)) set_menu_open(false);
+}
+
+void build_amiibo_page() {
+    if (!rbrew_nfp::searching()) { // the game stopped waiting (or already read an amiibo)
+        set_menu_open(false);
+        return;
+    }
+    AmiiboBrowser& b = s_amiibo;
+    if (!b.listed || ImGui::IsWindowAppearing()) list_amiibo_dir();
+    const float width = ImGui::GetContentRegionAvail().x;
+    ImGui::TextWrapped("Choose an amiibo dump (.bin) to place on the GamePad's NFC touchpoint.");
+    ImGui::TextDisabled("%s", utf8(b.dir).c_str());
+    ImGui::SetNextItemWidth(width - ImGui::CalcTextSize("Open").x - ImGui::GetStyle().FramePadding.x * 2 -
+                            ImGui::GetStyle().ItemSpacing.x);
+    const bool typed = ImGui::InputTextWithHint("##amiibo_path", "or paste a file path", b.path, sizeof(b.path),
+                                                ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::SameLine();
+    if ((ImGui::Button("Open") || typed) && b.path[0]) {
+        // Quotes from Explorer's "Copy as path".
+        std::string text = b.path;
+        std::erase(text, '"');
+        place_amiibo(std::filesystem::path(std::u8string(text.begin(), text.end())));
+    }
+    if (!b.error.empty()) ImGui::TextColored(ImVec4(0.95f, 0.4f, 0.4f, 1.0f), "%s", b.error.c_str());
+    ImGui::Separator();
+    if (ImGui::BeginChild("##amiibo_files", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() - 4))) {
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+        std::filesystem::path next;
+        if (b.dir.has_parent_path() && b.dir.parent_path() != b.dir && ImGui::Selectable("[..]"))
+            next = b.dir.parent_path();
+        for (const auto& folder : b.folders)
+            if (ImGui::Selectable(("[" + utf8(folder.filename()) + "]").c_str())) next = folder;
+        for (const auto& dump : b.dumps)
+            if (ImGui::Selectable(utf8(dump.filename()).c_str())) place_amiibo(dump);
+        if (b.folders.empty() && b.dumps.empty()) ImGui::TextDisabled("No .bin files in this folder.");
+        if (!next.empty()) {
+            b.dir = next;
+            list_amiibo_dir();
+        }
+    }
+    ImGui::EndChild();
+    if (ImGui::Button("Back", ImVec2(width, 0))) set_menu_open(false);
+}
+
 void build_settings_window() {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     const ImVec2 center(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
@@ -618,6 +710,7 @@ void build_settings_window() {
                         : s_menu_page == MenuPage::Main                  ? "Settings"
                         : s_menu_page == MenuPage::Keyboard              ? "Keyboard & mouse controls"
                         : s_menu_page == MenuPage::Friends               ? "Friends"
+                        : s_menu_page == MenuPage::Amiibo                ? "amiibo"
                                                                          : "Controller controls";
     const std::string window = std::string(title) + "###settings";
     if (!ImGui::Begin(window.c_str(), &open)) {
@@ -636,6 +729,12 @@ void build_settings_window() {
         if (!open) set_menu_open(false);
         return;
     }
+    if (s_menu_page == MenuPage::Amiibo) {
+        build_amiibo_page();
+        ImGui::End();
+        if (!open) set_menu_open(false);
+        return;
+    }
     if (s_menu_page != MenuPage::Main) {
         build_controls_page(s_menu_page);
         ImGui::End();
@@ -645,6 +744,10 @@ void build_settings_window() {
     auto v = rs::get();
     bool dirty = false;
     if (ImGui::Button("Resume")) set_menu_open(false);
+    if (rbrew_nfp::searching()) {
+        ImGui::SameLine();
+        if (ImGui::Button("Scan amiibo")) s_menu_page = MenuPage::Amiibo;
+    }
     if (const auto page = gx2_graphics_menu::build_main_rows(v, dirty); page != gx2_graphics_menu::Page::None)
         s_graphics_page = page;
     int resolution = v.resolution;
@@ -740,6 +843,11 @@ void set_menu_open(bool open) {
 
 bool menu_open() {
     return s_menu_open.load(std::memory_order_relaxed);
+}
+
+void open_amiibo_picker() {
+    s_amiibo_requested.store(true, std::memory_order_relaxed);
+    set_menu_open(true);
 }
 
 bool consume_menu_changed() {
@@ -849,6 +957,9 @@ ImDrawData* begin_frame(VkExtent2D extent) {
     ImGui::GetIO().FontGlobalScale = std::clamp(float(extent.height) / 1080.0f, 1.0f, 2.0f);
 
     const bool fresh_menu = show_menu && !s_prev_menu_open;
+    if (show_menu != s_prev_menu_open)
+        diag::RecordEvent(diag::EventCategory::Input, diag::EventSeverity::Info, 10,
+                          show_menu ? "menu opened" : "menu closed");
     s_prev_menu_open = show_menu;
     if (fresh_menu) {
         const bool friends_page = s_friends_request.exchange(false, std::memory_order_relaxed);
@@ -861,6 +972,12 @@ ImDrawData* begin_frame(VkExtent2D extent) {
     if (s_friends_toggle.exchange(0, std::memory_order_relaxed) > 0 && show_menu && !fresh_menu) {
         if (s_menu_page == MenuPage::Friends) set_menu_open(false);
         else { s_menu_page = MenuPage::Friends; s_graphics_page = gx2_graphics_menu::Page::None; s_capture = false; friends_ui::s_focus_input = true; }
+    }
+    if (show_menu && s_amiibo_requested.exchange(false, std::memory_order_relaxed)) {
+        diag::RecordEvent(diag::EventCategory::Input, diag::EventSeverity::Info, 11, "amiibo picker shown");
+        s_menu_page = MenuPage::Amiibo;
+        s_graphics_page = gx2_graphics_menu::Page::None;
+        s_capture = false;
     }
     update_shader_activity();
     s_focused_action = -1;

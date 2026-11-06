@@ -51,7 +51,8 @@ target_include_directories(nlohmann_json
 add_subdirectory(src/ir)            # INTERFACE – headers only; no external deps
 add_subdirectory(src/diagnostics)   # lightweight; no external deps
 add_subdirectory(src/core)          # elf / rpx / rpl / relocation / linker
-add_subdirectory(src/ppc)           # decoder + semantics; links rebrewu_ir
+add_subdirectory(src/ppc)           # decoder / assembler / semantics; links rebrewu_ir
+add_subdirectory(src/patches)       # applies manifest patches to a loaded image
 add_subdirectory(src/analysis)      # function_discovery / cfg / jump_table
 add_subdirectory(src/codegen)       # cpp_emitter / naming
 add_subdirectory(src/config)        # JSON-based config; links nlohmann_json
@@ -83,6 +84,7 @@ if(REBREWU_INSTALL)
             rebrewu
             rebrewu_core
             rebrewu_ppc
+            rebrewu_patches
             rebrewu_ir
             rebrewu_analysis
             rebrewu_codegen

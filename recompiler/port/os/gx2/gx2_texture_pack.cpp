@@ -1,5 +1,6 @@
 // gx2_texture_pack.cpp - texture pack dumping and replacement (gx2_texture_pack.h).
 #include "gx2_texture_pack.h"
+#include "rebrewu/logger.hpp"
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -83,8 +84,7 @@ const Pack& pack() {
             if (end && !*end) out.files.emplace(h, e.path());
         }
         if (!out.files.empty())
-            std::fprintf(stderr, "[texpack] %zu replacement textures in %s\n", out.files.size(),
-                         out.dir.string().c_str());
+            RBREW_LOG_INFO("texpack", "%zu replacement textures in %s", out.files.size(), out.dir.string().c_str());
         return out;
     }();
     return p;
@@ -156,8 +156,8 @@ bool replacement(uint64_t hash, VkFormat format, uint32_t width, uint32_t height
     std::fclose(f);
     static std::atomic<int> warned{0};
     if (!ok && warned.fetch_add(1) < 8)
-        std::fprintf(stderr, "[texpack] %016llx: format or size does not match the game texture (%ux%u)\n",
-                     (unsigned long long)hash, width, height);
+        RBREW_LOG_WARN("texpack", "%016llx: format or size does not match the game texture (%ux%u)",
+                       (unsigned long long)hash, width, height);
     return ok;
 }
 

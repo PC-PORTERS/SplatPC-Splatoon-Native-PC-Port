@@ -50,7 +50,7 @@ private:
     Config m_cfg;
     std::string m_last_error;
     // Sorted (target, source) direct branches, used to reject entries that bypass a guard.
-    std::vector<std::pair<uint32_t,uint32_t>> m_direct_branches;
+    std::vector<std::pair<uint32_t, uint32_t>> m_direct_branches;
 
     // Helper: get bytes at guest addr
     std::optional<uint32_t> read_word(uint32_t addr) const;

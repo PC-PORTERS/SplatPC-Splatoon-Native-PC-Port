@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -33,7 +34,13 @@ struct Import {
 
 struct Entry {
     uint32_t address{};
-    bool force{false}; // bypass is_valid_code_addr for coverage gaps
+    bool force{false};       // bypass is_valid_code_addr for coverage gaps
+    bool corroborate{false}; // external evidence only; never a discovery hint
+};
+
+struct Patch {
+    uint32_t address{};
+    std::string instruction; // assembled when the manifest is applied to an image
 };
 
 struct Manifest {
@@ -44,10 +51,14 @@ struct Manifest {
     std::map<std::string, std::string> modules;  // [modules]  module -> header path
     std::vector<Import> imports;                 // [imports]
     std::vector<Entry> entries;                  // [entries]
+    std::vector<uint32_t> hooks;                 // [hooks] guest entries with host-hook wrappers
+    std::vector<Patch> patches;                  // [patches]
 
     // section name -> hash stored in the file / recomputed from content
     std::map<std::string, uint64_t> stored_hashes;
     std::map<std::string, uint64_t> computed_hashes;
+    // sections whose `hash` line is `Undefined`: never verified, never resealed
+    std::set<std::string> ignored_hashes;
 
     std::vector<std::string> errors;
     std::vector<std::string> warnings;

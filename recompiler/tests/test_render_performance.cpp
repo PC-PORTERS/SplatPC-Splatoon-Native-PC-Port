@@ -3,6 +3,7 @@
 #include "os/gx2/vk/gx2_vk.h"
 #include "os/gx2/vk/gx2_imgui_overlay.h"
 #include "runtime/rebrewu_runtime.h"
+#include "rebrewu/logger.hpp"
 #define SDL_MAIN_HANDLED
 #include <SDL.h>
 #include <thread>
@@ -25,8 +26,9 @@ static LONG WINAPI benchmark_exception(EXCEPTION_POINTERS* e) {
     GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                        static_cast<const char*>(e->ExceptionRecord->ExceptionAddress), &module);
     GetModuleFileNameA(module, path, MAX_PATH);
-    std::fprintf(stderr, "standalone exception %08lx in %s at module offset %llu\n", e->ExceptionRecord->ExceptionCode,
-                 path, (unsigned long long)(uintptr_t(e->ExceptionRecord->ExceptionAddress) - uintptr_t(module)));
+    RBREW_LOG_ERROR("render", "standalone exception %08lx in %s at module offset %llu",
+                    e->ExceptionRecord->ExceptionCode, path,
+                    (unsigned long long)(uintptr_t(e->ExceptionRecord->ExceptionAddress) - uintptr_t(module)));
     return EXCEPTION_EXECUTE_HANDLER;
 }
 #endif
@@ -144,16 +146,15 @@ struct BenchSampler {
             for (auto& [n, c] : by_line) lines.push_back({c, n});
             std::sort(lines.rbegin(), lines.rend());
             for (size_t i = 0; i < lines.size() && i < 40; ++i)
-                std::fprintf(stderr, "[sampler-line] %6.2f%% %s\n", 100.0 * lines[i].first / samples.size(),
-                             lines[i].second.c_str());
+                RBREW_LOG_DEBUG("sampler-line", "%6.2f%% %s", 100.0 * lines[i].first / samples.size(),
+                                lines[i].second.c_str());
         }
         std::vector<std::pair<size_t, std::string>> top;
         for (auto& [n, c] : by_function) top.push_back({c, n});
         std::sort(top.rbegin(), top.rend());
-        std::fprintf(stderr, "[sampler] %zu samples\n", samples.size());
+        RBREW_LOG_DEBUG("sampler", "%zu samples", samples.size());
         for (size_t i = 0; i < top.size() && i < 45; ++i)
-            std::fprintf(stderr, "[sampler] %6.2f%% %s\n", 100.0 * top[i].first / samples.size(),
-                         top[i].second.c_str());
+            RBREW_LOG_DEBUG("sampler", "%6.2f%% %s", 100.0 * top[i].first / samples.size(), top[i].second.c_str());
         SymCleanup(process);
         CloseHandle(target);
     }
@@ -637,7 +638,7 @@ int main(int argc, char** argv) {
         gx2_render_shutdown();
         return 0;
     } catch (const std::exception& e) {
-        std::fprintf(stderr, "render stress failed: %s\n", e.what());
+        RBREW_LOG_ERROR("render", "render stress failed: %s", e.what());
         return 1;
     }
 }
