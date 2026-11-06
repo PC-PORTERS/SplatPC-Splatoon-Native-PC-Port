@@ -7,11 +7,12 @@ schedule goes to storage "schdat2".
 usage: py -3.12 make_vssetting.py [--plan FILE] [--out FILE] [--show]
 
 Plan keys (all optional; defaults in DEFAULT_PLAN):
-  start          "now" (current hour, UTC) or a date "2026-10-27T12:00:00Z"
+  start          "now" (current phase of the shared clock counted from EPOCH: same maps for every
+                 player) or a fixed date "2026-10-27T12:00:00Z"
   phase_hours    length of one rotation, in hours (the game's phase "Time")
   days           how long the schedule runs from start (phases = days*24/phase_hours, max 256)
   rotation       list of {"regular": [maps], "ranked_rule": rule, "ranked": [maps]}, cycled in order;
-                 empty or missing = generated from "map_pool" and "ranked_rules"
+                 empty or missing = random but shared rotation from "map_pool" and "ranked_rules"
   map_pool       maps used by the generated rotation
   ranked_rules   rules cycled by the generated rotation (cVar, cVlf, cVgl)
   weapon_unlock  "start" = the shop may sell every SpotPass weapon from the start date (each one
@@ -24,7 +25,7 @@ DateTime, Phases[{Time int, RegularRule, RegularStages[{MapID}] (<=3), GachiRule
 WeaponUnlock[{WeaponSetID, Date}], MapFirstAppear[{MapID, Date}], RuleFirstAppear[{GachiRule, Date}].
 Dates: "YYYY-MM-DDTHH:MM:SS" + "Z" or "+hh:mm".
 """
-import argparse, datetime, json, pathlib, sys
+import argparse, datetime, json, pathlib, random, sys
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 import byaml
 
@@ -78,30 +79,60 @@ def fmt(d):
     return d.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def generated_rotation(pool, rules, count):
-    """Two Turf War maps and two ranked maps per phase, walking the pool so each map comes back
-    regularly and the four maps of a phase are distinct."""
+# Phases are counted from this date, so every player (launched at any hour) gets the same rotation.
+EPOCH = datetime.datetime(2015, 5, 28, tzinfo=datetime.timezone.utc)
+
+
+_DECKS = {}
+
+
+def _deck(pool, cycle):
+    """Shuffled pool of a cycle. Maps of the previous cycle's last phase go to the end, so a cycle
+    never opens with a map just played. Built in order from cycle 0 (a few thousand tiny shuffles)."""
+    decks = _DECKS.setdefault(pool, [])
+    per_cycle = len(pool) // 4
+    while len(decks) <= cycle:
+        c = len(decks)
+        cards = list(pool)
+        random.Random(f"splatoon-rotation-{c}").shuffle(cards)
+        if decks:
+            previous = set(decks[-1][4 * per_cycle - 4: 4 * per_cycle])
+            cards = [m for m in cards if m not in previous] + [m for m in cards if m in previous]
+        decks.append(cards)
+    return decks[cycle]
+
+
+def generated_phase(pool, rules, index):
+    """Phase number `index` since EPOCH: two Turf War maps and two ranked maps, all distinct.
+    The pool is shuffled once per cycle (seeded by the cycle number, the same on every PC) and dealt
+    four maps per phase, so every map comes back once per cycle in a random order."""
     pool = [map_id(m) for m in pool]
     if len(pool) < 4: raise ValueError("map_pool needs at least 4 maps")
-    out, cursor = [], 0
-    for i in range(count):
-        picks = [pool[(cursor + k) % len(pool)] for k in range(4)]
-        cursor += 3   # odd shift: consecutive phases share at most one map
-        out.append({"regular": picks[:2], "ranked_rule": rules[i % len(rules)], "ranked": picks[2:]})
-    return out
+    per_cycle = len(pool) // 4
+    cycle, slot = divmod(index, per_cycle)
+    picks = _deck(tuple(pool), cycle)[4 * slot: 4 * slot + 4]
+    return {"regular": picks[:2], "ranked_rule": rules[index % len(rules)], "ranked": picks[2:]}
 
 
-def build(plan):
+def build(plan, now=None):
     plan = {**DEFAULT_PLAN, **plan}
-    now = datetime.datetime.now(datetime.timezone.utc).replace(minute=0, second=0, microsecond=0)
-    start = now if plan["start"] == "now" else parse_date(plan["start"])
     hours = int(plan["phase_hours"])
     if not 1 <= hours <= 24: raise ValueError("phase_hours must be 1..24")
+    if plan["start"] == "now":
+        # Current phase on the shared clock: the same start and maps on every PC, and the rotation
+        # moves on every `hours` even when the launcher regenerates the file at each launch.
+        now = datetime.datetime.now(datetime.timezone.utc) if now is None else now
+        first = int((now - EPOCH).total_seconds() // (hours * 3600))
+        start = EPOCH + datetime.timedelta(hours=first * hours)
+    else:
+        start = parse_date(plan["start"])
+        first = 0
     count = min(256, max(1, int(plan["days"]) * 24 // hours))
-    rotation = plan["rotation"] or generated_rotation(plan["map_pool"], [rule(r) for r in plan["ranked_rules"]], count)
+    rules = [rule(r) for r in plan["ranked_rules"]]
     phases = []
     for i in range(count):
-        p = rotation[i % len(rotation)]
+        g = first + i
+        p = plan["rotation"][g % len(plan["rotation"])] if plan["rotation"] else generated_phase(plan["map_pool"], rules, g)
         regular, ranked = [map_id(m) for m in p.get("regular", [])], [map_id(m) for m in p.get("ranked", [])]
         if not 1 <= len(regular) <= 3 or len(ranked) > 3: raise ValueError(f"phase {i}: 1-3 regular maps, 0-3 ranked maps")
         phases.append({
