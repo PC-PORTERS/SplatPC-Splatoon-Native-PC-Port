@@ -88,7 +88,10 @@ if ((Test-Path -LiteralPath (Join-Path $Root '.git')) -and $git) {
   Expand-Archive -LiteralPath $zip -DestinationPath $unpacked -Force
   $source = Get-ChildItem -LiteralPath $unpacked -Directory | Select-Object -First 1
   if (-not $source -or -not (Test-Path -LiteralPath (Join-Path $source.FullName 'Setup.bat'))) { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue; Fail 'The downloaded archive is not this project.' }
-  & robocopy $source.FullName $Root /E /XD build Game .git /NFL /NDL /NJH /NJS /NP | Out-Null
+  # /XD with full paths: a bare name ('Game') would skip EVERY folder of that name at any depth,
+  # case-insensitively, such as recompiler\port\os\game, which then never got updated.
+  $skip = @('build', 'Game', '.git') | ForEach-Object { Join-Path $source.FullName $_ }
+  & robocopy $source.FullName $Root /E /XD @skip /NFL /NDL /NJH /NJS /NP | Out-Null
   if ($LASTEXITCODE -ge 8) { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue; Fail 'Could not copy the new files.' }
 }
 Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
