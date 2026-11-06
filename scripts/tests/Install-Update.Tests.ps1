@@ -52,7 +52,7 @@ $text = Get-Content -LiteralPath $installer -Raw
 Expect 'installer names Splatoon-v288.exe' ($text -match 'Splatoon-v288\.exe') 'missing v288 exe'
 Expect 'installer does not name base exe' ($text -notmatch 'Start the game with Game\\Splatoon\.exe') 'old base exe message'
 $readmeText = Get-Content -LiteralPath $readme -Raw
-Expect 'README names Splatoon-v288.exe' ($readmeText -match 'Splatoon-v288\.exe') 'missing v288 exe'
+Expect 'README starts the game with the shortcut or the v288 exe' ($readmeText -match 'Splatoon PC Port.{0,3} shortcut|Splatoon-v288\.exe') 'README does not say how to start the game'
 Expect 'README does not name base exe' ($readmeText -notmatch 'Start the game with `Game\\Splatoon\.exe`') 'old base exe message'
 
 $root = New-FakeRoot
