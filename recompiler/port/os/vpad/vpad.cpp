@@ -24,6 +24,7 @@
 // In Gamepad View (Tab), the mouse is freed for touch-screen simulation.
 
 #include "../os_common.h"
+#include "../../runtime/camtrace.h"
 #include "../../runtime/screen_mode.h"
 #include "../../runtime/native_control_defaults.h"
 #include "../../runtime/benchmark_input.h"
@@ -324,6 +325,7 @@ void vpad_update_motion(uint8_t* mem, uint32_t buf, float rx, float ry, float dt
     const bool use_gyro = phys_gyro && physical_gyro_enabled();
     float yaw_rate = stick_yaw ? -rx * std::fabs(rx) * kYawRate : 0.0f;
     float pitch_rate = use_gyro && !stick_pitch_with_gyro ? 0.0f : -ry * std::fabs(ry) * kPitchRate;
+    const float traced_mouse_yaw = s_mouse_yaw, traced_mouse_pitch = s_mouse_pitch;
     if (dt > 0 && (s_mouse_yaw != 0.0f || s_mouse_pitch != 0.0f)) {
         yaw_rate += s_mouse_yaw / dt;
         pitch_rate += s_mouse_pitch / dt;
@@ -350,6 +352,7 @@ void vpad_update_motion(uint8_t* mem, uint32_t buf, float rx, float ry, float dt
     if (mouse_variant() == 5) mouse_yaw = 0.0f;   // yaw goes through the stick only
     if (dt > 0) yaw_rate += mouse_yaw / dt;
     else v.yaw += mouse_yaw;
+    rbrew_camtrace::add_motion(dt, traced_mouse_yaw + mouse_yaw, traced_mouse_pitch + mouse_pitch, yaw_rate, rx, ry);
     v.yaw = std::fmod(v.yaw + yaw_rate * dt, 360.0f);
     v.mouse_acc += mouse_yaw;
     const int variant = mouse_variant();
@@ -554,6 +557,7 @@ static void VPADRead(CPUState* cpu) {
         }
         const float mouse_scale = rbrew_settings::g_mouse_scale.load(std::memory_order_relaxed);   // ESC menu
         // rx/ry still hold only the controller's stick here.
+        rbrew_camtrace::add_input(mdx, mdy);
         if (mdx || mdy) s_mouse_aims = true;
         else if (std::fabs(rx) > 0.25f || std::fabs(ry) > 0.25f) s_mouse_aims = false;
         if (rbrew_settings::g_mouse_direct.load(std::memory_order_relaxed)) {

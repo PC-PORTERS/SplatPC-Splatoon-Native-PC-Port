@@ -5577,9 +5577,12 @@ void gx2_render_vk_flush() {
     gx2vk::submit(false);
     gx2_render_query_poll();
 }
+// GX2DrawDone calls that found stream-out exports to publish (the guest reads them after the call).
+std::atomic<uint64_t> g_gx2_streamout_finishes{0};
 bool gx2_render_vk_finish() {
     if (!gx2vk::ready()) return false;
     end_rendering();
+    if (s_streamout_batch.pending_count) g_gx2_streamout_finishes.fetch_add(1, std::memory_order_relaxed);
     // GX2DrawDone (Gambit calls it at every frame end) waited for the GPU to
     // go idle, and the game with it. The guest only reads GPU results back
     // through stream-out exports (published here), occlusion queries (their

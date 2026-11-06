@@ -7,6 +7,7 @@
 // and a native Vulkan device/swapchain; TV/GamePad toggle retains touch input.
 
 #include "../os_common.h"
+#include "../../runtime/camtrace.h"
 #include "../../runtime/screen_mode.h"
 #include "gx2_render.h"
 #include "gx2_pm4_state.h"
@@ -70,8 +71,9 @@ static constexpr int DRC_H = 480;
 static void update_window_title() {
     if (!s_window) return;
     char title_buf[128];
-    std::snprintf(title_buf, sizeof(title_buf), "Splatoon | %s | Vulkan [F3=overlay | Tab=view | F4=social]",
-                  g_screen_mode == ScreenMode::TV ? "TV" : "Gamepad");
+    std::snprintf(title_buf, sizeof(title_buf), "Splatoon | %s | Vulkan [F3=overlay | Tab=view | F4=social]%s",
+                  g_screen_mode == ScreenMode::TV ? "TV" : "Gamepad",
+                  rbrew_camtrace::active() ? "  >>> REC camera (F10 to stop) <<<" : "");
     SDL_SetWindowTitle(s_window, title_buf);
 }
 
@@ -927,6 +929,9 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
                 } else if (ev.key.keysym.scancode == SDL_SCANCODE_F8) {
                     SplatoonDiagnostics::ToggleManualRecord();
                     controller_log("F8 pressed: Manual recording toggled\n");
+                } else if (ev.key.keysym.scancode == SDL_SCANCODE_F10) {
+                    rbrew_camtrace::toggle();   // camera trace: Diagnostics\camtrace-*.csv
+                    controller_log("F10 pressed: camera trace %s\n", rbrew_camtrace::active() ? "on" : "off");
                 } else if (ev.key.keysym.scancode == SDL_SCANCODE_F9) {
                     SplatoonDiagnostics::ManualCapture();
                     controller_log("F9 pressed: Diagnostic snapshot captured\n");
@@ -1081,6 +1086,12 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
         return file;
     }();
     const uint32_t benchmark_frame = s_swap_count.load();
+    static const uint32_t camtrace_at = [] { const char* v = std::getenv("RBREW_CAMTRACE_AT"); return v ? uint32_t(std::strtoul(v, nullptr, 10)) : 0u; }();
+    if (camtrace_at && benchmark_frame == camtrace_at && !rbrew_camtrace::active()) rbrew_camtrace::toggle();   // tests: start without F10
+    rbrew_camtrace::end_frame(benchmark_frame, rbrew_control_defaults::active_scene_type(MEM), frame_delta_ms,
+                              guest_work_ms, vsync_wait_ms, present_wait_ms,
+                              rbrew_benchmark::frame_draws.load(std::memory_order_relaxed));
+    if (rbrew_camtrace::consume_change()) update_window_title();
     if (benchmark_csv) {
         // Vulkan queue submissions since the previous frame (read racily: statistics).
         static uint64_t s_last_submissions = 0;
