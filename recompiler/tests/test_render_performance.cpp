@@ -162,6 +162,7 @@ struct BenchSampler {
 #endif
 void gx2_render_vk_test_stress(bool push, bool churn);
 void gx2_render_vk_test_binding_contracts();
+void gx2_render_vk_test_discard_state();
 void gx2_render_vk_test_lifetime();
 void gx2_render_vk_test_heavy(bool overdraw, bool push);
 void gx2_render_vk_test_watch_ranges();
@@ -594,7 +595,7 @@ int main(int argc, char** argv) {
         }
         if (!npc_characters && mode != "fallback" && mode != "push" && mode != "churn" && mode != "contracts" &&
             mode != "lifetime" && mode != "heavy" && mode != "heavy_push" && mode != "overdraw" && mode != "watch" &&
-            mode != "geometry" && mode != "packets" && mode != "plaza")
+            mode != "geometry" && mode != "packets" && mode != "plaza" && mode != "discard_state")
             throw std::runtime_error("unknown authored benchmark");
         if (!gx2vk::init(nullptr)) return 77;
         gx2_render_init();
@@ -604,7 +605,9 @@ int main(int argc, char** argv) {
         std::optional<BenchSampler> sampler;
         sampler.emplace();
 #endif
-        if (mode == "contracts")
+        if (mode == "discard_state")
+            gx2_render_vk_test_discard_state();
+        else if (mode == "contracts")
             gx2_render_vk_test_binding_contracts();
         else if (mode == "watch")
             gx2_render_vk_test_watch_ranges();
