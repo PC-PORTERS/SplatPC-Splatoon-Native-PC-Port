@@ -40,7 +40,7 @@ def write_dump(root, version, files):
 class UpdateCombinatorTests(unittest.TestCase):
     def test_only_setup_powershell_script_remains(self):
         names = sorted(p.name for p in SCRIPTS.glob('*.ps1'))
-        allowed = {'Setup.ps1', 'Launch-Online.ps1', 'Splatoon-Login.ps1'}
+        allowed = {'Setup.ps1', 'Launch-Online.ps1', 'Splatoon-Login.ps1', 'Launch-Duo.ps1', 'Launch-Duo-Public.ps1'}
         self.assertTrue(set(names).issubset(allowed))
         self.assertFalse((SCRIPTS / 'Install-Update.ps1').exists())
 
