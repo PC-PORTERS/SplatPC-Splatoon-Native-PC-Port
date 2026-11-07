@@ -30,6 +30,8 @@
 #include <mutex>
 #include <thread>
 
+void snd_core_set_pad_sink(void (*sink)(const float*, uint32_t)); // snd_core.cpp
+
 namespace pad_remote {
 namespace {
 constexpr uint32_t kPadW = 854, kPadH = 480;
@@ -46,14 +48,27 @@ const char kPage[] = R"HTML(<!doctype html><html><head><meta charset="utf-8">
 </head><body><img id="v" alt="" draggable="false"><div id="s">Connecting...</div><script>
 const t=new URLSearchParams(location.search).get('t')||'';
 const v=document.getElementById('v'),s=document.getElementById('s');
-let ws=null,shown=null,down=null,lock=null;
+let ws=null,shown=null,down=null,lock=null,ac=null,next=0;
+// GamePad sound: int16 stereo, 32 kHz, small jitter buffer (starts 0.1 s ahead, drops past 0.5 s).
+function sound(){try{if(!ac){const C=window.AudioContext||window.webkitAudioContext;if(C)ac=new C();}
+ if(ac&&ac.state!=='running')ac.resume().then(()=>{if(ac.state==='running'&&s.textContent==='Tap the screen for sound')s.textContent='';});}catch(_){}}
+function play(buf){
+ if(!ac||ac.state!=='running')return;
+ const n=(buf.byteLength-1)>>2;if(n<1)return;
+ const d=new DataView(buf,1),b=ac.createBuffer(2,n,32000),l=b.getChannelData(0),r=b.getChannelData(1);
+ for(let i=0;i<n;i++){l[i]=d.getInt16(i*4,true)/32768;r[i]=d.getInt16(i*4+2,true)/32768;}
+ const now=ac.currentTime;
+ if(next<now+0.02)next=now+0.1;
+ if(next>now+0.5)return;
+ const src=ac.createBufferSource();src.buffer=b;src.connect(ac.destination);src.start(next);next+=n/32000;}
 function ack(){if(ws&&ws.readyState===1)ws.send('a');}
 function connect(){
- ws=new WebSocket('ws://'+location.host+'/ws?t='+encodeURIComponent(t));ws.binaryType='blob';
- ws.onopen=()=>{s.textContent='';};
+ ws=new WebSocket('ws://'+location.host+'/ws?t='+encodeURIComponent(t));ws.binaryType='arraybuffer';
+ ws.onopen=()=>{s.textContent=ac&&ac.state==='running'?'':'Tap the screen for sound';};
  ws.onmessage=e=>{
   if(typeof e.data==='string'){s.textContent=e.data;return;}
-  const u=URL.createObjectURL(e.data);
+  if(new Uint8Array(e.data,0,1)[0]===1){play(e.data);return;}
+  const u=URL.createObjectURL(new Blob([e.data],{type:'image/jpeg'}));
   v.onload=()=>{if(shown)URL.revokeObjectURL(shown);shown=u;ack();};
   v.onerror=()=>{URL.revokeObjectURL(u);ack();};
   v.src=u;};
@@ -69,11 +84,11 @@ async function awake(){try{if('wakeLock' in navigator&&!lock){lock=await navigat
 function full(){const d=document.documentElement;
  if(!document.fullscreenElement&&d.requestFullscreen)d.requestFullscreen({navigationUI:'hide'}).then(()=>{
   if(screen.orientation&&screen.orientation.lock)screen.orientation.lock('landscape').catch(()=>{});}).catch(()=>{});}
-v.addEventListener('pointerdown',e=>{e.preventDefault();full();awake();
+v.addEventListener('pointerdown',e=>{e.preventDefault();sound();full();awake();
  if(down!==null)return;const p=pos(e);if(p[0]<0||p[0]>1||p[1]<0||p[1]>1)return;
  down=e.pointerId;send('d '+xy(p));});
 v.addEventListener('pointermove',e=>{if(e.pointerId===down){e.preventDefault();send('m '+xy(pos(e)));}});
-function up(e){if(e.pointerId===down){down=null;send('u');}}
+function up(e){sound();if(e.pointerId===down){down=null;send('u');}}
 v.addEventListener('pointerup',up);v.addEventListener('pointercancel',up);
 document.addEventListener('contextmenu',e=>e.preventDefault());
 document.addEventListener('visibilitychange',()=>{if(document.hidden){if(down!==null){down=null;send('u');}}else awake();});
@@ -104,8 +119,20 @@ struct Session {
     std::atomic<bool> closed{false};
     std::atomic<bool> acked{true};
     std::mutex send_lock;
-    std::thread sender, receiver;
+    std::thread sender, receiver, audio;
 };
+
+// GamePad sound: the audio thread pushes 96-frame blocks (32 kHz stereo); the audio thread of the
+// session sends them to the phone every ~20 ms as int16, prefixed with byte 1 (pictures start with 0xFF).
+std::mutex s_audio_lock;
+std::vector<int16_t> s_audio_ring; // interleaved stereo, capped at 0.4 s
+void audio_sink(const float* stereo, uint32_t frames) {
+    std::lock_guard lock(s_audio_lock);
+    for (uint32_t i = 0; i < frames * 2; ++i)
+        s_audio_ring.push_back(int16_t(std::clamp(stereo[i], -1.0f, 1.0f) * 32767.0f));
+    constexpr size_t kMax = 32000 * 2 * 4 / 10;
+    if (s_audio_ring.size() > kMax) s_audio_ring.erase(s_audio_ring.begin(), s_audio_ring.end() - kMax);
+}
 Session* s_session = nullptr; // server thread only; never freed at exit (joinable threads)
 
 void set_info(const std::string& error, const std::string& peer) {
@@ -320,6 +347,30 @@ void sender_loop(Session* s) {
     shutdown(s->sock, SD_BOTH); // the receiver stops too
 }
 
+void audio_loop(Session* s) {
+    std::vector<uint8_t> out;
+    std::vector<int16_t> chunk;
+    while (!s->closed) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        {
+            std::lock_guard lock(s_audio_lock);
+            chunk.swap(s_audio_ring);
+        }
+        if (chunk.empty()) continue;
+        out.resize(1 + chunk.size() * 2);
+        out[0] = 1;
+        for (size_t i = 0; i < chunk.size(); ++i) {
+            out[1 + i * 2] = uint8_t(uint16_t(chunk[i]) & 255);
+            out[2 + i * 2] = uint8_t(uint16_t(chunk[i]) >> 8);
+        }
+        chunk.clear();
+        if (!ws_send(*s, 2, out.data(), out.size())) {
+            s->closed = true;
+            shutdown(s->sock, SD_BOTH);
+        }
+    }
+}
+
 void receiver_loop(Session* s) {
     std::vector<uint8_t> payload;
     while (!s->closed) {
@@ -362,6 +413,8 @@ void end_session() {
     shutdown(s_session->sock, SD_BOTH);
     if (s_session->sender.joinable()) s_session->sender.join();
     if (s_session->receiver.joinable()) s_session->receiver.join();
+    if (s_session->audio.joinable()) s_session->audio.join();
+    snd_core_set_pad_sink(nullptr);
     closesocket(s_session->sock);
     delete s_session;
     s_session = nullptr;
@@ -450,6 +503,12 @@ void handle(SOCKET sock, const sockaddr_in& peer) {
     s_session->sock = sock;
     s_session->sender = std::thread(sender_loop, s_session);
     s_session->receiver = std::thread(receiver_loop, s_session);
+    {
+        std::lock_guard lock(s_audio_lock);
+        s_audio_ring.clear();
+    }
+    s_session->audio = std::thread(audio_loop, s_session);
+    snd_core_set_pad_sink(audio_sink);
     s_client = true;
     set_info("", ip_text(peer.sin_addr));
     RBREW_LOG_INFO("phone", "GamePad phone connected: %s\n", ip_text(peer.sin_addr).c_str());
