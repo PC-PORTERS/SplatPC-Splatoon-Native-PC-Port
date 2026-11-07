@@ -37,6 +37,13 @@ func LaunchGame(gameDir string, cfg settings.Configuration, log func(string, ...
 	}
 
 	cmd := exec.Command(exePath)
+	// Linux: the launcher written by the build (Splatoon.sh) also does the online sign-up,
+	// version check and friends relay when online is on; play through it like the player would.
+	if script := filepath.Join(gameDir, "Splatoon.sh"); runtime.GOOS != "windows" && cfg.EnableOnline {
+		if _, err := os.Stat(script); err == nil {
+			cmd = exec.Command("bash", script)
+		}
+	}
 	cmd.Dir = gameDir
 
 	// Inherit process environment and pass game configuration

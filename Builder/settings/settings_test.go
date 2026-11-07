@@ -297,3 +297,35 @@ func TestOnlineSettings(t *testing.T) {
 		t.Errorf("Did not expect RBREW_ONLINE_SERVER in launcher script when online disabled")
 	}
 }
+
+func TestLinuxLauncherOnline(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Splatoon.sh is only written on Linux")
+	}
+	tempDir := t.TempDir()
+	cfg := DefaultConfiguration("/tmp")
+	cfg.PlayerName = "Sq\"$(id)`x`"
+	cfg.EnableOnline = true
+	cfg.OnlineServer = "127.0.0.1:60000"
+	if err := WriteLauncherScript(cfg, tempDir); err != nil {
+		t.Fatalf("WriteLauncherScript failed: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(tempDir, "Splatoon.sh"))
+	if err != nil {
+		t.Fatalf("Failed to read launcher: %v", err)
+	}
+	content := string(data)
+	for _, want := range []string{`cd "$HERE"`, "scripts/splatoon_login.py", `--game "$HERE"`, "RBREW_PSEUDO=\"Sq\\\"\\$(id)\\`x\\`\""} {
+		if !strings.Contains(content, want) {
+			t.Errorf("Expected %q in launcher:\n%s", want, content)
+		}
+	}
+	cfg.EnableOnline = false
+	if err := WriteLauncherScript(cfg, tempDir); err != nil {
+		t.Fatalf("WriteLauncherScript (offline) failed: %v", err)
+	}
+	data, _ = os.ReadFile(filepath.Join(tempDir, "Splatoon.sh"))
+	if strings.Contains(string(data), "splatoon_login.py") {
+		t.Errorf("Did not expect the online launcher when online is disabled")
+	}
+}

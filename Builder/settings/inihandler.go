@@ -287,7 +287,17 @@ func WriteLauncherScript(cfg Configuration, outFolder string) error {
 	if cfg.EnableOnline && strings.TrimSpace(cfg.OnlineServer) != "" {
 		server := strings.TrimSpace(cfg.OnlineServer)
 		onlineLineWin = fmt.Sprintf("set \"RBREW_ONLINE_SERVER=%s\"\nset \"RBREW_PSEUDO=%s\"\n", server, cfg.PlayerName)
-		onlineLineLinux = fmt.Sprintf("export RBREW_ONLINE_SERVER=\"%s\"\nexport RBREW_PSEUDO=\"%s\"\n", server, cfg.PlayerName)
+		onlineLineLinux = fmt.Sprintf("export RBREW_ONLINE_SERVER=\"%s\"\nexport RBREW_PSEUDO=\"%s\"\n", shellEscape(server), shellEscape(cfg.PlayerName)) +
+			// Same online launch as Play-Online.sh when the game sits in the repository's Game folder:
+			// sign-up, version check from /health, pseudo claim, NNCS addresses and the friends relay
+			// (the server comes from scripts/server.txt or server.public.txt). Elsewhere, or without
+			// Python 3, the game starts directly with the server above. --offline skips it.
+			`LOGIN="$HERE/../scripts/splatoon_login.py"
+if [ "${1:-}" != "--offline" ] && [ -f "$LOGIN" ] && command -v python3 >/dev/null 2>&1; then
+    exec python3 "$LOGIN" --game "$HERE" "$@"
+fi
+[ "${1:-}" = "--offline" ] && shift
+`
 	}
 
 	if runtime.GOOS == "windows" {
@@ -305,12 +315,19 @@ set "RBREW_CONSOLE_REGION=%s"
 	scriptPath := filepath.Join(outFolder, "Splatoon.sh")
 	content := fmt.Sprintf(`#!/usr/bin/env bash
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# The Linux port reads settings.ini (and online_identity.ini next to it) from its working directory.
+cd "$HERE"
 export RBREW_PLAYER_NAME="%s"
 export RBREW_CONSOLE_LANGUAGE="%d"
 export RBREW_CONSOLE_REGION="%s"
 %s%sexec "$HERE/Splatoon" "$@"
-`, cfg.PlayerName, cfg.LanguageID, cfg.ConsoleRegion, onlineLineLinux, texDumpLineLinux)
+`, shellEscape(cfg.PlayerName), cfg.LanguageID, shellEscape(cfg.ConsoleRegion), texDumpLineLinux, onlineLineLinux)
 	return os.WriteFile(scriptPath, []byte(content), 0755)
+}
+
+// shellEscape makes a value safe inside a double-quoted bash string.
+func shellEscape(value string) string {
+	return strings.NewReplacer(`\`, `\\`, `"`, `\"`, "$", `\$`, "`", "\\`").Replace(value)
 }
 
 func boolToInt(b bool) int {
