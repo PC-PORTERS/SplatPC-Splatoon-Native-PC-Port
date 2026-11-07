@@ -1,4 +1,4 @@
-// branch_tables.cpp - branch-table jumps of Splatoon v288 .
+// branch_tables.cpp - branch-table jumps of Splatoon v288.
 //
 // Three game functions (022302D8, 02B32454, 0228BD98) pick a case with `bctr` into a table of `b`
 // instructions. RebrewU translated only the first slot, so any other case dispatched to an
@@ -13,13 +13,19 @@
 #include "../runtime/rebrewu_runtime.h"
 #include "rebrewu/logger.hpp"
 #include "../os/vpad/vpad_addrs.h"
+// The case blocks are generated from the manifest `[entries]` section (`force` entries) and registered
+// by gambit_tables_register(); this file points each table slot at the block it branches to, from the
+// manifest `[branch_tables]` section (generated header game_branch_tables.h).
+#include "../runtime/rebrewu_runtime.h"
+#include "../os/vpad/vpad_addrs.h"
+#include "../runtime/game_branch_tables.h"
 #include <cstdio>
 #include <vector>
 
 // The PLT headers are emitted into the source tree from the manifest of the build tree configured
 // last. Building one revision against the other image's map would register every import at the
 // wrong address; stop the build instead.
-static_assert(ADDR_VPADRead == rbrew_game_address(0x02D08048u),
+static_assert(ADDR_VPADRead >= RBREW_GAME_PLT_BEGIN && ADDR_VPADRead < RBREW_GAME_PLT_END,
               "PLT headers were generated for another game revision: reconfigure this build tree");
 
 #if defined(_MSC_VER)
@@ -70,10 +76,11 @@ void branch_tables_install(CPUState* cpu) {
 #if RBREW_GAME_REVISION == 288
     gambit_tables_register(cpu);
     unsigned linked = 0;
-    for (const auto& table : kTables) {
-        unsigned slot = 0;
-        for (uint32_t target : table.targets) {
-            const uint32_t from = table.base + 4u * slot++;
+    for (unsigned index = 0; index < kRbrewBranchTableCount; ++index) {
+        const RbrewBranchTable& table = kRbrewBranchTables[index];
+        for (unsigned slot = 0; slot < table.count; ++slot) {
+            const uint32_t target = table.targets[slot];
+            const uint32_t from = table.base + 4u * slot;
             const uint32_t from_index = from >> 2, to_index = target >> 2;
             if (from_index < cpu->dispatch_size && to_index < cpu->dispatch_size && !cpu->dispatch_table[from_index] &&
                 cpu->dispatch_table[to_index]) {

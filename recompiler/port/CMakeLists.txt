@@ -62,11 +62,9 @@ set(RBREW_PLT_OUTPUTS
     os/padscore/padscore_addrs.h
     os/snd_core/snd_core_addrs.h
     os/stubs/stubs_addrs.h
-    os/vpad/vpad_addrs.h)
-# runtime/game_revision.h is not generated here: it is tracked and selects the
-# revision at compile time (RBREW_GAME_REVISION), so the base-game and the 288
-# build trees can share the source tree (regenerate it with
-# recompiler/tools/generate_revision_header.py only when the 288 addresses change).
+    os/vpad/vpad_addrs.h
+    runtime/game_revision.h
+    runtime/game_branch_tables.h)
 
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(NOT RBREW_MANIFEST_PATH AND Python3_Interpreter_FOUND AND EXISTS "${RBREW_PLT_RESOLVER}")
@@ -469,6 +467,10 @@ if(RBREW_BUILD_TESTS)
     target_link_libraries(gambit_nfp_tests PRIVATE gambit_runtime)
     target_include_directories(gambit_nfp_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME native_nn_nfp COMMAND gambit_nfp_tests)
+    add_executable(gambit_quit_confirm_tests ../tests/test_quit_confirmation.cpp)
+    target_link_libraries(gambit_quit_confirm_tests PRIVATE gambit_runtime)
+    target_include_directories(gambit_quit_confirm_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME native_quit_confirm COMMAND gambit_quit_confirm_tests)
     # Local developer tests/tools below are optional (not in the public tree).
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../tests/test_frame_pacing.cpp")
         add_executable(gambit_frame_pacing_tests ../tests/test_frame_pacing.cpp)

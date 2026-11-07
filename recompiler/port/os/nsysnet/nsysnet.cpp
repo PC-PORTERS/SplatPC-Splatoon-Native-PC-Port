@@ -1221,7 +1221,7 @@ static void curl_global_cleanup_(CPUState* cpu) {
 #if defined(__GNUC__) || defined(__clang__)
 extern "C" __attribute__((weak)) void rbrew_dispatch_ring_dump() {}
 #elif defined(_MSC_VER)
-extern "C" __declspec(selectany) void rbrew_dispatch_ring_dump() {}
+extern "C" void rbrew_dispatch_ring_dump() {}
 #else
 extern "C" void rbrew_dispatch_ring_dump() {}
 #endif

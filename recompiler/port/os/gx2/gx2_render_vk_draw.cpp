@@ -4263,26 +4263,32 @@ bool build_stage(uint8_t* mem, Program& prog, unsigned stage, StageDescriptors& 
         gx2vk::Span span = gl_binding >= 0 && gl_binding < 48 ? S.ubo_binding_points[gl_binding] : gx2vk::Span{};
         if (!bound_now && !gx2vk::span_alive(span)) span = zero_buffer();
         if (!span.buffer) return false;
-        if (material && span.data && gx2material::matches({span.data, size_t(span.size)}, *material)) {
-            // Keep guest data and the shared unmodified upload cache intact,
-            // so Original/Off and other draws immediately retain their values.
-            // shortcut: clone matching blocks per draw; cache by write generation
-            // if profiling shows this small material subset needs it.
-            auto adjusted = gx2vk::upload(span.size, ubo_align);
-            if (!adjusted.data) return false;
-            std::memcpy(adjusted.data, span.data, size_t(span.size));
-            gx2material::apply({adjusted.data, size_t(span.size)}, *material);
-            span = adjusted;
-            static const bool log = [] {
-                const char* v = std::getenv("RBREW_MATERIAL_LOG");
-                return v && v[0] == '1';
-            }();
-            static uint32_t seen = 0;
-            const auto bit = 1u << unsigned(material - gx2material::responses);
-            if (log && !(seen & bit)) {
-                seen |= bit;
-                RBREW_LOG_DEBUG("material", "calibrated %016llx stage=%u bank=%u bytes=%llu",
-                                (unsigned long long)material->albedo_hash, stage, bank, (unsigned long long)span.size);
+        const uint8_t* mat_ptr = host_ubo_ptr ? host_ubo_ptr : span.data;
+        const size_t mat_len = host_ubo_ptr ? std::min<size_t>(host_ubo_len, size_t(span.size)) : size_t(span.size);
+        if (material && mat_ptr) {
+            if (const unsigned mat_scale = gx2material::layout({mat_ptr, mat_len}, *material)) {
+                // Keep guest data and the shared unmodified upload cache intact,
+                // so Original/Off and other draws immediately retain their values.
+                // shortcut: clone matching blocks per draw; cache by write generation
+                // if profiling shows this small material subset needs it.
+                auto adjusted = gx2vk::upload(span.size, ubo_align);
+                if (!adjusted.data) return false;
+                std::memcpy(adjusted.data, mat_ptr, mat_len);
+                if (size_t(span.size) > mat_len) std::memset(adjusted.data + mat_len, 0, size_t(span.size) - mat_len);
+                gx2material::apply_range({adjusted.data, size_t(span.size)}, 0, *material, mat_scale);
+                span = adjusted;
+                static const bool log = [] {
+                    const char* v = std::getenv("RBREW_MATERIAL_LOG");
+                    return v && v[0] == '1';
+                }();
+                static uint32_t seen = 0;
+                const auto bit = 1u << unsigned(material - gx2material::responses);
+                if (log && !(seen & bit)) {
+                    seen |= bit;
+                    RBREW_LOG_DEBUG("material", "calibrated %016llx stage=%u bank=%u bytes=%llu",
+                                    (unsigned long long)material->albedo_hash, stage, bank,
+                                    (unsigned long long)span.size);
+                }
             }
         }
         const VkDeviceSize range =

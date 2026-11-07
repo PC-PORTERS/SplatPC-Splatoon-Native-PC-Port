@@ -25,6 +25,11 @@ Turn it on in the settings menu with *Graphics preset* (Balanced, Realistic or C
 Supported game versions: [VersionDb.md](VersionDb.md) (base game v16 and update 288, EUR). Details of the 288 update: [docs/update-288.md](docs/update-288.md).
 
 ## Playing
+**Camera, cinema mode and PC controls**
+- Field of view, camera distance and height, and a hand-held camera wiggle
+- **Cinema mode**: no HUD and a free camera to fly anywhere for screenshots; **F12** saves a photo without menus
+- Direct **PC mouse aiming** (1:1, like a PC shooter) and a key for every GamePad input
+- Camera spots and character spawn points for testing
 
 **HD textures (optional, built on your PC)**
 - `HD-Textures` upscales the textures you saw while playing with Real-ESRGAN into `Game\textures`; nothing is downloaded or shared
@@ -74,10 +79,11 @@ Supported game versions: [VersionDb.md](VersionDb.md) (base game v16 and update 
 
 ---
 
+### Optional: HD textures
+
 Versions du jeu prises en charge : [VersionDb.md](VersionDb.md) (jeu de base v16 et mise à jour 288, EUR). Détails de la mise à jour 288 : [docs/update-288.md](docs/update-288.md).
 
 ## Jouer
-
 Upscales textures captured during gameplay using Real-ESRGAN into `textures/`.
 - **SplatPC Builder** detects compatible NVIDIA GPUs and automatically activates HD texturing (CUDA acceleration).
 - You can also run the standalone scripts: `HD-Textures.bat` (Windows) or `./HD-Textures.sh` (Linux).

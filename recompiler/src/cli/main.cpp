@@ -361,41 +361,6 @@ int main(int argc, char** argv) {
         // silently drops reachable functions. Fail instead of guessing.
         return EXIT_FAILURE;
     }
-    auto& mf = *manifest_opt;
-    const bool hashes_ok = manifest::verify_hashes(mf);
-    for (const auto& e : mf.errors) RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr) << "manifest: " << e << '\n';
-    if (!hashes_ok) {
-        RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr)
-            << "manifest: " << manifest_path << " was modified without resealing (run 'rebrewu manifest seal')\n";
-        return EXIT_FAILURE;
-    }
-    std::vector<std::string> problems;
-    if (!manifest::verify_image(mf, opts->rpx_path.string(), problems)) {
-        for (const auto& problem : problems)
-            RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr) << "manifest: " << problem << '\n';
-        if (!opts->allow_image_mismatch) {
-            RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr)
-                << "manifest: " << manifest_path << " does not describe " << opts->rpx_path
-                << " (pass --allow-image-mismatch to recompile anyway)\n";
-            return EXIT_FAILURE;
-        }
-        RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr) << "manifest: continuing despite the identity mismatch\n";
-    }
-
-    std::vector<std::string> patch_errors;
-    if (!patches::apply(mf, rpx, patch_errors)) {
-        for (const auto& error : patch_errors)
-            RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr) << "manifest: " << error << '\n';
-        return EXIT_FAILURE;
-    }
-
-    std::size_t hint_count = 0;
-    for (const auto& entry : mf.entries) {
-        if (entry.corroborate)
-            disc_cfg.analyzer_entries.insert(entry.address);
-        else
-            ++hint_count;
-    }
     // The manifest supplies the entry hints and the instruction patches. Both
     // must be known before discovery, because a patch can change control flow.
     std::string manifest_path;
@@ -424,6 +389,15 @@ int main(int argc, char** argv) {
             return EXIT_FAILURE;
         }
         RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr) << "manifest: continuing despite the identity mismatch\n";
+    }
+
+    std::vector<std::string> patch_errors;
+    if (!patches::apply(mf, rpx, patch_errors)) {
+        for (const auto& error : patch_errors)
+            RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr) << "manifest: " << error << '\n';
+        return EXIT_FAILURE;
+    }
+
     }
 
     std::vector<std::string> patch_errors;

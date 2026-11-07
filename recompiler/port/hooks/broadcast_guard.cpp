@@ -6,6 +6,7 @@
 // lists at that moment, so the walk does not end because the lists change while it runs.
 //
 // The recompiler wraps 0285C3D0 (hook list of revision 288) and this hook runs
+// The recompiler wraps 0285C3D0 (`[hooks]` of the manifest) and this hook runs
 // the same walk natively, step for step with the guest code:
 //   0285BD54(obj, -1); group = [key]; head H = obj+0x34+16*group, node offset [H+0xC];
 //   for each receiver e: [obj+0x218] = 0; its handler list H2 = [[[obj+0x30]+4*[e+8]]+8];
@@ -138,6 +139,7 @@ done:
 void broadcast_guard_install() {
     if (const char* v = std::getenv("RBREW_BROADCAST_GUARD"); v && std::strcmp(v, "0") == 0) return;
     if (!rbrew_set_guest_hook(kBroadcast, broadcast)) RBREW_LOG_ERROR("broadcast", "could not register the hook\n");
+    if (!rbrew_set_guest_hook(kBroadcast, broadcast)) RBREW_LOG_WARN("broadcast", "could not register the hook\n");
 }
 #else
 void broadcast_guard_install() {}

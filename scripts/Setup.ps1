@@ -564,9 +564,6 @@ $SelectedManifest = Select-Manifest $rpx
 if (-not $SelectedManifest) {
     Fail "Unsupported game version. None of the manifests in $ManifestDir describes your code\Gambit.rpx (SHA-256 $rpxHash). Add a manifest for this image, or use a supported dump."
 }
-if (Test-UpdateManifest $SelectedManifest) {
-    Fail "This folder is the game update ($SelectedManifest), not the base game. Select the base game dump here; the update installer asks for the update next."
-}
 $revisionLine = Get-Content -LiteralPath $SelectedManifest | Where-Object { $_ -match '^\s*app_version\s*=' } | Select-Object -First 1
 $GameRevision = if ($revisionLine) { (($revisionLine -split '=', 2)[1] -split '#')[0].Trim() } else { '' }
 if (-not $GameRevision) { Fail "The selected manifest has no app_version: $SelectedManifest" }

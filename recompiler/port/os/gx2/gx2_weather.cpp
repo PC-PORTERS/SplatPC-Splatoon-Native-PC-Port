@@ -1061,6 +1061,7 @@ bool is_dome(uint8_t* memory, uint32_t addr, uint32_t size, uint32_t stride) {
         }
     }
     cache.emplace(key, dome);
+    slot = {key, dome};
     if (dome) RBREW_LOG_INFO("weather", "sky dome found (%u vertices, %u bytes)", n, size);
     return dome;
 }
