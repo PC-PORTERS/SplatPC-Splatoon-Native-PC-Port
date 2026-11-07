@@ -301,6 +301,12 @@ function Test-ServerVersion($cfg) {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         $reply = Invoke-RestMethod -Uri "$($uri.Scheme)://$($uri.Authority)/health" -TimeoutSec 4
         $minimum = ConvertTo-GameVersion ([string]$reply.min_client_version)
+        # integrity_mode "enforce": the server only takes its newest listed release (latest_version), so
+        # an older game is stopped here with a clear message instead of a refused sign-in in the game.
+        if ([string]$reply.integrity_mode -eq 'enforce') {
+            $latest = ConvertTo-GameVersion ([string]$reply.latest_version)
+            if ($latest -and (-not $minimum -or $latest -gt $minimum)) { $minimum = $latest }
+        }
         if (-not $minimum) { return '' }
         $installed = $null
         foreach ($file in @((Join-Path $Root 'build\installed-version.txt'), (Join-Path $Root 'VERSION'))) {

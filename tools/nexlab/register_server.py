@@ -146,6 +146,13 @@ def _make_handler(server):
                 payload = {"ok": True}               # no account count (S-18)
                 if server.min_client_version:
                     payload["min_client_version"] = server.min_client_version
+                if server.social is not None and server.social.integrity_mode != "off":
+                    # Versions only (no hashes): the launcher tells an outdated player to update before
+                    # a refused sign-in would show only a generic error.
+                    payload["integrity_mode"] = server.social.integrity_mode
+                    latest = server.social.latest_version()
+                    if latest:
+                        payload["latest_version"] = latest
                 self._reply(200, payload)
                 return
             if path == "/metrics":

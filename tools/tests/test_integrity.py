@@ -208,6 +208,20 @@ class RelayIntegrityTests(unittest.TestCase):
         state = (self.game / "friends" / "state.res").read_text()
         self.assertIn("msg|game files not recognised", state)
 
+    def test_health_publishes_mode_and_latest_version_but_no_hash(self):
+        import json, urllib.request
+        with urllib.request.urlopen(self.url + "/health", timeout=5) as reply:
+            body = json.loads(reply.read())
+        self.assertEqual(body["integrity_mode"], self.server.social.integrity_mode)
+        self.assertEqual(body["latest_version"], self.server.social.latest_version())
+        self.assertNotIn("code", json.dumps(body))
+
+    def test_refusal_names_the_version_to_update_to(self):
+        (self.root / "recompiler" / "a.cpp").write_bytes(b"int cheat;\n")
+        relay = self.relay(integrity.attestation(str(self.root)))
+        relay.step()
+        self.assertIn("update the game to " + self.server.social.latest_version(), relay.message)
+
     def test_an_old_relay_without_a_proof_is_refused(self):
         relay = self.relay(None)
         relay.step()

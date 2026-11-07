@@ -138,7 +138,19 @@ class Social:
             if code in hashes:
                 return True, listed
         claimed = version if isinstance(version, str) and VERSION_RE.match(version) else "?"
-        return False, f"game files not recognised (version {claimed}): update the game, or restore the official files"
+        latest = self.latest_version()
+        need = f" to {latest}" if latest else ""
+        return False, (f"game files not recognised (version {claimed}): update the game{need}, "
+                       "or restore the official files")
+
+    def latest_version(self):
+        """Highest listed release ("0.1.4"), or "" when none; published in /health so launchers can warn."""
+        def key(v):
+            return tuple(int(p) for p in v.split("."))
+        try:
+            return max(self.releases, key=key) if self.releases else ""
+        except ValueError:
+            return ""
 
     def is_attested(self, pid):
         """False only when integrity is enforced and this player has not proved a listed release lately."""
