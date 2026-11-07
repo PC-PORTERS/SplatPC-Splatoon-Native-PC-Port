@@ -1,0 +1,185 @@
+name: Builder CI
+
+on:
+  push:
+    branches: [ '**' ]
+  pull_request:
+    branches: [ '**' ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test-linux:
+    name: Build & Test Linux Builder
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache-dependency-path: Builder/go.sum
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            gcc \
+            pkg-config \
+            libgl1-mesa-dev \
+            xorg-dev \
+            libxcursor-dev \
+            libxrandr-dev \
+            libxinerama-dev \
+            libxi-dev \
+            libxxf86vm-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            wayland-protocols \
+            wget \
+            curl \
+            file
+
+      - name: Install appimagetool
+        run: |
+          curl -sSL -o appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          ./appimagetool --appimage-extract
+          sudo mv squashfs-root /opt/appimagetool
+          sudo ln -s /opt/appimagetool/AppRun /usr/local/bin/appimagetool
+
+      - name: Bundle Builder Assets (Build Time)
+        run: |
+          python3 scripts/bundle_builder_assets.py
+
+      - name: Run Go Unit Tests
+        run: |
+          cd Builder
+          go test -v ./...
+
+      - name: Build SplatPC-Builder Executable and AppImage
+        run: |
+          cd Builder
+          go build -trimpath -ldflags="-s -w" -o splatpc-builder .
+          ./splatpc-builder -check || true
+          cd ..
+
+          APPDIR="AppDir"
+          rm -rf "$APPDIR"
+          mkdir -p "$APPDIR/usr/bin"
+          mkdir -p "$APPDIR/usr/share/icons/hicolor/128x128/apps"
+
+          cp Builder/splatpc-builder "$APPDIR/usr/bin/splatpc-builder"
+          chmod +x "$APPDIR/usr/bin/splatpc-builder"
+
+          printf '#!/usr/bin/env bash\nHERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"\nexport PATH="$HERE/usr/bin:$PATH"\nexec "$HERE/usr/bin/splatpc-builder" "$@"\n' > "$APPDIR/AppRun"
+          chmod +x "$APPDIR/AppRun"
+
+          {
+            echo "[Desktop Entry]"
+            echo "Type=Application"
+            echo "Name=SplatPC Builder"
+            echo "Exec=AppRun"
+            echo "Icon=splatpc-builder"
+            echo "Comment=Native Splatoon PC Port Builder and Setup"
+            echo "Categories=Game;Development;Utility;"
+            echo "Terminal=false"
+            echo "StartupNotify=true"
+          } > "$APPDIR/splatpc-builder.desktop"
+
+          python3 -c '
+          import zlib, struct
+          w, h = 128, 128
+          raw = bytearray()
+          for y in range(h):
+              raw.append(0)
+              for x in range(w):
+                  if 8 <= x <= 120 and 8 <= y <= 120:
+                      if 14 <= x <= 114 and 14 <= y <= 114:
+                          raw.extend([0, 212, 170, 255])
+                      else:
+                          raw.extend([20, 24, 33, 255])
+                  else:
+                      raw.extend([20, 24, 33, 255])
+          def chunk(t, d):
+              return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
+          png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(bytes(raw))) + chunk(b"IEND", b"")
+          with open("AppDir/splatpc-builder.png", "wb") as f: f.write(png)
+          with open("AppDir/.DirIcon", "wb") as f: f.write(png)
+          with open("AppDir/usr/share/icons/hicolor/128x128/apps/splatpc-builder.png", "wb") as f: f.write(png)
+          '
+
+          ARCH=x86_64 appimagetool -n "$APPDIR" SplatPC-Builder-x86_64.AppImage
+          chmod +x SplatPC-Builder-x86_64.AppImage
+          test -f SplatPC-Builder-x86_64.AppImage
+
+      - name: Upload Linux Builder Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: splatpc-builder-linux-ci
+          path: SplatPC-Builder-x86_64.AppImage
+          retention-days: 1
+
+  build-and-test-windows:
+    name: Build & Test Windows Builder
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache-dependency-path: Builder/go.sum
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Add MinGW64 to PATH
+        shell: pwsh
+        run: |
+          "C:\msys64\mingw64\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Bundle Builder Assets (Build Time)
+        shell: pwsh
+        run: |
+          python scripts/bundle_builder_assets.py
+
+      - name: Run Go Unit Tests
+        shell: pwsh
+        run: |
+          cd Builder
+          go test -v ./...
+
+      - name: Build SplatPC-Builder.exe
+        shell: pwsh
+        run: |
+          cd Builder
+          $env:CGO_ENABLED = "1"
+          go build -trimpath -ldflags="-H windowsgui -s -w" -o ../SplatPC-Builder.exe .
+          cd ..
+          if (-not (Test-Path SplatPC-Builder.exe)) {
+            throw "SplatPC-Builder.exe was not created"
+          }
+
+      - name: Upload Windows Builder Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: splatpc-builder-windows-ci
+          path: SplatPC-Builder.exe
+          retention-days: 1

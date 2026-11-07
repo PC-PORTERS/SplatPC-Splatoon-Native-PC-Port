@@ -48,6 +48,7 @@ VkPhysicalDeviceMemoryProperties s_memory{};
 Caps s_caps;
 std::unordered_map<VkFormat, VkFormatProperties> s_format_properties;
 uint64_t s_image_generation = 0;
+uint64_t s_image_serial = 0;
 bool s_ready = false;
 bool s_debug_utils = false;
 #ifdef RBREW_TEXTURE_DIAGNOSTICS
@@ -747,6 +748,12 @@ VKAPI_ATTR void VKAPI_CALL w_BindDescriptorSets(VkCommandBuffer cb, VkPipelineBi
 VKAPI_ATTR void VKAPI_CALL w_PushConstants(VkCommandBuffer cb, VkPipelineLayout l, VkShaderStageFlags s,
                                            uint32_t offset, uint32_t size, const void* v) {
     if (!deferring()) return real.PushConstants(cb, l, s, offset, size, v);
+    if (size <= 8) {
+        uint64_t inline_val = 0;
+        if (size) std::memcpy(&inline_val, v, size);
+        defer(0, [=](uint8_t*) { return [=] { real.PushConstants(cb, l, s, offset, size, &inline_val); }; });
+        return;
+    }
     defer(align16(size), [=](uint8_t* c) {
         const uint8_t* vc = put(c, static_cast<const uint8_t*>(v), size);
         return [=] { real.PushConstants(cb, l, s, offset, size, vc); };
@@ -773,8 +780,65 @@ bool descriptor_buffers(VkDescriptorType t) {
 bool descriptor_texels(VkDescriptorType t) {
     return t == VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER || t == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
 }
+struct CompactPushWrite {
+    uint32_t binding;
+    VkDescriptorType type;
+    union {
+        VkDescriptorBufferInfo buf;
+        VkDescriptorImageInfo img;
+    };
+};
 VKAPI_ATTR void VKAPI_CALL w_PushDescriptorSet(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipelineLayout l,
                                                uint32_t set, uint32_t n, const VkWriteDescriptorSet* writes) {
+    if (deferring() && n > 0 && n <= 32) {
+        bool compact = true;
+        for (uint32_t i = 0; i < n; ++i) {
+            const auto& w = writes[i];
+            if (w.pNext || w.dstArrayElement || w.descriptorCount != 1 ||
+                (w.descriptorType != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER &&
+                 w.descriptorType != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)) {
+                compact = false;
+                break;
+            }
+        }
+        if (compact) {
+            defer(align16(sizeof(CompactPushWrite) * n), [=](uint8_t* c) {
+                auto* cw = reinterpret_cast<CompactPushWrite*>(c);
+                for (uint32_t i = 0; i < n; ++i) {
+                    const auto& w = writes[i];
+                    cw[i].binding = w.dstBinding;
+                    cw[i].type = w.descriptorType;
+                    if (w.descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
+                        cw[i].buf = *w.pBufferInfo;
+                    else
+                        cw[i].img = *w.pImageInfo;
+                }
+                return [=] {
+                    VkWriteDescriptorSet expanded[32];
+                    for (uint32_t i = 0; i < n; ++i) {
+                        auto& w = expanded[i];
+                        w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                        w.pNext = nullptr;
+                        w.dstSet = VK_NULL_HANDLE;
+                        w.dstBinding = cw[i].binding;
+                        w.dstArrayElement = 0;
+                        w.descriptorCount = 1;
+                        w.descriptorType = cw[i].type;
+                        if (cw[i].type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) {
+                            w.pImageInfo = nullptr;
+                            w.pBufferInfo = &cw[i].buf;
+                        } else {
+                            w.pImageInfo = &cw[i].img;
+                            w.pBufferInfo = nullptr;
+                        }
+                        w.pTexelBufferView = nullptr;
+                    }
+                    real.PushDescriptorSetKHR(cb, bp, l, set, n, expanded);
+                };
+            });
+            return;
+        }
+    }
     bool simple = deferring();
     size_t extra = bytes(writes, n);
     for (uint32_t i = 0; simple && i < n; ++i) {
@@ -1662,7 +1726,7 @@ Allocation allocate(const VkMemoryRequirements& requirements, MemoryUse use, boo
         // the size that failed for this type until enough of it is freed again.
         const VkDeviceSize full_block = std::min(kBlockSize, s_memory.memoryHeaps[memory_type.heapIndex].size);
         if (s_block_limit[type] && s_freed_since_limit[type] >= 2 * s_block_limit[type]) {
-            s_block_limit[type] *= 2;   // memory came back: try a bigger block again
+            s_block_limit[type] *= 2; // memory came back: try a bigger block again
             s_freed_since_limit[type] = 0;
             if (s_block_limit[type] >= full_block) s_block_limit[type] = 0;
         }
@@ -1672,7 +1736,7 @@ Allocation allocate(const VkMemoryRequirements& requirements, MemoryUse use, boo
             result = raw_allocate(want, type, mapped, nullptr, block.memory, block.mapped);
             if (result == VK_SUCCESS || !retry_memory(result)) break;
             want /= 2;
-            s_block_limit[type] = std::max(want, kMinBlockSize / 2);   // below kMinBlockSize: no new block
+            s_block_limit[type] = std::max(want, kMinBlockSize / 2); // below kMinBlockSize: no new block
             s_freed_since_limit[type] = 0;
         }
         block.size = want;
@@ -2290,6 +2354,7 @@ bool create_image(Image& image, const ImageDesc& desc) {
     image.desc.levels = info.mipLevels;
     image.desc.layers = info.arrayLayers;
     image.aspect = format_aspect(desc.format);
+    image.image_serial = ++s_image_serial;
     image.content_generation = ++s_image_generation;
     image.views.clear();
     TXDIAG(const auto id = txdiag::create("image", txdiag::handle(image.image)); txdiag::event(
@@ -2339,6 +2404,7 @@ void destroy_image(Image& image) {
     }
 #endif
     image.image = VK_NULL_HANDLE;
+    image.image_serial = 0;
     image.views.clear();
     image.memory = {};
     --s_images;

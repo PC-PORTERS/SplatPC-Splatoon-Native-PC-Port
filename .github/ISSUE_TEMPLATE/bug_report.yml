@@ -1,0 +1,74 @@
+name: Bug Report
+description: File a bug report to help us improve
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this bug.
+
+        > **Important:** Do not include screenshots with a game background (the game is theoretically under copyright).
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the bug
+      description: A clear and concise description of what the bug is.
+      placeholder: Tell us what went wrong...
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: To Reproduce
+      description: Steps to reproduce the behavior.
+      placeholder: |
+        1. Go to '...'
+        2. Click on '....'
+        3. Scroll down to '....'
+        4. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: A clear and concise description of what you expected to happen.
+    validations:
+      required: true
+
+  - type: textarea
+    id: platform
+    attributes:
+      label: Platform
+      description: Enter your operating system, GPU, and version details.
+      placeholder: "[Linux / Windows] ; [GPU] ; [Version]"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: timing
+    attributes:
+      label: When ?
+      description: When does the issue occur?
+      options:
+        - "Compile Time (before I can open the game)"
+        - "Runtime (In the produced game)"
+        - "I don't know"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: "I’ve looked everywhere, and the bug hasn’t been reported or identified yet."
+          required: true
+        - label: "I have provided as much detail as possible."
+          required: true
+        - label: "I am working on / intend to work on a PR to fix this bug (note: after 1 week of inactivity / without a PR, we will assume that you do not intend to submit one)."
+          required: false

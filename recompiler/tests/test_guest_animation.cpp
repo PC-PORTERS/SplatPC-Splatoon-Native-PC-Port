@@ -396,6 +396,22 @@ template <unsigned xo> void compare_paired_math() {
     compare_paired<base | (4u << 21) | (3u << 16) | (4u << 11) | (5u << 6) | 1u>();
     compare_paired<base | (5u << 21) | (3u << 16) | (4u << 11) | (5u << 6)>();
 }
+void psq_equivalence() {
+    // The psq forms only: the math cases above share a pre-existing mismatch
+    // on some hosts (xo=13 rounding of NaN payloads) unrelated to psq.
+    compare_paired<0xE0050000u>();
+    compare_paired<0xE1048008u>();
+    compare_paired<0xE4640000u>();
+    compare_paired<0xE4648FF0u>();
+    compare_paired<0xF1440000u>();
+    compare_paired<0xF5448FF0u>();
+    compare_paired<0xF5408000u>();
+    compare_paired<0xE4600000u>();
+    compare_paired<0xF1408000u>();
+    compare_paired<0xE0608000u>();
+    std::puts("psq constant/interpreter: quantized and float forms bit-exact");
+}
+
 void paired_equivalence() {
     compare_paired_math<10>();
     compare_paired_math<11>();
@@ -442,6 +458,10 @@ int main(int argc, char** argv) {
         }
         if (mode == "paired_equivalence") {
             paired_equivalence();
+            return 0;
+        }
+        if (mode == "psq_equivalence") {
+            psq_equivalence();
             return 0;
         }
         if (mode == "scaling") {

@@ -1,10 +1,24 @@
 #include "gx2_write_watch.h"
+#include <atomic>
+
+namespace {
+std::atomic<uint64_t> s_watch_batch_id{0};
+thread_local uint64_t t_watch_batch_id = 0;
+} // namespace
+
+uint64_t gx2_write_watch_batch_id() {
+    return t_watch_batch_id;
+}
+void gx2_write_watch_end_batch() {
+    t_watch_batch_id = 0;
+}
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <memory>
 #include <mutex>
@@ -30,7 +44,8 @@ struct RangeGeneration {
     uint64_t revision = 0, generation = 0;
 };
 std::unordered_map<uint64_t, RangeGeneration> s_range_generations;
-uint64_t s_range_revision = 1, s_range_hits = 0;
+std::atomic<uint64_t> s_range_revision{1};
+uint64_t s_range_hits = 0;
 
 // Batch epochs (render thread only). Every command of a render batch was
 // queued before the batch started, so every write that preceded its issue
@@ -41,9 +56,19 @@ uint64_t s_range_revision = 1, s_range_hits = 0;
 // pass through the write observer and un-collect their pages.
 // RBREW_WRITE_WATCH_REUSE=0 asks the OS on every query again.
 std::vector<uint32_t> s_page_epoch; // guest page -> epoch of its last collection
-uint32_t s_epoch = 1;
+std::atomic<uint32_t> s_epoch{1};
 thread_local bool t_epoch_reuse = false;
 thread_local const uint8_t* t_observed_mem = nullptr;
+
+struct FastRangeMru {
+    const uint8_t* mem = nullptr;
+    uint32_t addr = 0;
+    uint32_t size = 0;
+    uint64_t revision = ~0ull;
+    uint32_t epoch = ~0u;
+    uint64_t generation = 0;
+};
+thread_local FastRangeMru t_fast_mru[16]{};
 
 // RBREW_WRITE_WATCH_DISABLE=1 reports every range untracked, so all
 // geometry/uniform caches re-read guest memory each use (slow; for A/B tests).
@@ -175,6 +200,15 @@ void remember_range(const uint8_t* mem, uint32_t addr, uint32_t size, uint64_t g
 uint64_t gx2_write_generation(const uint8_t* mem, uint32_t addr, uint32_t size) {
     if (!mem || !size) return 0;
     if (uint64_t(addr) + size > (1ull << 32) || tracking_disabled()) return kGx2WriteUntracked;
+
+    const uint64_t cur_rev = s_range_revision.load(std::memory_order_relaxed);
+    const uint32_t cur_epoch = s_epoch.load(std::memory_order_relaxed);
+    const size_t slot = ((addr >> 4) ^ size) & 15;
+    if (t_epoch_reuse && t_fast_mru[slot].mem == mem && t_fast_mru[slot].addr == addr &&
+        t_fast_mru[slot].size == size && t_fast_mru[slot].revision == cur_rev && t_fast_mru[slot].epoch == cur_epoch) {
+        return t_fast_mru[slot].generation;
+    }
+
     const uint64_t first = addr / kPage, last = (uint64_t(addr) + size - 1) / kPage;
     observe_render_writes(mem);
     std::lock_guard lock(s_lock);
@@ -185,14 +219,34 @@ uint64_t gx2_write_generation(const uint8_t* mem, uint32_t addr, uint32_t size) 
     // next frame meanwhile stay pending for that frame.
     if (gx2interp::replaying()) return newest(first, last);
     uint64_t generation;
-    if (memoized(mem, addr, size, generation)) return generation;
+    if (memoized(mem, addr, size, generation)) {
+        if (t_epoch_reuse) t_fast_mru[slot] = {mem, addr, size, cur_rev, cur_epoch, generation};
+        return generation;
+    }
     generation = (collected_this_epoch(mem, first, last) || collect_batch_pages(mem, first, last)) ? newest(first, last)
                                                                                                    : kGx2WriteUntracked;
     remember_range(mem, addr, size, generation);
+    if (t_epoch_reuse) t_fast_mru[slot] = {mem, addr, size, cur_rev, cur_epoch, generation};
     return generation;
 }
 void gx2_write_generations(const uint8_t* mem, Gx2WriteRange* ranges, uint32_t count) {
     if (!ranges || !count) return;
+    const uint64_t cur_rev = s_range_revision.load(std::memory_order_relaxed);
+    const uint32_t cur_epoch = s_epoch.load(std::memory_order_relaxed);
+    if (t_epoch_reuse && mem) {
+        uint32_t hits = 0;
+        for (uint32_t i = 0; i < count; ++i) {
+            auto& range = ranges[i];
+            const size_t slot = ((range.address >> 4) ^ range.size) & 15;
+            if (t_fast_mru[slot].mem == mem && t_fast_mru[slot].addr == range.address &&
+                t_fast_mru[slot].size == range.size && t_fast_mru[slot].revision == cur_rev &&
+                t_fast_mru[slot].epoch == cur_epoch) {
+                range.generation = t_fast_mru[slot].generation;
+                ++hits;
+            }
+        }
+        if (hits == count) return;
+    }
     if (mem) observe_render_writes(mem);
     std::lock_guard lock(s_lock);
     if (mem) select_arena(mem);
@@ -241,12 +295,17 @@ void gx2_write_generations(const uint8_t* mem, Gx2WriteRange* ranges, uint32_t c
                                    ? newest(range.address / kPage, (uint64_t(range.address) + range.size - 1) / kPage)
                                    : kGx2WriteUntracked;
             remember_range(mem, range.address, range.size, range.generation);
+            if (t_epoch_reuse) {
+                const size_t slot = ((range.address >> 4) ^ range.size) & 15;
+                t_fast_mru[slot] = {mem, range.address, range.size, cur_rev, cur_epoch, range.generation};
+            }
         }
         first_range = end;
     }
 }
 void gx2_write_watch_begin_batch() {
     if (!reuse_enabled()) return;
+    t_watch_batch_id = s_watch_batch_id.fetch_add(1, std::memory_order_relaxed) + 1;
     t_epoch_reuse = true;
     std::lock_guard lock(s_lock);
     s_range_generations.clear();
@@ -306,11 +365,19 @@ bool gx2_write_watch_written_pages(const uint8_t* mem, uint64_t size, std::vecto
     return true;
 }
 #else
+#include <cstdlib>
 bool gx2_write_watch_written_pages(const uint8_t*, uint64_t size, std::vector<uint64_t>& pages) {
     pages.assign(size_t((size / 4096 + 64) / 64), 0);
     return false;
 }
-void gx2_write_watch_begin_batch() {}
+void gx2_write_watch_begin_batch() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("RBREW_WRITE_WATCH_REUSE");
+        return !(value && value[0] == '0');
+    }();
+    if (!enabled) return;
+    t_watch_batch_id = s_watch_batch_id.fetch_add(1, std::memory_order_relaxed) + 1;
+}
 uint64_t gx2_write_generation(const uint8_t*, uint32_t, uint32_t) {
     return kGx2WriteUntracked;
 }

@@ -176,8 +176,7 @@ std::string random_token() {
 // Only this local network may connect (and the PC itself, for a test in its own browser).
 bool private_peer(const sockaddr_in& a) {
     const uint32_t ip = ntohl(a.sin_addr.s_addr);
-    return (ip >> 24) == 127 || (ip >> 24) == 10 || (ip >> 20) == 0xAC1 || (ip >> 16) == 0xC0A8 ||
-           (ip >> 16) == 0xA9FE;
+    return (ip >> 24) == 127 || (ip >> 24) == 10 || (ip >> 20) == 0xAC1 || (ip >> 16) == 0xC0A8 || (ip >> 16) == 0xA9FE;
 }
 std::string ip_text(const in_addr& a) {
     char text[INET_ADDRSTRLEN] = {};
@@ -230,9 +229,10 @@ struct Jpeg {
     std::vector<uint8_t> bgr;
     float quality = 0.7f;
     bool init() {
-        if (const char* q = std::getenv("RBREW_PHONE_JPEG_QUALITY")) quality = std::clamp(float(std::atof(q)), 0.1f, 1.0f);
-        return SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
-                                          IID_PPV_ARGS(&factory)));
+        if (const char* q = std::getenv("RBREW_PHONE_JPEG_QUALITY"))
+            quality = std::clamp(float(std::atof(q)), 0.1f, 1.0f);
+        return SUCCEEDED(
+            CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory)));
     }
     ~Jpeg() {
         if (factory) factory->Release();
@@ -263,8 +263,8 @@ struct Jpeg {
             WICPixelFormatGUID format = GUID_WICPixelFormat24bppBGR;
             ok = SUCCEEDED(frame->Initialize(props)) && SUCCEEDED(frame->SetSize(w, h)) &&
                  SUCCEEDED(frame->SetPixelFormat(&format)) && IsEqualGUID(format, GUID_WICPixelFormat24bppBGR) &&
-                 SUCCEEDED(frame->WritePixels(h, w * 3, UINT(bgr.size()), bgr.data())) &&
-                 SUCCEEDED(frame->Commit()) && SUCCEEDED(encoder->Commit());
+                 SUCCEEDED(frame->WritePixels(h, w * 3, UINT(bgr.size()), bgr.data())) && SUCCEEDED(frame->Commit()) &&
+                 SUCCEEDED(encoder->Commit());
         }
         if (ok) {
             HGLOBAL memory = nullptr;
@@ -272,7 +272,8 @@ struct Jpeg {
             ok = SUCCEEDED(GetHGlobalFromStream(stream, &memory)) && SUCCEEDED(stream->Stat(&stat, STATFLAG_NONAME));
             if (ok) {
                 const void* bytes = GlobalLock(memory);
-                out.assign(static_cast<const uint8_t*>(bytes), static_cast<const uint8_t*>(bytes) + stat.cbSize.LowPart);
+                out.assign(static_cast<const uint8_t*>(bytes),
+                           static_cast<const uint8_t*>(bytes) + stat.cbSize.LowPart);
                 GlobalUnlock(memory);
             }
         }
@@ -312,13 +313,15 @@ void sender_loop(Session* s) {
         auto report = std::chrono::steady_clock::now();
         while (!s->closed) {
             // The phone shows the previous picture first (it answers "a"); after 1 s, send anyway.
-            for (int i = 0; i < 1000 && !s->acked && !s->closed; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            for (int i = 0; i < 1000 && !s->acked && !s->closed; ++i)
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
             const auto wake = last + interval;
             if (std::chrono::steady_clock::now() < wake) std::this_thread::sleep_until(wake);
             {
                 std::unique_lock lock(s_frame_lock);
                 s_want = true;
-                s_frame_cv.wait_for(lock, std::chrono::milliseconds(500), [&] { return s_frame_seq != seen || s->closed; });
+                s_frame_cv.wait_for(lock, std::chrono::milliseconds(500),
+                                    [&] { return s_frame_seq != seen || s->closed; });
                 s_want = false;
                 if (s_frame_seq == seen || s->closed) continue;
                 seen = s_frame_seq;
@@ -391,13 +394,18 @@ void receiver_loop(Session* s) {
         payload.resize(size_t(size));
         if (!recv_all(s->sock, mask, 4) || (size && !recv_all(s->sock, payload.data(), payload.size()))) break;
         for (size_t i = 0; i < payload.size(); ++i) payload[i] ^= mask[i & 3];
-        if (opcode == 8) break;                                                  // close
-        if (opcode == 9) { ws_send(*s, 10, payload.data(), payload.size()); continue; } // ping
+        if (opcode == 8) break; // close
+        if (opcode == 9) {
+            ws_send(*s, 10, payload.data(), payload.size());
+            continue;
+        } // ping
         if (opcode != 1) continue;
         const std::string text(payload.begin(), payload.end());
         int x = 0, y = 0;
-        if (text == "a") s->acked = true;
-        else if (text == "u") set_phone_touch(false, 0, 0);
+        if (text == "a")
+            s->acked = true;
+        else if (text == "u")
+            set_phone_touch(false, 0, 0);
         else if ((text[0] == 'd' || text[0] == 'm') && std::sscanf(text.c_str() + 1, "%d %d", &x, &y) == 2)
             set_phone_touch(true, x, y);
     }
@@ -424,9 +432,10 @@ void end_session() {
 
 // --- HTTP ---------------------------------------------------------------------------------------------
 void reply(SOCKET sock, const char* status, const char* type, const std::string& body) {
-    std::string text = std::string("HTTP/1.1 ") + status + "\r\nContent-Type: " + type +
-                       "\r\nCache-Control: no-store\r\nConnection: close\r\nContent-Length: " +
-                       std::to_string(body.size()) + "\r\n\r\n" + body;
+    std::string text =
+        std::string("HTTP/1.1 ") + status + "\r\nContent-Type: " + type +
+        "\r\nCache-Control: no-store\r\nConnection: close\r\nContent-Length: " + std::to_string(body.size()) +
+        "\r\n\r\n" + body;
     send_all(sock, text.data(), text.size());
 }
 std::string header(const std::string& request, const char* name) {
@@ -466,9 +475,11 @@ void handle(SOCKET sock, const sockaddr_in& peer) {
     const std::string path = target.substr(0, target.find('?'));
     const bool token_ok = query_token(target) == s_token;
     if (path == "/" || path == "/index.html") {
-        if (token_ok) reply(sock, "200 OK", "text/html; charset=utf-8", kPage);
-        else reply(sock, "403 Forbidden", "text/plain; charset=utf-8",
-                   "Wrong link: open the address shown in the game (ESC menu, GamePad on phone).");
+        if (token_ok)
+            reply(sock, "200 OK", "text/html; charset=utf-8", kPage);
+        else
+            reply(sock, "403 Forbidden", "text/plain; charset=utf-8",
+                  "Wrong link: open the address shown in the game (ESC menu, GamePad on phone).");
         closesocket(sock);
         return;
     }
@@ -484,7 +495,8 @@ void handle(SOCKET sock, const sockaddr_in& peer) {
         return;
     }
     const std::string accept = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
-                               "Sec-WebSocket-Accept: " + base64(digest, 20) + "\r\n\r\n";
+                               "Sec-WebSocket-Accept: " +
+                               base64(digest, 20) + "\r\n\r\n";
     if (!send_all(sock, accept.data(), accept.size())) {
         closesocket(sock);
         return;
@@ -540,13 +552,12 @@ void server_loop() {
 }
 
 bool virtual_adapter(const IP_ADAPTER_ADDRESSES* a) {
-    std::wstring name = std::wstring(a->FriendlyName ? a->FriendlyName : L"") + L" " +
-                        (a->Description ? a->Description : L"");
+    std::wstring name =
+        std::wstring(a->FriendlyName ? a->FriendlyName : L"") + L" " + (a->Description ? a->Description : L"");
     for (auto& c : name) c = wchar_t(std::towlower(c));
-    static const wchar_t* const kSkip[] = {L"virtual", L"hyper-v", L"vethernet", L"vpn",       L"wsl",
-                                           L"vmware",  L"vbox",    L"tap",       L"tailscale", L"zerotier",
-                                           L"nord",    L"wireguard", L"bluetooth", L"loopback", L"radmin",
-                                           L"hamachi"};
+    static const wchar_t* const kSkip[] = {L"virtual",   L"hyper-v",  L"vethernet", L"vpn",      L"wsl",  L"vmware",
+                                           L"vbox",      L"tap",      L"tailscale", L"zerotier", L"nord", L"wireguard",
+                                           L"bluetooth", L"loopback", L"radmin",    L"hamachi"};
     for (const wchar_t* skip : kSkip)
         if (name.find(skip) != std::wstring::npos) return true;
     return false;
@@ -556,24 +567,28 @@ std::vector<std::string> find_urls() {
     ULONG size = 16384;
     std::vector<uint8_t> buffer(size);
     auto* list = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data());
-    ULONG result = GetAdaptersAddresses(AF_INET, GAA_FLAG_INCLUDE_GATEWAYS | GAA_FLAG_SKIP_DNS_SERVER, nullptr, list, &size);
+    ULONG result =
+        GetAdaptersAddresses(AF_INET, GAA_FLAG_INCLUDE_GATEWAYS | GAA_FLAG_SKIP_DNS_SERVER, nullptr, list, &size);
     if (result == ERROR_BUFFER_OVERFLOW) {
         buffer.resize(size);
         list = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data());
-        result = GetAdaptersAddresses(AF_INET, GAA_FLAG_INCLUDE_GATEWAYS | GAA_FLAG_SKIP_DNS_SERVER, nullptr, list, &size);
+        result =
+            GetAdaptersAddresses(AF_INET, GAA_FLAG_INCLUDE_GATEWAYS | GAA_FLAG_SKIP_DNS_SERVER, nullptr, list, &size);
     }
     if (result == NO_ERROR)
         for (auto* a = list; a; a = a->Next) {
             if (a->OperStatus != IfOperStatusUp || a->IfType == IF_TYPE_SOFTWARE_LOOPBACK) continue;
             for (auto* u = a->FirstUnicastAddress; u; u = u->Next) {
                 const auto* in = reinterpret_cast<const sockaddr_in*>(u->Address.lpSockaddr);
-                if (in->sin_family != AF_INET || !private_peer(*in) || (ntohl(in->sin_addr.s_addr) >> 24) == 127) continue;
+                if (in->sin_family != AF_INET || !private_peer(*in) || (ntohl(in->sin_addr.s_addr) >> 24) == 127)
+                    continue;
                 int score = 0;
                 if (!virtual_adapter(a)) score += 4;
                 if (a->FirstGatewayAddress) score += 2;
                 if (a->IfType == IF_TYPE_IEEE80211) score += 1;
                 if ((ntohl(in->sin_addr.s_addr) >> 16) == 0xA9FE) score -= 6; // 169.254: no network
-                found.push_back({score, "http://" + ip_text(in->sin_addr) + ":" + std::to_string(s_port) + "/?t=" + s_token});
+                found.push_back(
+                    {score, "http://" + ip_text(in->sin_addr) + ":" + std::to_string(s_port) + "/?t=" + s_token});
             }
         }
     std::stable_sort(found.begin(), found.end(), [](auto& a, auto& b) { return a.first > b.first; });
@@ -628,9 +643,15 @@ void stop() {
     WSACleanup();
 }
 
-bool running() { return s_server.joinable(); }
-int port() { return s_port; }
-bool wants_frames() { return s_client.load(std::memory_order_relaxed); }
+bool running() {
+    return s_server.joinable();
+}
+int port() {
+    return s_port;
+}
+bool wants_frames() {
+    return s_client.load(std::memory_order_relaxed);
+}
 
 void sink(const uint8_t* rgba, uint32_t width, uint32_t height) {
     if (!s_want.load(std::memory_order_relaxed)) return;
@@ -670,11 +691,21 @@ std::string status() {
 namespace pad_remote {
 void start(int) {}
 void stop() {}
-bool running() { return false; }
-int port() { return 0; }
-bool wants_frames() { return false; }
+bool running() {
+    return false;
+}
+int port() {
+    return 0;
+}
+bool wants_frames() {
+    return false;
+}
 void sink(const uint8_t*, uint32_t, uint32_t) {}
-std::vector<std::string> urls() { return {}; }
-std::string status() { return "Windows only for now."; }
+std::vector<std::string> urls() {
+    return {};
+}
+std::string status() {
+    return "Windows only for now.";
+}
 } // namespace pad_remote
 #endif

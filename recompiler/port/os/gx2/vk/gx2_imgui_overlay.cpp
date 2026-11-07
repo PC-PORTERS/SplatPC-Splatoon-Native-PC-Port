@@ -14,6 +14,8 @@
 
 #include "../../runtime/port_settings.h"
 #include "../../runtime/splatoon_diagnostics.h"
+#include "../../nn_nfp/nn_nfp.h"
+#include "../gx2_perf.h"
 #include "../../runtime/online_identity.h"
 #include "../../nn_nfp/nn_nfp.h"
 
@@ -29,9 +31,7 @@
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
-#include <fstream>
 #include <mutex>
-#include <sstream>
 #include <string>
 #include <vector>
 
@@ -105,7 +105,6 @@ MenuPage s_capture_page = MenuPage::Keyboard;
 int s_capture_action = 0;
 MenuPage s_focused_page = MenuPage::Keyboard;
 int s_focused_action = -1; // binding row focused for keyboard/gamepad Clear
-double s_quit_armed_at = -1.0;
 
 const char* const kResolutionLabels[rs::kResolutionCount] = {"720p (console)", "1080p", "1440p", "Display"};
 // GamePad input, with what it does in Splatoon where it is fixed.
@@ -237,7 +236,10 @@ void backend_shutdown() {
     s_graphics_page = gx2_graphics_menu::Page::None;
     s_capture = false;
     s_focused_action = -1;
-    s_quit_armed_at = -1.0;
+    s_quit_confirm_requested.store(false);
+    s_quit_confirm_open.store(false);
+    s_quit_opened_from_gameplay.store(false);
+    s_cancel_quit_confirm.store(false);
     s_capture_active.store(false);
 }
 
@@ -298,9 +300,10 @@ bool process_capture_event(const SDL_Event& e) {
 // Menu shortcuts that ImGui's own navigation does not cover: Back goes up a
 // page (or closes), Delete/Square clears the focused binding.
 void process_nav_event(const SDL_Event& e) {
-    const bool typing = ImGui::GetIO().WantTextInput;     // a text box has the keyboard: Backspace edits it
-    const bool back = (e.type == SDL_KEYDOWN && !e.key.repeat && !typing && e.key.keysym.scancode == SDL_SCANCODE_BACKSPACE) ||
-                      (e.type == SDL_CONTROLLERBUTTONDOWN && e.cbutton.button == SDL_CONTROLLER_BUTTON_B);
+    const bool typing = ImGui::GetIO().WantTextInput;
+    const bool back =
+        (e.type == SDL_KEYDOWN && !e.key.repeat && !typing && e.key.keysym.scancode == SDL_SCANCODE_BACKSPACE) ||
+        (e.type == SDL_CONTROLLERBUTTONDOWN && e.cbutton.button == SDL_CONTROLLER_BUTTON_B);
     if (back) {
         if (s_menu_page == MenuPage::Amiibo)
             set_menu_open(false); // back to the game's own "touch amiibo" screen
@@ -310,7 +313,6 @@ void process_nav_event(const SDL_Event& e) {
             s_menu_page = MenuPage::Main;
         else
             set_menu_open(false);
-        s_quit_armed_at = -1.0;
         return;
     }
     const bool clear = (e.type == SDL_KEYDOWN && !e.key.repeat && e.key.keysym.scancode == SDL_SCANCODE_DELETE) ||
@@ -371,6 +373,59 @@ void build_performance_window(const diag::OverlayMetrics& metrics, VkExtent2D ex
     ImGui::Text("Present %.2f ms", metrics.present_wait_ms);
     ImGui::Text("VSync   %.2f ms", metrics.vsync_wait_ms);
     ImGui::Text("Render  %.2f ms", metrics.render_wait_ms);
+    ImGui::Text("Draws   %u / frame", metrics.draw_calls);
+    // Per-thread CPU: each thread samples its own CPU time at its frame
+    // boundary; the delta between two readings gives the utilization and the
+    // CPU milliseconds that thread spends per displayed frame.
+    static diag::ThreadSensorReading s_prev[8];
+    static size_t s_prev_count = 0;
+    diag::ThreadSensorReading now[8];
+    const size_t sensor_count = diag::GetThreadSensorReadings(now, 8);
+    if (sensor_count) {
+        ImGui::Separator();
+        ImGui::TextUnformatted("Thread CPU");
+        for (size_t i = 0; i < sensor_count; ++i) {
+            double utilization = 0.0;
+            for (size_t p = 0; p < s_prev_count; ++p) {
+                if (s_prev[p].name != now[i].name || now[i].wall_ns <= s_prev[p].wall_ns) continue;
+                utilization = double(now[i].cpu_ns - s_prev[p].cpu_ns) / double(now[i].wall_ns - s_prev[p].wall_ns);
+                break;
+            }
+            const float ms_per_frame = metrics.frame_time_ms > 0.0f ? float(utilization) * metrics.frame_time_ms : 0.0f;
+            ImGui::Text("  %-7s %5.1f%%  %6.1f ms/f", now[i].name, utilization * 100.0, ms_per_frame);
+        }
+        for (size_t i = 0; i < sensor_count; ++i) s_prev[i] = now[i];
+        s_prev_count = sensor_count;
+    }
+    // Replay phases of the last presented frame (scopes turn on with this
+    // window): where the render thread spends its time — preparation
+    // (vertex/index/texture/shader), command emission (draw), GPU sync
+    // (submit_wait) and present.
+    {
+        ImGui::Separator();
+        ImGui::TextUnformatted("Render phases (last frame)");
+        static const unsigned phase_slots[] = {kPerfRenderBusy, kPerfDraw,    kPerfVertex,    kPerfIndex,
+                                               kPerfTexture,    kPerfTexHash, kPerfShaderKey, kPerfDisplayList,
+                                               kPerfSubmitWait, kPerfPresent, kPerfPipeline,  kPerfStage};
+        for (const unsigned slot : phase_slots) {
+            const double ms = double(g_gx2_perf_last_ns[slot].load(std::memory_order_relaxed)) / 1e6;
+            ImGui::Text("  %-12s %6.2f ms", kGx2PerfNames[slot], ms);
+        }
+        if (g_gx2_perf_last_top_dl[0].ns > 0) {
+            ImGui::TextDisabled("  Top display list commands:");
+            for (const auto& row : g_gx2_perf_last_top_dl) {
+                if (!row.key || !row.ns) break;
+                const double ms = double(row.ns) / 1e6;
+                const char* name = gx2_perf_function_name(row.key);
+                if (name) {
+                    ImGui::Text("    %-20s %5.2f ms (%llu)", name, ms, (unsigned long long)row.calls);
+                } else {
+                    ImGui::Text("    0x%08llX           %5.2f ms (%llu)", (unsigned long long)row.key, ms,
+                                (unsigned long long)row.calls);
+                }
+            }
+        }
+    }
     ImGui::Separator();
     if (metrics.ram_usage_bytes)
         ImGui::Text("RAM     %u MB", unsigned(metrics.ram_usage_bytes / (1024 * 1024)));
@@ -502,13 +557,104 @@ void build_controls_page(MenuPage page) {
                                        : "Cross: change    Square: clear    Circle: back");
 }
 
+// The emulated GamePad touchpoint: a file browser for amiibo dumps (.bin).
+// The chosen dump is placed on the touchpoint and the game reads it through
+// nn::nfp on its next poll. Starts in Game/amiibo, then where the last dump was.
+struct AmiiboBrowser {
+    std::filesystem::path dir = "amiibo";
+    std::vector<std::filesystem::path> folders, dumps;
+    bool listed = false;
+    char path[1024] = "";
+    std::string error;
+};
+AmiiboBrowser s_amiibo;
+
+std::string utf8(const std::filesystem::path& path) {
+    const auto text = path.u8string();
+    return std::string(text.begin(), text.end());
+}
+
+void list_amiibo_dir() {
+    namespace fs = std::filesystem;
+    AmiiboBrowser& b = s_amiibo;
+    std::error_code ec;
+    fs::create_directories("amiibo", ec);
+    b.dir = fs::absolute(b.dir, ec);
+    b.folders.clear();
+    b.dumps.clear();
+    for (fs::directory_iterator it(b.dir, fs::directory_options::skip_permission_denied, ec), end; !ec && it != end;
+         it.increment(ec)) {
+        if (it->is_directory(ec))
+            b.folders.push_back(it->path());
+        else if (it->path().extension() == ".bin" || it->path().extension() == ".BIN")
+            b.dumps.push_back(it->path());
+    }
+    std::sort(b.folders.begin(), b.folders.end());
+    std::sort(b.dumps.begin(), b.dumps.end());
+    b.listed = true;
+}
+
+void place_amiibo(const std::filesystem::path& file) {
+    rbrew_nfp::Tag tag;
+    if (!rbrew_nfp::load_dump(file, tag, s_amiibo.error)) return;
+    s_amiibo.error.clear();
+    s_amiibo.dir = file.parent_path();
+    s_amiibo.listed = false;
+    if (rbrew_nfp::touch(tag)) set_menu_open(false);
+}
+
+void build_amiibo_page() {
+    if (!rbrew_nfp::searching()) { // the game stopped waiting (or already read an amiibo)
+        set_menu_open(false);
+        return;
+    }
+    AmiiboBrowser& b = s_amiibo;
+    if (!b.listed || ImGui::IsWindowAppearing()) list_amiibo_dir();
+    const float width = ImGui::GetContentRegionAvail().x;
+    ImGui::TextWrapped("Choose an amiibo dump (.bin) to place on the GamePad's NFC touchpoint.");
+    ImGui::TextDisabled("%s", utf8(b.dir).c_str());
+    ImGui::SetNextItemWidth(width - ImGui::CalcTextSize("Open").x - ImGui::GetStyle().FramePadding.x * 2 -
+                            ImGui::GetStyle().ItemSpacing.x);
+    const bool typed = ImGui::InputTextWithHint("##amiibo_path", "or paste a file path", b.path, sizeof(b.path),
+                                                ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::SameLine();
+    if ((ImGui::Button("Open") || typed) && b.path[0]) {
+        // Quotes from Explorer's "Copy as path".
+        std::string text = b.path;
+        std::erase(text, '"');
+        place_amiibo(std::filesystem::path(std::u8string(text.begin(), text.end())));
+    }
+    if (!b.error.empty()) ImGui::TextColored(ImVec4(0.95f, 0.4f, 0.4f, 1.0f), "%s", b.error.c_str());
+    ImGui::Separator();
+    if (ImGui::BeginChild("##amiibo_files", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() - 4))) {
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+        std::filesystem::path next;
+        if (b.dir.has_parent_path() && b.dir.parent_path() != b.dir && ImGui::Selectable("[..]"))
+            next = b.dir.parent_path();
+        for (const auto& folder : b.folders)
+            if (ImGui::Selectable(("[" + utf8(folder.filename()) + "]").c_str())) next = folder;
+        for (const auto& dump : b.dumps)
+            if (ImGui::Selectable(utf8(dump.filename()).c_str())) place_amiibo(dump);
+        if (b.folders.empty() && b.dumps.empty()) ImGui::TextDisabled("No .bin files in this folder.");
+        if (!next.empty()) {
+            b.dir = next;
+            list_amiibo_dir();
+        }
+    }
+    ImGui::EndChild();
+    if (ImGui::Button("Back", ImVec2(width, 0))) set_menu_open(false);
+}
+
 // ---- Friends page (F4) ----
 // The game's friend list is read from RBREW_FRIENDS_DIR by the fp stubs and filled by scripts/friends_relay.py from the
 // server. This page only talks to that relay through small files in the same folder: add.cmd / remove.cmd (a pseudo),
 // add.res / remove.res ("code|pseudo|text") and state.res ("friend|pid|pseudo|online" lines, "msg|text").
 namespace friends_ui {
 namespace fs = std::filesystem;
-struct Row { std::string pid, name; bool online = false; };
+struct Row {
+    std::string pid, name;
+    bool online = false;
+};
 std::vector<Row> s_rows;
 std::string s_message, s_result;
 double s_read_at = -10.0;
@@ -543,7 +689,10 @@ void refresh() {
         std::istringstream lines(text);
         for (std::string line; std::getline(lines, line);) {
             if (!line.empty() && line.back() == '\r') line.pop_back();
-            if (line.rfind("msg|", 0) == 0) { s_message = line.substr(4); continue; }
+            if (line.rfind("msg|", 0) == 0) {
+                s_message = line.substr(4);
+                continue;
+            }
             if (line.rfind("friend|", 0) != 0) continue;
             const auto a = line.find('|', 7), b = a == std::string::npos ? a : line.find('|', a + 1);
             if (b == std::string::npos) continue;
@@ -581,11 +730,16 @@ void build_page() {
     }
     refresh();
     ImGui::TextDisabled("Your pseudo: %s", rbrew_online::pseudo().c_str());
-    ImGui::TextWrapped("Type a friend's pseudo and press Enter. They must add you too (with your pseudo): you then see each other "
-                       "in the game's friend list and can join each other's rooms.");
+    ImGui::TextWrapped(
+        "Type a friend's pseudo and press Enter. They must add you too (with your pseudo): you then see each other "
+        "in the game's friend list and can join each other's rooms.");
     ImGui::Separator();
-    if (s_focus_input) { ImGui::SetKeyboardFocusHere(); s_focus_input = false; }
-    const bool entered = ImGui::InputText("##friend_pseudo", s_input, sizeof s_input, ImGuiInputTextFlags_EnterReturnsTrue);
+    if (s_focus_input) {
+        ImGui::SetKeyboardFocusHere();
+        s_focus_input = false;
+    }
+    const bool entered =
+        ImGui::InputText("##friend_pseudo", s_input, sizeof s_input, ImGuiInputTextFlags_EnterReturnsTrue);
     ImGui::SameLine();
     const bool clicked = ImGui::Button("Add");
     if ((entered || clicked) && s_input[0]) {
@@ -712,6 +866,7 @@ void build_settings_window() {
     const char* title = s_graphics_page != gx2_graphics_menu::Page::None ? gx2_graphics_menu::title(s_graphics_page)
                         : s_menu_page == MenuPage::Main                  ? "Settings"
                         : s_menu_page == MenuPage::Keyboard              ? "Keyboard & mouse controls"
+                        : s_menu_page == MenuPage::Amiibo                ? "amiibo"
                         : s_menu_page == MenuPage::Friends               ? "Friends"
                         : s_menu_page == MenuPage::Amiibo                ? "amiibo"
                                                                          : "Controller controls";
@@ -722,6 +877,12 @@ void build_settings_window() {
     }
     if (s_graphics_page != gx2_graphics_menu::Page::None) {
         if (gx2_graphics_menu::build_page(s_graphics_page)) s_graphics_page = gx2_graphics_menu::Page::None;
+        ImGui::End();
+        if (!open) set_menu_open(false);
+        return;
+    }
+    if (s_menu_page == MenuPage::Amiibo) {
+        build_amiibo_page();
         ImGui::End();
         if (!open) set_menu_open(false);
         return;
@@ -803,29 +964,72 @@ void build_settings_window() {
     dirty |= ImGui::Checkbox("Invert gyro up/down", &v.gyro_invert_pitch);
     dirty |= ImGui::SliderInt("Mouse sensitivity", &v.mouse_sensitivity, 25, 400, "%d %%");
     dirty |= ImGui::SliderInt("Volume", &v.volume, 0, 100, "%d %%");
-    if (ImGui::Button("Friends (F4)")) { s_menu_page = MenuPage::Friends; friends_ui::s_focus_input = true; }
+    dirty |= ImGui::Checkbox("Confirm before quitting", &v.confirm_quit);
     if (ImGui::Button("Keyboard & mouse controls")) s_menu_page = MenuPage::Keyboard;
     if (ImGui::Button("Controller controls")) s_menu_page = MenuPage::Controller;
     if (ImGui::Button("Quit game")) {
-        const double now = ImGui::GetTime();
-        if (s_quit_armed_at >= 0.0 && now - s_quit_armed_at < 5.0) {
-            s_quit_requested.store(true, std::memory_order_relaxed);
-            s_quit_armed_at = -1.0;
-        } else {
-            s_quit_armed_at = now;
-        }
-    }
-    if (s_quit_armed_at >= 0.0) {
-        if (ImGui::GetTime() - s_quit_armed_at >= 5.0) {
-            s_quit_armed_at = -1.0;
-        } else {
-            ImGui::SameLine();
-            ImGui::TextDisabled("Press again to confirm");
-        }
+        open_quit_confirmation();
     }
     if (dirty) rs::set(v);
     ImGui::End();
     if (!open) set_menu_open(false);
+}
+
+void build_quit_confirmation_popup() {
+    static bool s_dont_ask_again = false;
+
+    if (s_quit_confirm_requested.exchange(false, std::memory_order_relaxed)) {
+        s_dont_ask_again = false;
+        ImGui::OpenPopup("Quit Game?###quit_confirm");
+    }
+
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+
+    if (ImGui::BeginPopupModal("Quit Game?###quit_confirm", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
+        s_quit_confirm_open.store(true, std::memory_order_relaxed);
+
+        ImGui::Text("Are you sure you want to quit?");
+        ImGui::Spacing();
+        ImGui::Checkbox("Don't ask again", &s_dont_ask_again);
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        const float button_width = 120.0f;
+        if (ImGui::Button("Quit", ImVec2(button_width, 0))) {
+            if (s_dont_ask_again) {
+                auto settings = rs::get();
+                settings.confirm_quit = false;
+                rs::set(settings);
+            }
+            s_quit_requested.store(true, std::memory_order_relaxed);
+            s_quit_confirm_open.store(false, std::memory_order_relaxed);
+            ImGui::CloseCurrentPopup();
+        }
+
+        ImGui::SameLine();
+        const bool cancel_clicked = ImGui::Button("Cancel", ImVec2(button_width, 0));
+        ImGui::SetItemDefaultFocus();
+
+        const bool cancel_requested =
+            cancel_clicked || s_cancel_quit_confirm.exchange(false, std::memory_order_relaxed) ||
+            ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight);
+
+        if (cancel_requested) {
+            s_quit_confirm_open.store(false, std::memory_order_relaxed);
+            ImGui::CloseCurrentPopup();
+            if (s_quit_opened_from_gameplay.exchange(false, std::memory_order_relaxed)) {
+                set_menu_open(false);
+            }
+        }
+
+        ImGui::EndPopup();
+    } else {
+        if (!s_quit_confirm_requested.load(std::memory_order_relaxed))
+            s_quit_confirm_open.store(false, std::memory_order_relaxed);
+    }
 }
 
 } // namespace
@@ -837,17 +1041,29 @@ void process_event(const SDL_Event& event) {
 
 bool menu_event(const SDL_Event& event) {
     if (event.type == SDL_CONTROLLERBUTTONDOWN && event.cbutton.button == SDL_CONTROLLER_BUTTON_TOUCHPAD) {
+        if (s_quit_confirm_open.load(std::memory_order_relaxed)) {
+            s_cancel_quit_confirm.store(true, std::memory_order_relaxed);
+            return true;
+        }
         if (!s_capture_active.load(std::memory_order_relaxed)) set_menu_open(!menu_open());
         return true; // in capture mode the render thread cancels it from the queued copy
     }
     if (event.type == SDL_KEYDOWN && !event.key.repeat && event.key.keysym.scancode == SDL_SCANCODE_F4) {
         if (!s_capture_active.load(std::memory_order_relaxed)) {
-            if (menu_open()) s_friends_toggle.fetch_add(1, std::memory_order_relaxed);
-            else { s_friends_request.store(true, std::memory_order_relaxed); set_menu_open(true); }
+            if (menu_open())
+                s_friends_toggle.fetch_add(1, std::memory_order_relaxed);
+            else {
+                s_friends_request.store(true, std::memory_order_relaxed);
+                set_menu_open(true);
+            }
         }
         return true;
     }
     if (event.type == SDL_KEYDOWN && !event.key.repeat && event.key.keysym.scancode == SDL_SCANCODE_ESCAPE) {
+        if (s_quit_confirm_open.load(std::memory_order_relaxed)) {
+            s_cancel_quit_confirm.store(true, std::memory_order_relaxed);
+            return true;
+        }
         if (!s_capture_active.load(std::memory_order_relaxed)) set_menu_open(!menu_open());
         return true;
     }
@@ -993,14 +1209,25 @@ ImDrawData* begin_frame(VkExtent2D extent) {
     if (fresh_menu) {
         const bool friends_page = s_friends_request.exchange(false, std::memory_order_relaxed);
         s_menu_page = friends_page ? MenuPage::Friends : MenuPage::Main;
-        friends_ui::s_focus_input = true;
+        if (friends_page) friends_ui::s_focus_input = true;
         s_graphics_page = gx2_graphics_menu::Page::None;
         s_capture = false;
-        s_quit_armed_at = -1.0;
     }
     if (s_friends_toggle.exchange(0, std::memory_order_relaxed) > 0 && show_menu && !fresh_menu) {
-        if (s_menu_page == MenuPage::Friends) set_menu_open(false);
-        else { s_menu_page = MenuPage::Friends; s_graphics_page = gx2_graphics_menu::Page::None; s_capture = false; friends_ui::s_focus_input = true; }
+        if (s_menu_page == MenuPage::Friends)
+            set_menu_open(false);
+        else {
+            s_menu_page = MenuPage::Friends;
+            s_graphics_page = gx2_graphics_menu::Page::None;
+            s_capture = false;
+            friends_ui::s_focus_input = true;
+        }
+    }
+    if (show_menu && s_amiibo_requested.exchange(false, std::memory_order_relaxed)) {
+        diag::RecordEvent(diag::EventCategory::Input, diag::EventSeverity::Info, 11, "amiibo picker shown");
+        s_menu_page = MenuPage::Amiibo;
+        s_graphics_page = gx2_graphics_menu::Page::None;
+        s_capture = false;
     }
     if (show_menu && s_amiibo_requested.exchange(false, std::memory_order_relaxed)) {
         diag::RecordEvent(diag::EventCategory::Input, diag::EventSeverity::Info, 11, "amiibo picker shown");
@@ -1010,7 +1237,11 @@ ImDrawData* begin_frame(VkExtent2D extent) {
     }
     update_shader_activity();
     s_focused_action = -1;
-    if (show_menu) build_settings_window();
+    if (show_menu && !s_quit_opened_from_gameplay.load(std::memory_order_relaxed)) build_settings_window();
+    build_quit_confirmation_popup();
+    // Phase scopes (gx2_perf.h) record while this window is visible; off they
+    // cost one relaxed load per scope. An RBREW_PERF file keeps them anyway.
+    gx2_set_perf_live(visible());
     if (visible() || show_simple) {
         const auto metrics = diag::GetOverlayMetrics();
         if (visible()) {

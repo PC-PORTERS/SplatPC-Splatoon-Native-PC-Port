@@ -114,6 +114,7 @@ void publish(const Values& v) {
     g_gyro_scale.store(v.gyro_sensitivity / 100.0f, std::memory_order_relaxed);
     g_mouse_scale.store(v.mouse_sensitivity / 100.0f, std::memory_order_relaxed);
     g_volume.store(v.volume / 100.0f, std::memory_order_relaxed);
+    g_confirm_quit.store(v.confirm_quit, std::memory_order_relaxed);
     for (int i = 0; i < kActionCount; ++i) {
         g_keys[i].store(v.keys[i], std::memory_order_relaxed);
         g_pad[i].store(v.pad[i], std::memory_order_relaxed);
@@ -121,9 +122,7 @@ void publish(const Values& v) {
 }
 } // namespace
 void normalize(Values& v) {
-    // The new shaders (graphics presets, weather) are hidden in this build: they do not work
-    // yet, and online every player sees the same game. The code stays for later.
-    v.shader_quality = kShadersOff;
+    v.shader_quality = std::clamp(v.shader_quality, 0, kShaderQualityCount - 1);
     v.weather = std::clamp(v.weather, 0, kWeatherCount - 1);
     v.time_of_day = std::clamp(v.time_of_day, 0, 1439);
     v.day_length = std::clamp(v.day_length, 5, 120);
@@ -221,20 +220,37 @@ std::string foreign_lines() {
     std::string kept;
     std::ifstream in(file_path());
     for (std::string line; in && std::getline(in, line);) {
-        if (!line.empty() && line.back() == 13) line.pop_back();   // CR
+        if (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
         const size_t eq = line.find('=');
         if (line.empty() || line[0] == '#' || eq == std::string::npos) continue;
         const std::string key = line.substr(0, eq);
-        static const char* const kOwned[] = {
-            "resolution", "plaza_60fps", "frame_rate", "gsync", "fullscreen", "borderless", "gamepad_window", "phone_gamepad", "phone_port", "fps_overlay",
-            "simple_overlay",
-            "gyro", "gyro_sensitivity", "gyro_invert_pitch", "mouse_sensitivity", "volume", "shader_quality",
-            "weather", "time_of_day", "day_cycle", "day_length", "clouds", "sun_rays", "bloom", "antialiasing",
-            "motion_blur", "camera_fov", "focus_blur", "vignette", "white_balance", "sway_strength", "cloud_speed",
-            "wind_direction", "mouse_direct", "camera_distance", "camera_height", "realistic_look", "cloud_amount",
-            "big_cloud", "cumulus_amount", "real_time", "fog", "saturation", "contrast", "exposure", "gamma",
-            "shadow_lift", "highlight_softness", "sharpness", "clarity", "film_look", "camera_motion", "cinema_mode",
-            "bindings"};
+        static const char* const kOwned[] = {"resolution",        "plaza_60fps",
+                                             "frame_rate",        "gsync",
+                                             "fullscreen",        "borderless",
+                                             "gamepad_window",    "phone_gamepad",
+                                             "phone_port",        "fps_overlay",
+                                             "simple_overlay",    "gyro",
+                                             "gyro_sensitivity",  "gyro_invert_pitch",
+                                             "mouse_sensitivity", "volume",
+                                             "shader_quality",    "weather",
+                                             "time_of_day",       "day_cycle",
+                                             "day_length",        "clouds",
+                                             "sun_rays",          "bloom",
+                                             "antialiasing",      "motion_blur",
+                                             "camera_fov",        "focus_blur",
+                                             "vignette",          "white_balance",
+                                             "sway_strength",     "cloud_speed",
+                                             "wind_direction",    "mouse_direct",
+                                             "camera_distance",   "camera_height",
+                                             "realistic_look",    "cloud_amount",
+                                             "big_cloud",         "cumulus_amount",
+                                             "real_time",         "fog",
+                                             "saturation",        "contrast",
+                                             "exposure",          "gamma",
+                                             "shadow_lift",       "highlight_softness",
+                                             "sharpness",         "clarity",
+                                             "film_look",         "camera_motion",
+                                             "cinema_mode",       "bindings"};
         bool own = key.rfind("look_", 0) == 0;
         for (const char* name : kOwned) own = own || key == name;
         for (int i = 0; i < kActionCount && !own; ++i)
@@ -243,6 +259,7 @@ std::string foreign_lines() {
     }
     return kept;
 }
+
 void write(const Values& v) {
     const std::string foreign = foreign_lines();
     std::ofstream out(file_path(), std::ios::trunc);
@@ -259,6 +276,7 @@ void write(const Values& v) {
         << "phone_port=" << v.phone_port << "\n"
         << "fps_overlay=" << v.fps_overlay << "\n"
         << "simple_overlay=" << v.simple_overlay << "\n"
+        << "confirm_quit=" << v.confirm_quit << "\n"
         << "gyro=" << v.gyro << "\n"
         << "gyro_sensitivity=" << v.gyro_sensitivity << "\n"
         << "gyro_invert_pitch=" << v.gyro_invert_pitch << "\n"
@@ -305,7 +323,8 @@ void write(const Values& v) {
     for (unsigned i = 0; i < v.looks.size(); ++i)
         if (v.looks[i].saved) out << "look_" << i + 1 << '=' << encode_look(v.looks[i]) << '\n';
     for (int i = 0; i < kActionCount; ++i)
-        out << "key_" << kActionKeys[i] << "=" << v.keys[i] << "\n" << "pad_" << kActionKeys[i] << "=" << v.pad[i] << "\n";
+        out << "key_" << kActionKeys[i] << "=" << v.keys[i] << "\n"
+            << "pad_" << kActionKeys[i] << "=" << v.pad[i] << "\n";
     out << foreign;
 }
 } // namespace
@@ -347,6 +366,8 @@ void load() {
             v.fps_overlay = number != 0;
         else if (key == "simple_overlay")
             v.simple_overlay = number != 0;
+        else if (key == "confirm_quit")
+            v.confirm_quit = number != 0;
         else if (key == "gyro")
             v.gyro = number != 0;
         else if (key == "gyro_sensitivity")

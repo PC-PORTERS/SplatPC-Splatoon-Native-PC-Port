@@ -9,6 +9,7 @@
 #include "../core/manifest/manifest.hpp"
 #include "../patches/manifest_patches.hpp"
 #include "../analysis/cfg_builder.hpp"
+#include "../ir/ir_optimizer.hpp"
 #include "../codegen/cpp_emitter.hpp"
 #include "../codegen/naming.hpp"
 #include "../config/config.hpp"
@@ -347,8 +348,53 @@ int main(int argc, char** argv) {
                 disc_cfg.analyzer_entries.insert(uint32_t(std::stoul(hex, nullptr, 16)));
             } catch (...) {}
         }
-        RBREW_LOG_STREAM(::rbrew::log::Level::Info, nullptr)
-            << "Loaded " << disc_cfg.analyzer_entries.size() << " analyzer entries for corroboration\n";
+        if (opts->verbose)
+            RBREW_LOG_STREAM(::rbrew::log::Level::Info, nullptr)
+                << "Loaded " << disc_cfg.analyzer_entries.size() << " analyzer entries for corroboration\n";
+    }
+    // The manifest supplies the entry hints and the instruction patches. Both
+    // must be known before discovery, because a patch can change control flow.
+    std::string manifest_path;
+    auto manifest_opt = load_manifest(*opts, argv[0], &manifest_path);
+    if (!manifest_opt) {
+        // Without a manifest the indirect-dispatch entries are unknown, which
+        // silently drops reachable functions. Fail instead of guessing.
+        return EXIT_FAILURE;
+    }
+    auto& mf = *manifest_opt;
+    const bool hashes_ok = manifest::verify_hashes(mf);
+    for (const auto& e : mf.errors) RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr) << "manifest: " << e << '\n';
+    if (!hashes_ok) {
+        RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr)
+            << "manifest: " << manifest_path << " was modified without resealing (run 'rebrewu manifest seal')\n";
+        return EXIT_FAILURE;
+    }
+    std::vector<std::string> problems;
+    if (!manifest::verify_image(mf, opts->rpx_path.string(), problems)) {
+        for (const auto& problem : problems)
+            RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr) << "manifest: " << problem << '\n';
+        if (!opts->allow_image_mismatch) {
+            RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr)
+                << "manifest: " << manifest_path << " does not describe " << opts->rpx_path
+                << " (pass --allow-image-mismatch to recompile anyway)\n";
+            return EXIT_FAILURE;
+        }
+        RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr) << "manifest: continuing despite the identity mismatch\n";
+    }
+
+    std::vector<std::string> patch_errors;
+    if (!patches::apply(mf, rpx, patch_errors)) {
+        for (const auto& error : patch_errors)
+            RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr) << "manifest: " << error << '\n';
+        return EXIT_FAILURE;
+    }
+
+    std::size_t hint_count = 0;
+    for (const auto& entry : mf.entries) {
+        if (entry.corroborate)
+            disc_cfg.analyzer_entries.insert(entry.address);
+        else
+            ++hint_count;
     }
     // The manifest supplies the entry hints and the instruction patches. Both
     // must be known before discovery, because a patch can change control flow.
@@ -417,7 +463,7 @@ int main(int argc, char** argv) {
             disc.add_hint({uint32_t(std::stoul(line, nullptr, 16)), {}, true});
             ++count;
         }
-        RBREW_LOG_STREAM(::rbrew::log::Level::Info, nullptr)
+        RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr)
             << "Forced " << count << " diagnostic entry hints from " << opts->hints_file << '\n';
     }
     auto boundaries = disc.discover();
@@ -443,6 +489,9 @@ int main(int argc, char** argv) {
     for (const auto& fb : boundaries) {
         auto func = cfg_builder.build(fb.start, fb.name);
         if (func) {
+            // Final optimization phase: fold/CSE/DCE and compare-to-branch
+            // fusion before anything consumes the IR.
+            ir::optimize_function(*func);
             ir_module.functions.push_back(std::move(*func));
             ++built_ok;
         } else {

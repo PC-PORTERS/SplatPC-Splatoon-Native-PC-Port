@@ -8,12 +8,16 @@
 #include <cstdio>
 #include <stdexcept>
 
-static void check(bool ok, const char* what) { if (!ok) throw std::runtime_error(what); }
+static void check(bool ok, const char* what) {
+    if (!ok) throw std::runtime_error(what);
+}
 using rbrew_net::ipv4;
 using rbrew_net::Policy;
 
 static double g_now = 1000.0;
-static double fake_clock() { return g_now; }
+static double fake_clock() {
+    return g_now;
+}
 
 int main() {
     try {
@@ -29,8 +33,7 @@ int main() {
         check(!lab.online(), "lab reports offline policy");
 
         // --- online: announced addresses can seed the policy at construction ----------
-        Policy seeded(nullptr, true, fake_clock,
-                      {ipv4(198, 51, 100, 7), ipv4(203, 0, 113, 11)});
+        Policy seeded(nullptr, true, fake_clock, {ipv4(198, 51, 100, 7), ipv4(203, 0, 113, 11)});
         check(seeded.allow_destination(ipv4(198, 51, 100, 7)), "seeded server address is allowed");
         check(seeded.allow_destination(ipv4(203, 0, 113, 11)), "seeded nncs address is allowed");
         check(!seeded.allow_destination(ipv4(203, 0, 113, 12)), "an unseeded address stays refused");
@@ -58,7 +61,7 @@ int main() {
         check(online.allow_destination(peer), "re-announced peer allowed");
 
         // --- hostile or unusable destinations ----------------------------------------
-        const uint32_t hostile[] = {ipv4(0, 0, 0, 0), ipv4(0, 1, 2, 3), ipv4(255, 255, 255, 255),
+        const uint32_t hostile[] = {ipv4(0, 0, 0, 0),   ipv4(0, 1, 2, 3),         ipv4(255, 255, 255, 255),
                                     ipv4(224, 0, 0, 1), ipv4(239, 255, 255, 255), ipv4(240, 0, 0, 1)};
         for (uint32_t address : hostile) {
             check(!Policy::acceptable(address), "hostile address is not acceptable");

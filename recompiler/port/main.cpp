@@ -32,7 +32,6 @@
 
 struct OverlayHostMapping {
     uint8_t* arena;
-    bool committed{};
 };
 
 #if defined(_WIN32)
@@ -41,44 +40,19 @@ static void platform_sleep_us(unsigned us) {
     Sleep(us / 1000);
 }
 static uint8_t* alloc_arena(size_t sz) {
-    // Write watch lets the renderer skip guest pages the CPU did not write
-    // since it last copied them (gx2_write_watch.h).
-    auto p = static_cast<uint8_t*>(VirtualAlloc(nullptr, sz, MEM_RESERVE | MEM_WRITE_WATCH, PAGE_NOACCESS));
-    if (p && (!VirtualAlloc(p, RBREW_APPLICATION_ARENA_END, MEM_COMMIT, PAGE_READWRITE) ||
-              !VirtualAlloc(p + RBREW_FG_FREE_BASE, RBREW_FG_FREE_SIZE, MEM_COMMIT, PAGE_READWRITE) ||
-              !VirtualAlloc(p + RBREW_MEM1_BASE, RBREW_MEM1_SIZE, MEM_COMMIT, PAGE_READWRITE) ||
-              !VirtualAlloc(p + RBREW_SHARED_DATA_BASE, RBREW_SHARED_DATA_SIZE, MEM_COMMIT, PAGE_READWRITE))) {
-        VirtualFree(p, 0, MEM_RELEASE);
-        return nullptr;
-    }
-    return p;
+    // One flat aperture over the whole 32-bit guest address space, committed
+    // at startup (pages stay demand-zero until touched). Write watch lets the
+    // renderer skip guest pages the CPU did not write since it last copied
+    // them (gx2_write_watch.h).
+    return static_cast<uint8_t*>(VirtualAlloc(nullptr, sz, MEM_RESERVE | MEM_COMMIT | MEM_WRITE_WATCH, PAGE_READWRITE));
 }
 static bool map_overlay(void* user, uint32_t base, uint32_t size, bool enable) {
     if (!user || base != RBREW_OVERLAY_BASE || size != RBREW_OVERLAY_SIZE) return false;
     auto& mapping = *static_cast<OverlayHostMapping*>(user);
-    auto p = mapping.arena + base;
-    if (enable) {
-        if (!mapping.committed) {
-            if (VirtualAlloc(p, size, MEM_COMMIT, PAGE_READWRITE) != p) return false;
-            mapping.committed = true;
-        } else {
-            DWORD old_protection;
-            if (!VirtualProtect(p, size, PAGE_READWRITE, &old_protection)) return false;
-        }
-        try {
-            rbrew_set_overlay_access(mapping.arena, true);
-        } catch (...) {
-            DWORD old_protection;
-            VirtualProtect(p, size, PAGE_NOACCESS, &old_protection);
-            throw;
-        }
-        RBREW_LOG_INFO("MEM", "OverlayArena mapped: base=%08X size=%08X\n", base, size);
-        return true;
-    }
-    // Cafe unmaps the aperture; its backing storage survives a later remap.
-    DWORD old_protection;
-    if (!VirtualProtect(p, size, PAGE_NOACCESS, &old_protection)) return false;
-    rbrew_set_overlay_access(mapping.arena, false);
+    // The aperture is already committed; only guest-visible accessibility
+    // changes (the checked path consults the overlay registry).
+    rbrew_set_overlay_access(mapping.arena, enable);
+    if (enable) RBREW_LOG_INFO("MEM", "OverlayArena mapped: base=%08X size=%08X\n", base, size);
     return true;
 }
 static void free_arena(uint8_t* p, size_t sz) {
@@ -301,35 +275,24 @@ static void start_profiler() {
 static void start_profiler() {}
 static void start_hang_sampler(const CPUState*) {}
 #include <sys/mman.h>
+#include <sys/prctl.h>
 #include <unistd.h>
 static void platform_sleep_us(unsigned us) {
     usleep(us);
 }
 static uint8_t* alloc_arena(size_t sz) {
-    void* p = mmap(nullptr, sz, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    // One flat aperture over the whole 32-bit guest address space, mapped
+    // readable/writable at startup (pages stay demand-zero until touched).
+    void* p = mmap(nullptr, sz, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (p == MAP_FAILED) return nullptr;
-    auto* base = static_cast<uint8_t*>(p);
-    if (mprotect(p, RBREW_APPLICATION_ARENA_END, PROT_READ | PROT_WRITE) ||
-        mprotect(base + RBREW_FG_FREE_BASE, RBREW_FG_FREE_SIZE, PROT_READ | PROT_WRITE) ||
-        mprotect(base + RBREW_MEM1_BASE, RBREW_MEM1_SIZE, PROT_READ | PROT_WRITE) ||
-        mprotect(base + RBREW_SHARED_DATA_BASE, RBREW_SHARED_DATA_SIZE, PROT_READ | PROT_WRITE)) {
-        munmap(p, sz);
-        return nullptr;
-    }
     return static_cast<uint8_t*>(p);
 }
 static bool map_overlay(void* user, uint32_t base, uint32_t size, bool enable) {
     if (!user || base != RBREW_OVERLAY_BASE || size != RBREW_OVERLAY_SIZE) return false;
     auto& mapping = *static_cast<OverlayHostMapping*>(user);
-    auto p = mapping.arena + base;
-    if (mprotect(p, size, enable ? (PROT_READ | PROT_WRITE) : PROT_NONE)) return false;
-    mapping.committed = true;
-    try {
-        rbrew_set_overlay_access(mapping.arena, enable);
-    } catch (...) {
-        mprotect(p, size, enable ? PROT_NONE : (PROT_READ | PROT_WRITE));
-        throw;
-    }
+    // The aperture is already mapped; only guest-visible accessibility
+    // changes (the checked path consults the overlay registry).
+    rbrew_set_overlay_access(mapping.arena, enable);
     if (enable) RBREW_LOG_INFO("MEM", "OverlayArena mapped: base=%08X size=%08X\n", base, size);
     return true;
 }
@@ -380,7 +343,7 @@ static uint32_t Gambit_entry_point;
 void Gambit_game_register(CPUState* cpu); // registers all recompiled game functions
 #endif
 #include "os/gx2/gx2_env_light.h"
-void player_anim_register(); // idle look-around and opt-in (RBREW_ANIM_LOG) animation trace
+void player_anim_register();               // idle look-around and opt-in (RBREW_ANIM_LOG) animation trace
 void branch_tables_install(CPUState* cpu); // branch_tables.cpp
 void broadcast_guard_install();            // broadcast_guard.cpp
 void coreinit_memory_init(uint8_t* mem);
@@ -424,6 +387,12 @@ void Gambit_data_init(uint8_t* arena);
 static int rbrew_game_main(int argc, char** argv) {
 #else
 int main(int argc, char** argv) {
+#if defined(__linux__)
+    // Pin every hrtimer wakeup to 1 ns: the kernel's default 50 µs timer
+    // slack made each guest/vsync sleep overshoot. Threads created later
+    // inherit this slack, so every wait in the process becomes precise.
+    prctl(PR_SET_TIMERSLACK, 1UL);
+#endif
 #endif
 #if defined(_WIN32)
     (void)rbrew_configure_game_process();
@@ -443,11 +412,10 @@ int main(int argc, char** argv) {
     RBREW_LOG_INFO("FS", "RBREW_CONTENT_DIR=%s\n",
                    getenv("RBREW_CONTENT_DIR") ? getenv("RBREW_CONTENT_DIR") : "./content");
 
-    // 1. Allocate the shared native layout, including application heap memory
-    // The whole 32-bit guest space plus a guard is reserved (no access outside the committed
-    // regions), so a guest address + a short length can never reach host memory, even in a
-    // helper that skips the bounds check: a bad pointer from network data only faults.
-    const size_t arena_sz = (size_t(1) << 32) + 0x100000;
+    // 1. Allocate the shared native layout, including application heap memory.
+    // The aperture spans the whole 32-bit guest address space so any guest
+    // effective address is a plain offset into it.
+    const size_t arena_sz = size_t(RBREW_GUEST_APERTURE_SIZE);
     uint8_t* arena = alloc_arena(arena_sz);
     if (!arena) {
         RBREW_LOG_ERROR("gambit", "Failed to allocate %zu MB guest arena\n", arena_sz >> 20);
@@ -461,8 +429,7 @@ int main(int argc, char** argv) {
         // Owner request: use the RAM this machine has. Ask Windows to keep a
         // large working set resident (soft limits: under real memory
         // pressure Windows may still trim; nothing fails if refused).
-        const uint64_t committed =
-            uint64_t(RBREW_APPLICATION_ARENA_END) + RBREW_FG_FREE_SIZE + RBREW_MEM1_SIZE + RBREW_SHARED_DATA_SIZE;
+        const uint64_t committed = arena_sz;
         MEMORYSTATUSEX status{};
         status.dwLength = sizeof(status);
         if (GlobalMemoryStatusEx(&status)) {
@@ -528,17 +495,17 @@ int main(int argc, char** argv) {
         // Explicit native offline profile: English and unregistered country.
         // These match the selected local reference profile, independently of
         // title region. Neither the provider nor guest code depends on Cemu.
-        RbrewUcSystemProfile uc_profile{1,0};
-        // settings.ini language=1 English / 2 French; RBREW_CONSOLE_LANGUAGE wins.
-        if(const std::string value=rbrew_online_cfg::resolved("RBREW_CONSOLE_LANGUAGE","language","1");!value.empty())
-            uc_profile.language=rbrew_parse_native_uc_scalar(value.c_str(),11);
-        if(const char* value=getenv("RBREW_COUNTRY_REGISTRATION");value && *value)
-            uc_profile.country_registration=rbrew_parse_native_uc_scalar(value,255);
-        rbrew_uc_configure_profile(&cpu_reg,uc_profile);
-        RBREW_LOGF(stderr,"[UC] Native profile: language=%u country_registration=%u\n",
-            uc_profile.language,uc_profile.country_registration);
-        RBREW_LOGF(stderr, "[MCP] Native profile: console=0x%X title_regions=0x%X metadata=%s\n",
-            regions.console_region, regions.title_regions, metadata.string().c_str());
+        RbrewUcSystemProfile uc_profile{1, 0};
+        if (const std::string value = rbrew_online_cfg::resolved("RBREW_CONSOLE_LANGUAGE", "language", "1");
+            !value.empty())
+            uc_profile.language = rbrew_parse_native_uc_scalar(value.c_str(), 11);
+        if (const char* value = getenv("RBREW_COUNTRY_REGISTRATION"); value && *value)
+            uc_profile.country_registration = rbrew_parse_native_uc_scalar(value, 255);
+        rbrew_uc_configure_profile(&cpu_reg, uc_profile);
+        RBREW_LOG_INFO("UC", "Native profile: language=%u country_registration=%u\n", uc_profile.language,
+                       uc_profile.country_registration);
+        RBREW_LOG_INFO("MCP", "Native profile: console=0x%X title_regions=0x%X metadata=%s\n", regions.console_region,
+                       regions.title_regions, metadata.string().c_str());
     } catch (const std::exception& error) {
         RBREW_LOG_ERROR("MCP", "Native profile setup failed: %s\n", error.what());
         delete overlay_mapping;
@@ -552,7 +519,7 @@ int main(int argc, char** argv) {
     gambit_plt_auto_register(&cpu_reg);
     // Every PLT slot now holds the same blank STUB; remember it so imports
     // that no native module overrides can be reported (RBREW_STUB_REPORT).
-    const HostFunc blank_stub = cpu_reg.dispatch_table[rbrew_game_address(0x02D051A0u) >> 2];
+    const HostFunc blank_stub = cpu_reg.dispatch_table[RBREW_GAME_BLANK_STUB >> 2];
     // Now override with real implementations
     coreinit_memory_init(arena);
     coreinit_memory_register(&cpu_reg);

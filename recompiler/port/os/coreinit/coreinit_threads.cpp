@@ -230,7 +230,7 @@ static void OSResumeThread(CPUState* cpu) {
         t_in_guest_thread = false;
     });
     gt->host_thread.detach(); // completion is joined through done, never racing std::thread::join/detach
-    RET = 1; // previous suspend count
+    RET = 1;                  // previous suspend count
 }
 
 // ---------------------------------------------------------------------------

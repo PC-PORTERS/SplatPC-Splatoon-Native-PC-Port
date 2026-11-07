@@ -19,6 +19,7 @@
 
 #include "../os_common.h"
 #include "../gx2/gx2_perf.h"
+#include "../../runtime/splatoon_diagnostics.h"
 #include "../../runtime/port_settings.h"
 #include <stdio.h>
 #include <string.h>
@@ -385,7 +386,9 @@ static void ax_aux_callbacks() {
 // GamePad (DRC 0) stereo of the last 96-frame block, for the phone page; null sink = nothing computed.
 static std::atomic<void (*)(const float*, uint32_t)> s_pad_sink{nullptr};
 static float s_pad_frame[96 * 2];
-void snd_core_set_pad_sink(void (*sink)(const float*, uint32_t)) { s_pad_sink.store(sink); }
+void snd_core_set_pad_sink(void (*sink)(const float*, uint32_t)) {
+    s_pad_sink.store(sink);
+}
 
 static void ax_final_mix_callbacks(float* output) {
     const bool want_pad = s_pad_sink.load() != nullptr;
@@ -466,6 +469,7 @@ static void ax_final_mix_callbacks(float* output) {
 // not depend on the arbitrary buffer size requested by the audio driver.
 void snd_core_render_frames(float* output, uint32_t frames) {
     Gx2PerfScope audio_scope(kPerfAudioRender);
+    SplatoonDiagnostics::SampleThreadCpu("audio");
     // Guest callbacks can acquire guest locks or wait for threads that call AX.
     // Hold the voice-state mutex only for mixing, never across guest execution.
     std::lock_guard render_lock(s_render_audio_mutex);

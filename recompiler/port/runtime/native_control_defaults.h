@@ -61,7 +61,8 @@ enum class FileResult { Unchanged, Updated, Failed };
 inline FileResult apply_save_file(const std::filesystem::path& path) noexcept {
 #if RBREW_GAME_REVISION == 288
     // Save-layout and live-control overrides are only validated for the base.
-    (void)path; return FileResult::Unchanged;
+    (void)path;
+    return FileResult::Unchanged;
 #endif
     try {
         std::error_code error;
@@ -124,11 +125,10 @@ inline int active_scene_type(uint8_t* mem, int* id = nullptr) {
     if (!mem) return -1;
     const uint32_t scene_manager = rbrew_read32(mem, kSceneManager);
     const uint32_t scene_types = rbrew_read32(mem, kSceneTypes);
-    if (!scene_manager || !scene_types ||
-        uint64_t(scene_manager) + 0x160 > WIIU_MEM_SIZE ||
-        uint64_t(scene_types) + 0x118 > WIIU_MEM_SIZE ||
-        !rbrew_memory_accessible(mem, scene_manager + 0x15C, 4) ||
-        !rbrew_memory_accessible(mem, scene_types + 0x18, 0x100)) return -1;
+    if (!scene_manager || !scene_types || uint64_t(scene_manager) + 0x160 > WIIU_MEM_SIZE ||
+        uint64_t(scene_types) + 0x118 > WIIU_MEM_SIZE || !rbrew_memory_accessible(mem, scene_manager + 0x15C, 4) ||
+        !rbrew_memory_accessible(mem, scene_types + 0x18, 0x100))
+        return -1;
     const uint32_t scene_id = rbrew_read32(mem, scene_manager + 0x15C);
     if (scene_id >= 0x40) return -1;
     const uint32_t type = rbrew_read32(mem, scene_types + 0x18 + scene_id * 4);
@@ -149,13 +149,15 @@ inline int motion_controls(uint8_t* mem) {
 #endif
     if (!mem) return -1;
     const uint32_t manager = rbrew_read32(mem, kManager);
-    if (!manager || uint64_t(manager) + 0x184 > WIIU_MEM_SIZE || !rbrew_memory_accessible(mem, manager + 0x182, 1)) return -1;
+    if (!manager || uint64_t(manager) + 0x184 > WIIU_MEM_SIZE || !rbrew_memory_accessible(mem, manager + 0x182, 1))
+        return -1;
     return mem[manager + 0x182] ? 1 : 0;
 }
 
 inline void apply_live(uint8_t* mem) {
 #if RBREW_GAME_REVISION == 288
-    (void)mem; return;
+    (void)mem;
+    return;
 #endif
     if (!mem) return;
     // Original 020355C0 copies the eight-byte GamePad option into +0x17C.

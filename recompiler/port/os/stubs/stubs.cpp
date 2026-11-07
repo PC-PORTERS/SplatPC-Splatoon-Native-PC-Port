@@ -12,9 +12,10 @@
 #include "../coreinit/coreinit_fs.h"
 #include "zlib_bridge.h"
 #include "../../runtime/online_identity.h"
-void boss_local_register(CPUState* cpu);   // boss_local.cpp
-void acp_network_time_register(CPUState* cpu);   // acp_network_time.cpp
-void fp_lab_register(CPUState* cpu);             // fp_lab.cpp
+
+void boss_local_register(CPUState* cpu);       // boss_local.cpp
+void acp_network_time_register(CPUState* cpu); // acp_network_time.cpp
+void fp_lab_register(CPUState* cpu);           // fp_lab.cpp
 constexpr uint32_t SAVE_OK = 0;
 
 static void SAVEInit(CPUState* cpu) {
@@ -397,13 +398,6 @@ static void ACPGetTitleMetaXml(CPUState* cpu) {
     RET = (uint32_t)-1;
 }
 
-// snd_core remote (Wii Remote speaker) output: no remotes, so no samples.
-// The blank STUBs returned r3, which the game's 3 ms WPAD-speaker alarm
-// would read as a sample count once alarms fire.
-static void AXRmtGetSamplesLeft(CPUState* cpu) { RET = 0; }
-static void AXRmtGetSamples(CPUState* cpu)     { RET = 0; }
-static void AXRmtAdvancePtr(CPUState* cpu)     { RET = 0; }
-
 // nn_ndm stubs
 static void NDMEnterExclusiveMode(CPUState* cpu) {
     RET = 0;
@@ -415,11 +409,24 @@ static void NDMGetCurrentState(CPUState* cpu) {
     RET = 0;
 }
 
+// snd_core remote (Wii Remote speaker) output: no remotes, so no samples.
+// The blank STUBs returned r3, which the game's 3 ms WPAD-speaker alarm
+// would read as a sample count once alarms fire.
+static void AXRmtGetSamplesLeft(CPUState* cpu) {
+    RET = 0;
+}
+static void AXRmtGetSamples(CPUState* cpu) {
+    RET = 0;
+}
+static void AXRmtAdvancePtr(CPUState* cpu) {
+    RET = 0;
+}
+
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 #include "stubs_addrs.h"
-#include "../snd_core/snd_core_addrs.h"   // AXRmt* (module snd_core)
+#include "../snd_core/snd_core_addrs.h"
 
 void stubs_register(CPUState* cpu) {
 #define REG(name) rbrew_register_func(cpu, ADDR_##name, name)
@@ -543,7 +550,8 @@ void stubs_register(CPUState* cpu) {
     // Network time from the host clock, online mode only (acp_network_time.cpp).
     acp_network_time_register(cpu);
     // nn::fp::IsOnline: the friends service is "online" exactly when the port's online mode is.
-    rbrew_register_func(cpu, ADDR_IsOnline__Q2_2nn2fpFv, [](CPUState* cpu) { RET = rbrew_online::config().online ? 1u : 0u; });
+    rbrew_register_func(cpu, ADDR_IsOnline__Q2_2nn2fpFv,
+                        [](CPUState* cpu) { RET = rbrew_online::config().online ? 1u : 0u; });
     // Friend list shared between the two lab games (fp_lab.cpp, RBREW_FRIENDS_DIR only).
     fp_lab_register(cpu);
 #undef REG

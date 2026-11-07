@@ -186,6 +186,7 @@ struct Image {
     Allocation memory;
     ImageDesc desc;
     VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+    uint64_t image_serial = 0;       // unique per live VkImage allocation
     uint64_t content_generation = 0; // changes on creation and every recorded image write
     struct View {
         uint64_t key;

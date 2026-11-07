@@ -34,7 +34,7 @@ namespace rbrew_camtrace {
 struct State {
     std::mutex lock;
     std::atomic<bool> on{false};
-    std::atomic<int> changed{0};       // +1 started, -1 stopped (for the window title)
+    std::atomic<int> changed{0}; // +1 started, -1 stopped (for the window title)
     FILE* file = nullptr;
     std::string path;
     uint32_t frames = 0, first_frame = 0;
@@ -48,7 +48,7 @@ struct State {
     bool camera = false;
     float cam_yaw = 0, cam_pitch = 0, last_yaw = 0, last_pitch = 0;
     bool have_last = false;
-    int search = -1;   // main camera search: 0 not a camera scene, 1 idle, 2 searching, 3 found
+    int search = -1; // main camera search: 0 not a camera scene, 1 idle, 2 searching, 3 found
     // RenderDoc
     void (*trigger_capture)() = nullptr;
     unsigned captures = 0;
@@ -114,10 +114,9 @@ inline void toggle() {
     s.file = std::fopen(name, "w");
     if (!s.file) return;
     std::setvbuf(s.file, nullptr, _IOFBF, 1 << 16);
-    std::fprintf(s.file,
-                 "frame,t_ms,scene,frame_ms,guest_ms,vsync_ms,present_ms,draws,reads,motions,mouse_dx,mouse_dy,"
-                 "stick_rx,stick_ry,mouse_yaw_deg,mouse_pitch_deg,dt_sum_ms,dt_min_ms,dt_max_ms,max_rate_dps,"
-                 "camera,cam_yaw_deg,cam_pitch_deg,cam_dyaw_deg,cam_dpitch_deg,cam_search,rdoc\n");
+    std::fprintf(s.file, "frame,t_ms,scene,frame_ms,guest_ms,vsync_ms,present_ms,draws,reads,motions,mouse_dx,mouse_dy,"
+                         "stick_rx,stick_ry,mouse_yaw_deg,mouse_pitch_deg,dt_sum_ms,dt_min_ms,dt_max_ms,max_rate_dps,"
+                         "camera,cam_yaw_deg,cam_pitch_deg,cam_dyaw_deg,cam_dpitch_deg,cam_search,rdoc\n");
     s.frames = 0;
     s.first_frame = 0;
     s.start = std::chrono::steady_clock::now();
@@ -194,7 +193,9 @@ inline void end_frame(uint32_t frame, int scene, float frame_ms, float guest_ms,
         s.last_pitch = s.cam_pitch;
         s.have_last = true;
     }
-    std::fprintf(s.file, "%u,%.3f,%d,%.3f,%.3f,%.3f,%.3f,%u,%u,%u,%ld,%ld,%.3f,%.3f,%.4f,%.4f,%.3f,%.3f,%.3f,%.1f,%d,%.4f,%.4f,%.4f,%.4f,%d,%d\n",
+    std::fprintf(s.file,
+                 "%u,%.3f,%d,%.3f,%.3f,%.3f,%.3f,%u,%u,%u,%ld,%ld,%.3f,%.3f,%.4f,%.4f,%.3f,%.3f,%.3f,%.1f,%d,%.4f,%.4f,"
+                 "%.4f,%.4f,%d,%d\n",
                  frame, t, scene, frame_ms, guest_ms, vsync_ms, present_ms, draws, s.reads, s.motions, s.mouse_x,
                  s.mouse_y, s.stick_rx, s.stick_ry, s.mouse_yaw_deg, s.mouse_pitch_deg, s.dt_sum * 1000.0,
                  s.motions ? s.dt_min * 1000.0 : 0.0, s.dt_max * 1000.0, s.rate_max, int(s.camera), s.cam_yaw,
@@ -218,7 +219,8 @@ inline void end_frame(uint32_t frame, int scene, float frame_ms, float guest_ms,
         s.last_capture_frame = frame;
         s.capture_next_line = true;
     }
-    if (++s.frames >= 3600) stop_locked(s); // 60 s at 60 FPS
+    if (++s.frames >= 3600)
+        stop_locked(s); // 60 s at 60 FPS
     else if (s.frames % 60 == 0)
         std::fflush(s.file);
 }

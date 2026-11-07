@@ -679,4 +679,3 @@ void coreinit_fs_register(CPUState* cpu) {
     REG(FSReadDir);
 #undef REG
 }
-
