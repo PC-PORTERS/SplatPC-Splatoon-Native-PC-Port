@@ -107,6 +107,8 @@ void publish(const Values& v) {
     g_mouse_direct.store(v.mouse_direct, std::memory_order_relaxed);
     g_gsync.store(v.gsync, std::memory_order_relaxed);
     g_gamepad_window.store(v.gamepad_window, std::memory_order_relaxed);
+    g_phone_gamepad.store(v.phone_gamepad, std::memory_order_relaxed);
+    g_phone_port.store(v.phone_port, std::memory_order_relaxed);
     g_gyro.store(v.gyro, std::memory_order_relaxed);
     g_gyro_invert_pitch.store(v.gyro_invert_pitch, std::memory_order_relaxed);
     g_gyro_scale.store(v.gyro_sensitivity / 100.0f, std::memory_order_relaxed);
@@ -224,7 +226,7 @@ std::string foreign_lines() {
         if (line.empty() || line[0] == '#' || eq == std::string::npos) continue;
         const std::string key = line.substr(0, eq);
         static const char* const kOwned[] = {
-            "resolution", "plaza_60fps", "frame_rate", "gsync", "fullscreen", "gamepad_window", "fps_overlay",
+            "resolution", "plaza_60fps", "frame_rate", "gsync", "fullscreen", "gamepad_window", "phone_gamepad", "phone_port", "fps_overlay",
             "simple_overlay",
             "gyro", "gyro_sensitivity", "gyro_invert_pitch", "mouse_sensitivity", "volume", "shader_quality",
             "weather", "time_of_day", "day_cycle", "day_length", "clouds", "sun_rays", "bloom", "antialiasing",
@@ -252,6 +254,8 @@ void write(const Values& v) {
         << "gsync=" << v.gsync << "\n"
         << "fullscreen=" << v.fullscreen << "\n"
         << "gamepad_window=" << v.gamepad_window << "\n"
+        << "phone_gamepad=" << v.phone_gamepad << "\n"
+        << "phone_port=" << v.phone_port << "\n"
         << "fps_overlay=" << v.fps_overlay << "\n"
         << "simple_overlay=" << v.simple_overlay << "\n"
         << "gyro=" << v.gyro << "\n"
@@ -332,6 +336,10 @@ void load() {
             v.fullscreen = number != 0;
         else if (key == "gamepad_window")
             v.gamepad_window = number != 0;
+        else if (key == "phone_gamepad")
+            v.phone_gamepad = number != 0;
+        else if (key == "phone_port")
+            v.phone_port = (number >= 1024 && number <= 65535) ? number : 8771;
         else if (key == "fps_overlay")
             v.fps_overlay = number != 0;
         else if (key == "simple_overlay")

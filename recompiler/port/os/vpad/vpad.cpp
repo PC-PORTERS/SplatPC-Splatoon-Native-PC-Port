@@ -694,6 +694,7 @@ static void VPADRead(CPUState* cpu) {
     // Session recording/replay (RBREW_INPUT_RECORD / RBREW_INPUT_REPLAY):
     // the frame's whole pad, gyro and motion time step included.
     bool live_touch = true;
+    const TouchState touch = current_touch(); // mouse, else phone (screen_mode.h)
     if (rbrew_benchmark::recording() || rbrew_benchmark::replaying()) {
         rbrew_benchmark::Pad pad;
         pad.buttons = buttons;
@@ -701,9 +702,9 @@ static void VPADRead(CPUState* cpu) {
         pad.ly = ly;
         pad.rx = rx;
         pad.ry = ry;
-        pad.touched = g_touch_state.touched ? 1 : 0;
-        pad.x = g_touch_state.touched ? g_touch_state.x : 0;
-        pad.y = g_touch_state.touched ? g_touch_state.y : 0;
+        pad.touched = touch.touched ? 1 : 0;
+        pad.x = touch.touched ? touch.x : 0;
+        pad.y = touch.touched ? touch.y : 0;
         if (has_phys_gyro) std::copy_n(phys_gyro, 3, pad.gyro);
         pad.dt = motion_seconds();
         int scene_id = -1;
@@ -731,9 +732,9 @@ static void VPADRead(CPUState* cpu) {
 
     // --- Simulated touch from mouse in Gamepad View ---
     {
-        const bool touched = (live_touch && g_touch_state.touched) || auto_touched;
-        const uint16_t tx = touched ? (auto_touched ? auto_tx : vpad_touch_raw_x(g_touch_state.x)) : 0;
-        const uint16_t ty = touched ? (auto_touched ? auto_ty : vpad_touch_raw_y(g_touch_state.y)) : 0;
+        const bool touched = (live_touch && touch.touched) || auto_touched;
+        const uint16_t tx = touched ? (auto_touched ? auto_tx : vpad_touch_raw_x(touch.x)) : 0;
+        const uint16_t ty = touched ? (auto_touched ? auto_ty : vpad_touch_raw_y(touch.y)) : 0;
         const uint16_t validity = touched ? VPAD_TP_VALID : VPAD_TP_INVALID_XY;
         write_touch_data(MEM, buf + kVpadTpNormal, tx, ty, touched, validity);
         write_touch_data(MEM, buf + kVpadTpFiltered1, tx, ty, touched, validity);

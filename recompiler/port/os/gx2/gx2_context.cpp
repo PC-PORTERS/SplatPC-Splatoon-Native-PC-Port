@@ -10,6 +10,7 @@
 #include "../../runtime/camtrace.h"
 #include "../../runtime/screen_mode.h"
 #include "gx2_render.h"
+#include "pad_remote.h"
 #include "gx2_pm4_state.h"
 #include "gx2_perf.h"
 #include "gx2_vblank.h"
@@ -213,6 +214,33 @@ void stop() {
 } // namespace pad_view
 #endif
 
+// The GamePad picture goes to the GamePad window and/or a phone (pad_remote.h). The renderer has one
+// sink; its GPU copy runs only while one of them needs it.
+static std::atomic<bool> s_pad_window_live{false};
+static void pad_fanout(const uint8_t* rgba, uint32_t width, uint32_t height) {
+#if defined(_WIN32)
+    if (s_pad_window_live.load(std::memory_order_relaxed)) pad_view::sink(rgba, width, height);
+#endif
+    pad_remote::sink(rgba, width, height);
+}
+static void sync_pad_consumers() {
+    static int s_phone_port = 0; // port the phone server was started on, 0 = off
+    const bool phone = rbrew_settings::g_phone_gamepad.load(std::memory_order_relaxed);
+    const int port = rbrew_settings::g_phone_port.load(std::memory_order_relaxed);
+    if (phone && s_phone_port != port) {
+        pad_remote::start(port);
+        s_phone_port = port;
+    } else if (!phone && s_phone_port) {
+        pad_remote::stop();
+        s_phone_port = 0;
+    }
+    static bool s_registered = false;
+    const bool wanted = s_pad_window_live.load(std::memory_order_relaxed) || pad_remote::wants_frames();
+    if (wanted == s_registered) return;
+    s_registered = wanted;
+    gx2_native_run(true, [wanted] { gx2_render_pad_window(wanted ? pad_fanout : nullptr); });
+}
+
 // Opens or closes the GamePad window to follow the menu setting (window thread, every frame).
 bool gx2_mouse_on_pad_window() { return s_pad_window && (s_mouse_released || SDL_GetMouseFocus() == s_pad_window); }
 static void sync_pad_window() {
@@ -235,13 +263,13 @@ static void sync_pad_window() {
             SendMessageW(info.info.win.window, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icon));
         }
         pad_view::start(info.info.win.window);
-        gx2_native_run(true, [] { gx2_render_pad_window(pad_view::sink); });
+        s_pad_window_live = true; // sync_pad_consumers turns the GPU copy on
         s_pad_window = window;
         if (g_screen_mode == ScreenMode::Gamepad) toggle_screen_mode(); // the main window shows the TV again
         else SDL_RaiseWindow(s_window);
         sync_overlay_mouse_mode();
     } else {
-        gx2_native_run(true, [] { gx2_render_pad_window(nullptr); });
+        s_pad_window_live = false;
         pad_view::stop();
         SDL_DestroyWindow(s_pad_window);
         s_pad_window = nullptr;
@@ -1064,6 +1092,7 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
         // Pump SDL events first (the ImGui menu frees the cursor itself:
         // sync_overlay_mouse_mode).
         sync_pad_window();
+        sync_pad_consumers();
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
             const Uint32 from = event_window(ev);

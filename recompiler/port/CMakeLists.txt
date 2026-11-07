@@ -172,6 +172,8 @@ add_library(gambit_runtime STATIC
     os/sysapp/sysapp_title.cpp
     os/coreinit/coreinit_fs.cpp
     os/gx2/gx2_context.cpp
+    os/gx2/pad_remote.cpp
+    third_party/qrcodegen/qrcodegen.cpp
     os/gx2/gx2_draw.cpp
     os/gx2/gx2_surface_layout.cpp
     os/gx2/r700_to_glsl.cpp
@@ -238,7 +240,7 @@ target_link_libraries(gambit_runtime PUBLIC
 target_link_libraries(gambit_runtime PRIVATE imgui)
 
 if(WIN32)
-    target_link_libraries(gambit_runtime PUBLIC ws2_32 winmm)
+    target_link_libraries(gambit_runtime PUBLIC ws2_32 winmm bcrypt iphlpapi windowscodecs ole32)
     if(HAVE_MINIAUDIO)
         target_link_libraries(gambit_runtime PUBLIC ole32 ksuser)
     endif()
