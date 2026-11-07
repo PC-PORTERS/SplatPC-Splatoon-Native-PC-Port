@@ -104,6 +104,7 @@ server.json
 !/scripts/allowed_signers
 !/scripts/server.public.txt
 !/scripts/friends_relay.py
+!/scripts/splatoon_login.py
 !/scripts/integrity.py
 !/scripts/integrity-manifest.txt
 
