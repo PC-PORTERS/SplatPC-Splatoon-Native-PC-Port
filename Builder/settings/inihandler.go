@@ -286,7 +286,16 @@ func WriteLauncherScript(cfg Configuration, outFolder string) error {
 	onlineLineLinux := ""
 	if cfg.EnableOnline && strings.TrimSpace(cfg.OnlineServer) != "" {
 		server := strings.TrimSpace(cfg.OnlineServer)
-		onlineLineWin = fmt.Sprintf("set \"RBREW_ONLINE_SERVER=%s\"\nset \"RBREW_PSEUDO=%s\"\n", server, cfg.PlayerName)
+		onlineLineWin = fmt.Sprintf("set \"RBREW_ONLINE_SERVER=%s\"\nset \"RBREW_PSEUDO=%s\"\n", batEscape(server), batEscape(cfg.PlayerName)) +
+			// Same online launch as Play-Online.bat when the game sits in the repository's Game folder:
+			// sign-up, version check, pseudo claim and the friends relay, then the game. Elsewhere the
+			// game starts directly with the server above. --offline skips it.
+			`if /i not "%~1"=="--offline" if exist "%~dp0..\scripts\Splatoon-Login.ps1" (
+  start "" /d "%~dp0" powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "%~dp0..\scripts\Splatoon-Login.ps1"
+  exit /b 0
+)
+if /i "%~1"=="--offline" shift
+`
 		onlineLineLinux = fmt.Sprintf("export RBREW_ONLINE_SERVER=\"%s\"\nexport RBREW_PSEUDO=\"%s\"\n", shellEscape(server), shellEscape(cfg.PlayerName)) +
 			// Same online launch as Play-Online.sh when the game sits in the repository's Game folder:
 			// sign-up, version check from /health, pseudo claim, NNCS addresses and the friends relay
@@ -307,7 +316,7 @@ set "RBREW_PLAYER_NAME=%s"
 set "RBREW_CONSOLE_LANGUAGE=%d"
 set "RBREW_CONSOLE_REGION=%s"
 %s%sstart "" "%%~dp0Splatoon.exe" %%*
-`, cfg.PlayerName, cfg.LanguageID, cfg.ConsoleRegion, onlineLineWin, texDumpLineWin)
+`, batEscape(cfg.PlayerName), cfg.LanguageID, batEscape(cfg.ConsoleRegion), onlineLineWin, texDumpLineWin)
 		return os.WriteFile(scriptPath, []byte(content), 0755)
 	}
 
@@ -323,6 +332,12 @@ export RBREW_CONSOLE_REGION="%s"
 %s%sexec "$HERE/Splatoon" "$@"
 `, shellEscape(cfg.PlayerName), cfg.LanguageID, shellEscape(cfg.ConsoleRegion), texDumpLineLinux, onlineLineLinux)
 	return os.WriteFile(scriptPath, []byte(content), 0755)
+}
+
+// batEscape makes a value safe inside set "NAME=value" of a .bat file: it drops what could end the
+// quotes, expand a variable or start a new line (a pseudo like `x" & calc & "` must stay text).
+func batEscape(value string) string {
+	return strings.NewReplacer(`"`, "", "%", "", "!", "", "^", "", "\r", "", "\n", "").Replace(value)
 }
 
 // shellEscape makes a value safe inside a double-quoted bash string.

@@ -44,6 +44,12 @@ func LaunchGame(gameDir string, cfg settings.Configuration, log func(string, ...
 			cmd = exec.Command("bash", script)
 		}
 	}
+	// Windows: same idea through Launch_Splatoon.bat (it goes through scripts\Splatoon-Login.ps1 when present).
+	if script := filepath.Join(gameDir, "Launch_Splatoon.bat"); runtime.GOOS == "windows" && cfg.EnableOnline {
+		if _, err := os.Stat(script); err == nil {
+			cmd = exec.Command("cmd", "/c", script)
+		}
+	}
 	cmd.Dir = gameDir
 
 	// Inherit process environment and pass game configuration
