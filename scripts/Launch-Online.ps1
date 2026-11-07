@@ -9,7 +9,10 @@ param([int]$Port = 60000, [switch]$Diag, [string]$NexServer = '', [string]$Nncs1
 $ErrorActionPreference='Stop'
 $Root=Split-Path -Parent $PSScriptRoot
 $Game=Join-Path $Root 'Game'
-$Executable=Join-Path $Game 'Splatoon-v288.exe'
+# Setup.ps1 installs Game\Splatoon.exe; older installs have Splatoon-v288.exe: the newer one wins.
+$Executable=@('Splatoon.exe', 'Splatoon-v288.exe') | ForEach-Object { Join-Path $Game $_ } | Where-Object { Test-Path -LiteralPath $_ } |
+    Sort-Object { (Get-Item -LiteralPath $_).LastWriteTime } -Descending | Select-Object -First 1
+if(-not $Executable){$Executable=Join-Path $Game 'Splatoon.exe'}
 $LogDirectory=Join-Path $Root 'build\diagnostics'
 New-Item -ItemType Directory -Path $LogDirectory -Force | Out-Null
 $RunName=Get-Date -Format 'yyyyMMdd-HHmmss'
@@ -25,7 +28,7 @@ trap {
   } catch {}
   exit 1
 }
-if(-not(Test-Path -LiteralPath $Executable)){throw 'Game\Splatoon-v288.exe has not been built yet.'}
+if(-not(Test-Path -LiteralPath $Executable)){throw 'Game\Splatoon.exe has not been built yet.'}
 # Old run logs are removed after 7 days so they never fill the disk.
 Get-ChildItem -LiteralPath $LogDirectory -Filter 'online-*' -File -ErrorAction SilentlyContinue |
   Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-7) } | Remove-Item -Force -ErrorAction SilentlyContinue

@@ -12,7 +12,11 @@ param(
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
 $Game = Join-Path $Root 'Game'
-$Exe = Join-Path $Game 'Splatoon-v288.exe'
+# Setup.ps1 installs Game\Splatoon.exe; older installs have Splatoon-v288.exe: the newer one wins.
+$Exe = @('Splatoon.exe', 'Splatoon-v288.exe') | ForEach-Object { Join-Path $Game $_ } | Where-Object { Test-Path -LiteralPath $_ } |
+    Sort-Object { (Get-Item -LiteralPath $_).LastWriteTime } -Descending | Select-Object -First 1
+if (-not $Exe) { $Exe = Join-Path $Game 'Splatoon.exe' }
+$ExeName = Split-Path -Leaf $Exe
 $Logs = Join-Path $Root 'build\diagnostics'
 $Stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 New-Item -ItemType Directory -Path $Logs -Force | Out-Null
@@ -54,7 +58,7 @@ foreach ($Name in 'A', 'B') {
   if (-not (Test-Path (Join-Path $Dir 'save\save.dat')) -and (Test-Path (Join-Path $Game 'save\save.dat'))) {
     Copy-Item (Join-Path $Game 'save\save.dat') (Join-Path $Dir 'save\save.dat')
   }
-  Copy-Item $Exe (Join-Path $Dir 'Splatoon-v288.exe') -Force
+  Copy-Item $Exe (Join-Path $Dir $ExeName) -Force
   Get-ChildItem $Game -Filter '*.dll' | Copy-Item -Destination $Dir -Force
   $Ini = @()
   if (Test-Path (Join-Path $Game 'settings.ini')) {
@@ -70,7 +74,7 @@ foreach ($Name in 'A', 'B') {
   if ($CaptureTrace) { $env:RBREW_CAPTURE_TRACE = Join-Path $Logs "duop-$Stamp-$Name-capture.txt" } else { Remove-Item Env:RBREW_CAPTURE_TRACE -ErrorAction SilentlyContinue }
   # -Ring: recent guest virtual calls, written next to the net trace when a socket closes.
   if ($Ring) { $env:RBREW_DISPATCH_RING = Join-Path $Logs "duop-$Stamp-$Name-ring.bin" } else { Remove-Item Env:RBREW_DISPATCH_RING -ErrorAction SilentlyContinue }
-  $Players += Start-Process (Join-Path $Dir 'Splatoon-v288.exe') -WorkingDirectory $Dir -PassThru `
+  $Players += Start-Process (Join-Path $Dir $ExeName) -WorkingDirectory $Dir -PassThru `
     -RedirectStandardOutput (Join-Path $Logs "duop-$Stamp-$Name-stdout.log") -RedirectStandardError (Join-Path $Logs "duop-$Stamp-$Name-stderr.log")
   if ($Friends -and $SocialUrl) {
     Start-Process py -ArgumentList '-3.12', "`"$(Join-Path $PSScriptRoot 'friends_relay.py')`"", '--game-dir', "`"$Dir`"", '--server', $SocialUrl, '--watch-pid', "$($Players[-1].Id)" -WindowStyle Hidden

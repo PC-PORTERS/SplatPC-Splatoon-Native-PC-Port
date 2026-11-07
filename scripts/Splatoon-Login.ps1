@@ -13,7 +13,10 @@ Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 $Root = Split-Path -Parent $PSScriptRoot
 $Game = Join-Path $Root 'Game'
 $Settings = Join-Path $Game 'settings.ini'
-$Executable = Join-Path $Game 'Splatoon-v288.exe'
+# Setup.ps1 installs Game\Splatoon.exe; older installs have Splatoon-v288.exe: the newer one wins.
+$Executable = @('Splatoon.exe', 'Splatoon-v288.exe') | ForEach-Object { Join-Path $Game $_ } | Where-Object { Test-Path -LiteralPath $_ } |
+    Sort-Object { (Get-Item -LiteralPath $_).LastWriteTime } -Descending | Select-Object -First 1
+if (-not $Executable) { $Executable = Join-Path $Game 'Splatoon.exe' }
 
 function Get-SavedPseudo {
     if (-not (Test-Path -LiteralPath $Settings)) { return '' }
@@ -424,7 +427,7 @@ if ($Shot) {
 
 [void]$form.ShowDialog()
 if (-not $script:choice) { exit 0 }
-if (-not (Test-Path -LiteralPath $Executable)) { [System.Windows.Forms.MessageBox]::Show('Game\Splatoon-v288.exe has not been built yet.', 'Splatoon'); exit 1 }
+if (-not (Test-Path -LiteralPath $Executable)) { [System.Windows.Forms.MessageBox]::Show('Game\Splatoon.exe has not been built yet.', 'Splatoon'); exit 1 }
 $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 if ($script:choice -eq 'online') {
     $cfg = Read-ServerFile

@@ -14,7 +14,11 @@ param(
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
 $Game = Join-Path $Root 'Game'
-$Exe = Join-Path $Game 'Splatoon-v288.exe'
+# Setup.ps1 installs Game\Splatoon.exe; older installs have Splatoon-v288.exe: the newer one wins.
+$Exe = @('Splatoon.exe', 'Splatoon-v288.exe') | ForEach-Object { Join-Path $Game $_ } | Where-Object { Test-Path -LiteralPath $_ } |
+    Sort-Object { (Get-Item -LiteralPath $_).LastWriteTime } -Descending | Select-Object -First 1
+if (-not $Exe) { $Exe = Join-Path $Game 'Splatoon.exe' }
+$ExeName = Split-Path -Leaf $Exe
 $Logs = Join-Path $Root 'build\diagnostics'
 $Stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 New-Item -ItemType Directory -Path $Logs -Force | Out-Null
@@ -54,7 +58,7 @@ try {
     if (-not (Test-Path (Join-Path $Dir 'save\save.dat')) -and (Test-Path (Join-Path $Game 'save\save.dat'))) {
       Copy-Item (Join-Path $Game 'save\save.dat') (Join-Path $Dir 'save\save.dat')
     }
-    Copy-Item $Exe (Join-Path $Dir 'Splatoon-v288.exe') -Force
+    Copy-Item $Exe (Join-Path $Dir $ExeName) -Force
     Get-ChildItem $Game -Filter '*.dll' | Copy-Item -Destination $Dir -Force
     $Ini = @()
     if (Test-Path (Join-Path $Game 'settings.ini')) {
@@ -81,7 +85,7 @@ try {
     }
     if ($CallRing) { $env:RBREW_CALL_RING = '1' } else { Remove-Item Env:RBREW_CALL_RING -ErrorAction SilentlyContinue }
     if ($SleepTrace) { $env:RBREW_SLEEP_TRACE = Join-Path $Logs "duo-$Stamp-$Name-sleep.txt" } else { Remove-Item Env:RBREW_SLEEP_TRACE -ErrorAction SilentlyContinue }
-    $Players += Start-Process (Join-Path $Dir 'Splatoon-v288.exe') -WorkingDirectory $Dir -PassThru `
+    $Players += Start-Process (Join-Path $Dir $ExeName) -WorkingDirectory $Dir -PassThru `
       -RedirectStandardOutput (Join-Path $Logs "duo-$Stamp-$Name-stdout.log") -RedirectStandardError (Join-Path $Logs "duo-$Stamp-$Name-stderr.log")
     Start-Sleep 2
   }
