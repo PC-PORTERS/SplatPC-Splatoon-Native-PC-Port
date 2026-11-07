@@ -49,8 +49,8 @@ const char kPage[] = R"HTML(<!doctype html><html><head><meta charset="utf-8">
 const t=new URLSearchParams(location.search).get('t')||'';
 const v=document.getElementById('v'),s=document.getElementById('s');
 let ws=null,shown=null,down=null,lock=null,ac=null,next=0;
-// GamePad sound: int16 stereo, 32 kHz, small jitter buffer (starts 0.1 s ahead, drops past 0.5 s).
-function sound(){try{if(!ac){const C=window.AudioContext||window.webkitAudioContext;if(C)ac=new C();}
+// GamePad sound: int16 stereo, 32 kHz, small jitter buffer (starts 0.06 s ahead, drops past 0.2 s).
+function sound(){try{if(!ac){const C=window.AudioContext||window.webkitAudioContext;if(C)ac=new C({latencyHint:'interactive'});}
  if(ac&&ac.state!=='running')ac.resume().then(()=>{if(ac.state==='running'&&s.textContent==='Tap the screen for sound')s.textContent='';});}catch(_){}}
 function play(buf){
  if(!ac||ac.state!=='running')return;
@@ -58,8 +58,8 @@ function play(buf){
  const d=new DataView(buf,1),b=ac.createBuffer(2,n,32000),l=b.getChannelData(0),r=b.getChannelData(1);
  for(let i=0;i<n;i++){l[i]=d.getInt16(i*4,true)/32768;r[i]=d.getInt16(i*4+2,true)/32768;}
  const now=ac.currentTime;
- if(next<now+0.02)next=now+0.1;
- if(next>now+0.5)return;
+ if(next<now+0.01)next=now+0.06;
+ if(next>now+0.2)return;
  const src=ac.createBufferSource();src.buffer=b;src.connect(ac.destination);src.start(next);next+=n/32000;}
 function ack(){if(ws&&ws.readyState===1)ws.send('a');}
 function connect(){
@@ -125,12 +125,12 @@ struct Session {
 // GamePad sound: the audio thread pushes 96-frame blocks (32 kHz stereo); the audio thread of the
 // session sends them to the phone every ~20 ms as int16, prefixed with byte 1 (pictures start with 0xFF).
 std::mutex s_audio_lock;
-std::vector<int16_t> s_audio_ring; // interleaved stereo, capped at 0.4 s
+std::vector<int16_t> s_audio_ring; // interleaved stereo, capped at 0.2 s
 void audio_sink(const float* stereo, uint32_t frames) {
     std::lock_guard lock(s_audio_lock);
     for (uint32_t i = 0; i < frames * 2; ++i)
         s_audio_ring.push_back(int16_t(std::clamp(stereo[i], -1.0f, 1.0f) * 32767.0f));
-    constexpr size_t kMax = 32000 * 2 * 4 / 10;
+    constexpr size_t kMax = 32000 * 2 * 2 / 10;
     if (s_audio_ring.size() > kMax) s_audio_ring.erase(s_audio_ring.begin(), s_audio_ring.end() - kMax);
 }
 Session* s_session = nullptr; // server thread only; never freed at exit (joinable threads)
