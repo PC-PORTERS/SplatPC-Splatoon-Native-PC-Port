@@ -1178,16 +1178,6 @@ ImDrawData* begin_frame(VkExtent2D extent) {
             friends_ui::s_focus_input = true;
         }
     }
-    if (s_friends_toggle.exchange(0, std::memory_order_relaxed) > 0 && show_menu && !fresh_menu) {
-        if (s_menu_page == MenuPage::Friends)
-            set_menu_open(false);
-        else {
-            s_menu_page = MenuPage::Friends;
-            s_graphics_page = gx2_graphics_menu::Page::None;
-            s_capture = false;
-            friends_ui::s_focus_input = true;
-        }
-    }
     if (show_menu && s_amiibo_requested.exchange(false, std::memory_order_relaxed)) {
         diag::RecordEvent(diag::EventCategory::Input, diag::EventSeverity::Info, 11, "amiibo picker shown");
         s_menu_page = MenuPage::Amiibo;

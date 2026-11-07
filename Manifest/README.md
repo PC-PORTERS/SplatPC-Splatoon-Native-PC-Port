@@ -4,9 +4,9 @@
 
 > The format is similar to [TOMTL](https://en.wikipedia.org/wiki/TOML)
 
-The address headers (`port/os/**/*_addrs.h`) and the PLT stub table
-(`port/os/gambit_plt_auto.cpp`) are **generated from the manifest** and must not be
-edited by hand.
+The address headers (`port/os/**/*_addrs.h`), the PLT stub table
+(`port/os/gambit_plt_auto.cpp`), and the PLT dispatch stubs (`port/gambit_plt_stubs.cpp`)
+are **generated from the manifest** and must not be edited by hand.
 
 ## Automatic selection
 

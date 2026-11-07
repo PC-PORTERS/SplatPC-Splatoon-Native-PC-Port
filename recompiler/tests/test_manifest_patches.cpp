@@ -4,6 +4,8 @@
 #include "patches/manifest_patches.hpp"
 #include "ppc/assembler/ppc_asm.hpp"
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <initializer_list>
 #include <map>
 #include <string>
@@ -172,6 +174,37 @@ int main() {
 
     manifest.patches = {{0x01000000, "nop"}};
     check(!rebrewu::patches::apply(manifest, image, errors), "patch outside executable sections applied");
+
+    {
+        const auto emit_manifest = rebrewu::manifest::parse_text("[manifest]\n"
+                                                                 "format = rebrew-manifest/1\n"
+                                                                 "id = test-emit\n"
+                                                                 "[identity]\n"
+                                                                 "hash = Undefined\n"
+                                                                 "module_name = Gambit\n"
+                                                                 "[modules]\n"
+                                                                 "hash = Undefined\n"
+                                                                 "coreinit = os/coreinit/coreinit_addrs.h\n"
+                                                                 "[imports]\n"
+                                                                 "hash = Undefined\n"
+                                                                 "coreinit!TestFunc = 0x02D01234\n"
+                                                                 "coreinit!TestData = 0x02D05678 data\n",
+                                                                 "test");
+        check(emit_manifest.errors.empty(), "test manifest for emit has errors");
+        std::filesystem::path temp_dir = std::filesystem::temp_directory_path() / "rebrewu_test_emit";
+        std::filesystem::create_directories(temp_dir);
+        std::vector<std::string> written;
+        std::string emit_err;
+        check(rebrewu::manifest::emit(emit_manifest, temp_dir.string(), written, &emit_err), "emit failed");
+        check(std::filesystem::exists(temp_dir / "gambit_plt_stubs.cpp"), "gambit_plt_stubs.cpp was not emitted");
+        std::ifstream stub_in(temp_dir / "gambit_plt_stubs.cpp");
+        std::string stub_content((std::istreambuf_iterator<char>(stub_in)), std::istreambuf_iterator<char>());
+        check(stub_content.find("void Gambit_fn_02D01234(CPUState* cpu)") != std::string::npos,
+              "stub function missing");
+        check(stub_content.find("rbrew_dispatch(cpu, 0x02D01234u);") != std::string::npos, "stub dispatch missing");
+        check(stub_content.find("02D05678") == std::string::npos, "data import should not produce a stub");
+        std::filesystem::remove_all(temp_dir);
+    }
 
     if (failures == 0) std::printf("manifest patches: all checks passed\n");
     return failures == 0 ? 0 : 1;

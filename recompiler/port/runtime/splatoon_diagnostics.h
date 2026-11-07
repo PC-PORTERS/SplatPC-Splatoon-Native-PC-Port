@@ -116,7 +116,7 @@ struct ThreadSensorReading {
 void SampleThreadCpu(const char* name);
 size_t GetThreadSensorReadings(ThreadSensorReading* out, size_t max);
 
-void ManualCapture(); // F9: Save snapshot now
+void ManualCapture();      // F9: Save snapshot now
 // F9 also runs this (set by the executable's thread profiler) with a
 // "<Diagnostics>/<time>_threads.txt" path.
 void SetManualProfiler(void (*profiler)(const std::string& path));

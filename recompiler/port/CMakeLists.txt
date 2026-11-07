@@ -56,6 +56,7 @@ if(DEFINED RBREW_MANIFEST AND EXISTS "${RBREW_MANIFEST}")
 endif()
 set(RBREW_PLT_RESOLVER "${CMAKE_CURRENT_SOURCE_DIR}/../tools/plt_resolver.py")
 set(RBREW_PLT_OUTPUTS
+    gambit_plt_stubs.cpp
     os/gambit_plt_auto.cpp
     os/coreinit/coreinit_addrs.h
     os/gx2/gx2_addrs.h
@@ -167,6 +168,7 @@ endif()
 add_library(gambit_runtime STATIC
     runtime/rebrewu_runtime.cpp
     runtime/rebrewu_paired.cpp
+    gambit_plt_stubs.cpp
     os/gambit_plt_auto.cpp
     os/coreinit/coreinit_memory.cpp
     os/coreinit/coreinit_threads.cpp

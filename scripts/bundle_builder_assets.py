@@ -13,9 +13,12 @@ import zipfile
 
 IGNORED_DIRS = {"__pycache__", ".git", ".vscode", "build", "dist", "Game"}
 IGNORED_EXTS = {".pyc", ".pyo", ".o", ".a", ".so", ".exe", ".dll", ".dylib", ".DS_Store"}
+IGNORED_FILES = {"gambit_plt_stubs.cpp", "gambit_plt_auto.cpp"}
 
 
 def should_include_file(path: str) -> bool:
+    if os.path.basename(path) in IGNORED_FILES:
+        return False
     parts = path.replace("\\", "/").split("/")
     for part in parts:
         if part in IGNORED_DIRS:
