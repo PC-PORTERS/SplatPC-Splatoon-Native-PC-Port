@@ -279,6 +279,7 @@ static constexpr float kYawRate = 240.0f, kPitchRate = 150.0f, kPitchLimit = 80.
 // Mouse aiming like a PC game ("Mouse aim: Direct"): each frame's mouse
 // movement in degrees turns the virtual GamePad, which the game's motion
 // aiming follows 1:1 - no stick speed limit, no dead zone.
+bool gx2_mouse_on_pad_window();
 static float s_mouse_yaw = 0.0f, s_mouse_pitch = 0.0f; // degrees this frame (under s_motion_lock)
 static constexpr float kMouseDegreesPerCount = 0.035f; // 0.09 was far too fast
 
@@ -512,7 +513,7 @@ static void VPADRead(CPUState* cpu) {
         // Bindings from the ESC menu's keyboard page (port_settings.h):
         // scancodes, or kMouseBase + an SDL mouse button.
         int mx_dummy, my_dummy;
-        const uint32_t mstate = (uint32_t)SDL_GetMouseState(&mx_dummy, &my_dummy);
+        const uint32_t mstate = gx2_mouse_on_pad_window() ? 0u : (uint32_t)SDL_GetMouseState(&mx_dummy, &my_dummy);
         bool key_held = false; // keys (not mouse buttons) end a replay
         auto bound = [&](int action) {
             const int binding = rbrew_settings::g_keys[action].load(std::memory_order_relaxed);
@@ -545,6 +546,7 @@ static void VPADRead(CPUState* cpu) {
         // are unchanged either way.
         int mdx = 0, mdy = 0;
         SDL_GetRelativeMouseState(&mdx, &mdy);
+        if (gx2_mouse_on_pad_window()) mdx = mdy = 0;   // the mouse is touching the GamePad window, not aiming
         // Free fly camera (cinema / hacks page, F7): mouse looks, WASD
         // moves, Space up, Ctrl down, Shift fast; the game gets a neutral pad.
         if (gx2env::fly_camera()) {

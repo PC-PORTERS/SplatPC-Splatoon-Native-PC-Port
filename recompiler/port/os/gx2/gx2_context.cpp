@@ -97,19 +97,23 @@ static bool imgui_wants_cursor() {
     }();
     return gx2_imgui::menu_open() || (overlay_cursor && gx2_imgui::visible());
 }
+// GamePad window open: the main window keeps the mouse captured for aiming; Tab frees it so the cursor
+// can reach the GamePad window (which always touches), and a click in the main window captures it again.
+static bool s_mouse_released = false;
 static void sync_overlay_mouse_mode() {
-    if (g_screen_mode == ScreenMode::TV) SDL_SetRelativeMouseMode(imgui_wants_cursor() ? SDL_FALSE : SDL_TRUE);
+    if (g_screen_mode == ScreenMode::TV) SDL_SetRelativeMouseMode((imgui_wants_cursor() || s_mouse_released) ? SDL_FALSE : SDL_TRUE);
 }
 
 // Switch between TV and Gamepad view, adjusting mouse capture accordingly.
 // With the GamePad window open both pictures stay on screen: Tab only moves
 // the mouse between aiming (main window) and touching the GamePad window.
-static void toggle_screen_mode() {
+// from_focus: the switch comes from a click on the other window, which already has the focus.
+static void toggle_screen_mode(bool from_focus = false) {
     if (g_screen_mode == ScreenMode::TV) {
         g_screen_mode = ScreenMode::Gamepad;
         SDL_SetRelativeMouseMode(SDL_FALSE); // free the cursor for touch sim
         g_touch_state = {false, 0, 0};
-        if (s_pad_window) {
+        if (s_pad_window && !from_focus) {
             int w = 0, h = 0;
             SDL_GetWindowSize(s_pad_window, &w, &h);
             SDL_RaiseWindow(s_pad_window);
@@ -117,7 +121,7 @@ static void toggle_screen_mode() {
         }
     } else {
         g_screen_mode = ScreenMode::TV;
-        if (s_pad_window) SDL_RaiseWindow(s_window);
+        if (s_pad_window && !from_focus) SDL_RaiseWindow(s_window);
         sync_overlay_mouse_mode(); // capture cursor for camera, unless the overlay is open
         g_touch_state = {false, 0, 0};
     }
@@ -210,6 +214,7 @@ void stop() {
 #endif
 
 // Opens or closes the GamePad window to follow the menu setting (window thread, every frame).
+bool gx2_mouse_on_pad_window() { return s_pad_window && (s_mouse_released || SDL_GetMouseFocus() == s_pad_window); }
 static void sync_pad_window() {
     const bool wanted = rbrew_settings::g_gamepad_window.load(std::memory_order_relaxed);
     if (wanted == (s_pad_window != nullptr)) return;
@@ -234,12 +239,15 @@ static void sync_pad_window() {
         s_pad_window = window;
         if (g_screen_mode == ScreenMode::Gamepad) toggle_screen_mode(); // the main window shows the TV again
         else SDL_RaiseWindow(s_window);
+        sync_overlay_mouse_mode();
     } else {
         gx2_native_run(true, [] { gx2_render_pad_window(nullptr); });
         pad_view::stop();
         SDL_DestroyWindow(s_pad_window);
         s_pad_window = nullptr;
         if (g_screen_mode == ScreenMode::Gamepad) toggle_screen_mode();
+        s_mouse_released = false;
+        sync_overlay_mouse_mode();
     }
     update_window_title();
 #else
@@ -1068,7 +1076,7 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
             if (s_pad_window && from && from == SDL_GetWindowID(s_pad_window)) {
                 if (ev.type == SDL_WINDOWEVENT && ev.window.event == SDL_WINDOWEVENT_CLOSE)
                     set_gamepad_window_setting(false);
-                else if (g_screen_mode == ScreenMode::Gamepad) {
+                else {
                     if (ev.type == SDL_MOUSEBUTTONDOWN && ev.button.button == SDL_BUTTON_LEFT) {
                         map_mouse_to_touch(ev.button.x, ev.button.y);
                         g_touch_state.touched = true;
@@ -1078,6 +1086,18 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
                         map_mouse_to_touch(ev.motion.x, ev.motion.y);
                     }
                 }
+                continue;
+            }
+            // Leaving the main window (Win key, other monitor, Alt-Tab) frees the mouse for the GamePad
+            // window; coming back to the main window captures it again, no Tab needed.
+            if (s_pad_window && ev.type == SDL_WINDOWEVENT && from == SDL_GetWindowID(s_window) &&
+                (ev.window.event == SDL_WINDOWEVENT_FOCUS_LOST || ev.window.event == SDL_WINDOWEVENT_FOCUS_GAINED)) {
+                s_mouse_released = ev.window.event == SDL_WINDOWEVENT_FOCUS_LOST;
+                sync_overlay_mouse_mode();
+            }
+            if (s_pad_window && s_mouse_released && ev.type == SDL_MOUSEBUTTONDOWN && !imgui_wants_cursor()) {
+                s_mouse_released = false; // a click in the main window captures the mouse again
+                sync_overlay_mouse_mode();
                 continue;
             }
             gx2_imgui::process_event(ev);            // queued for the render thread
@@ -1092,7 +1112,11 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
             case SDL_KEYDOWN:
                 if (ev.key.repeat) break;
                 if (ev.key.keysym.scancode == SDL_SCANCODE_TAB) {
-                    toggle_screen_mode();
+                    if (!s_pad_window) toggle_screen_mode();
+                    else {  // with the GamePad window both views are always live: Tab frees or captures the mouse
+                        s_mouse_released = !s_mouse_released;
+                        sync_overlay_mouse_mode();
+                    }
                 } else if (ev.key.keysym.scancode == SDL_SCANCODE_F11) {
                     auto settings = rbrew_settings::get();
                     settings.fullscreen = !window_fullscreen();
