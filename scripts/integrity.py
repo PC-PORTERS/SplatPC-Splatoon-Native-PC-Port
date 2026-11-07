@@ -22,7 +22,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MANIFEST = os.path.join(ROOT, "scripts", "integrity-manifest.txt")
 COVERED_DIRS = ("recompiler", "profiles", "Manifest", "scripts", os.path.join("tools", "boss"))
-COVERED_FILES = ("VERSION", "Play-Online.bat", "setup.sh", "Setup.bat")
+COVERED_FILES = ("VERSION", "Play-Online.bat", "Play-Online.sh", "setup.sh", "Setup.bat")
 SKIPPED = ("scripts/tests/", "scripts/integrity-manifest.txt", "scripts/server.txt")
 
 

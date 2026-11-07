@@ -54,6 +54,8 @@ Supported game versions: [VersionDb.md](VersionDb.md) (base game v16 and update 
 
 ---
 
+**More docs:** [Online play and anti-cheat](docs/ONLINE.md) · [Linux](docs/LINUX.md) · [Builder](docs/BUILDER.md) · [Run your own server](docs/SERVEUR.md) · [Update 288](docs/update-288.md)
+
 ## Requirements
 
 - **OS:** Windows 10/11 (64-bit) or modern 64-bit Linux
