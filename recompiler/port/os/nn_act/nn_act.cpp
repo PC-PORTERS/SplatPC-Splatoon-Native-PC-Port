@@ -54,7 +54,7 @@ std::u16string get_active_mii_name() {
         }
         if (!name.empty()) return name;
     }
-    return std::u16string(kMiiName);
+    return u"default";
 }
 
 void require_guest(const CPUState* cpu, uint32_t address, uint64_t length, const char* what) {
