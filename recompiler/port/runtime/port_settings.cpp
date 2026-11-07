@@ -226,7 +226,7 @@ std::string foreign_lines() {
         if (line.empty() || line[0] == '#' || eq == std::string::npos) continue;
         const std::string key = line.substr(0, eq);
         static const char* const kOwned[] = {
-            "resolution", "plaza_60fps", "frame_rate", "gsync", "fullscreen", "gamepad_window", "phone_gamepad", "phone_port", "fps_overlay",
+            "resolution", "plaza_60fps", "frame_rate", "gsync", "fullscreen", "borderless", "gamepad_window", "phone_gamepad", "phone_port", "fps_overlay",
             "simple_overlay",
             "gyro", "gyro_sensitivity", "gyro_invert_pitch", "mouse_sensitivity", "volume", "shader_quality",
             "weather", "time_of_day", "day_cycle", "day_length", "clouds", "sun_rays", "bloom", "antialiasing",
@@ -253,6 +253,7 @@ void write(const Values& v) {
         << "frame_rate=" << v.frame_rate << "\n"
         << "gsync=" << v.gsync << "\n"
         << "fullscreen=" << v.fullscreen << "\n"
+        << "borderless=" << v.borderless << "\n"
         << "gamepad_window=" << v.gamepad_window << "\n"
         << "phone_gamepad=" << v.phone_gamepad << "\n"
         << "phone_port=" << v.phone_port << "\n"
@@ -334,6 +335,8 @@ void load() {
             v.gsync = number != 0;
         else if (key == "fullscreen")
             v.fullscreen = number != 0;
+        else if (key == "borderless")
+            v.borderless = number != 0;
         else if (key == "gamepad_window")
             v.gamepad_window = number != 0;
         else if (key == "phone_gamepad")

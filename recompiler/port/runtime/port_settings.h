@@ -64,6 +64,7 @@ struct Values {
     int frame_rate = 60;     // 60, 120, 180 (two in-between frames, not in the plaza), 30 (low-end)
     bool gsync = false;      // frames go to the display at once (IMMEDIATE) for G-Sync/FreeSync
     bool fullscreen = true;
+    bool borderless = false;        // windowed, no border, desktop size (used when fullscreen is off)
     bool gamepad_window = false;    // the GamePad screen in a second window (two screens)
     bool phone_gamepad = false;     // the GamePad screen and touch on a phone browser (pad_remote.cpp)
     int phone_port = 8771;          // its local network port

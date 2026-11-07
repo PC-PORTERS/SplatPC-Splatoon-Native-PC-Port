@@ -56,6 +56,9 @@ std::atomic<bool> s_block_until_released{false};
 std::atomic<bool> s_fullscreen_mirror{true};
 std::atomic<bool> s_fullscreen_requested{false};
 std::atomic<bool> s_fullscreen_value{false};
+std::atomic<bool> s_borderless_mirror{false};
+std::atomic<bool> s_borderless_requested{false};
+std::atomic<bool> s_borderless_value{false};
 std::atomic<bool> s_quit_requested{false};
 std::atomic<bool> s_capture_active{false};   // render thread waits for a rebinding input
 std::atomic<bool> s_amiibo_requested{false}; // open the menu on the amiibo picker
@@ -765,6 +768,22 @@ void build_settings_window() {
         s_fullscreen_value.store(fullscreen, std::memory_order_relaxed);
         s_fullscreen_requested.store(true, std::memory_order_relaxed);
         v.fullscreen = fullscreen;
+        if (fullscreen && v.borderless) {
+            v.borderless = false;
+            s_borderless_mirror.store(false, std::memory_order_relaxed);
+        }
+        dirty = true;
+    }
+    bool borderless = s_borderless_mirror.load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("Borderless window", &borderless)) {
+        s_borderless_value.store(borderless, std::memory_order_relaxed);
+        s_borderless_requested.store(true, std::memory_order_relaxed);
+        s_borderless_mirror.store(borderless, std::memory_order_relaxed);
+        v.borderless = borderless;
+        if (borderless) {
+            v.fullscreen = false;
+            s_fullscreen_mirror.store(false, std::memory_order_relaxed);
+        }
         dirty = true;
     }
     bool overlay = visible();
@@ -882,6 +901,16 @@ bool consume_fullscreen_request(bool& fullscreen) {
 
 bool consume_quit_request() {
     return s_quit_requested.exchange(false, std::memory_order_relaxed);
+}
+
+bool consume_borderless_request(bool& borderless) {
+    if (!s_borderless_requested.exchange(false, std::memory_order_relaxed)) return false;
+    borderless = s_borderless_value.load(std::memory_order_relaxed);
+    return true;
+}
+
+void note_borderless(bool borderless) {
+    s_borderless_mirror.store(borderless, std::memory_order_relaxed);
 }
 
 void note_fullscreen(bool fullscreen) {
