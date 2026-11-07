@@ -361,15 +361,6 @@ int main(int argc, char** argv) {
         // silently drops reachable functions. Fail instead of guessing.
         return EXIT_FAILURE;
     }
-    // The manifest supplies the entry hints and the instruction patches. Both
-    // must be known before discovery, because a patch can change control flow.
-    std::string manifest_path;
-    auto manifest_opt = load_manifest(*opts, argv[0], &manifest_path);
-    if (!manifest_opt) {
-        // Without a manifest the indirect-dispatch entries are unknown, which
-        // silently drops reachable functions. Fail instead of guessing.
-        return EXIT_FAILURE;
-    }
     auto& mf = *manifest_opt;
     const bool hashes_ok = manifest::verify_hashes(mf);
     for (const auto& e : mf.errors) RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr) << "manifest: " << e << '\n';
@@ -389,15 +380,6 @@ int main(int argc, char** argv) {
             return EXIT_FAILURE;
         }
         RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr) << "manifest: continuing despite the identity mismatch\n";
-    }
-
-    std::vector<std::string> patch_errors;
-    if (!patches::apply(mf, rpx, patch_errors)) {
-        for (const auto& error : patch_errors)
-            RBREW_LOG_STREAM(::rbrew::log::Level::Error, nullptr) << "manifest: " << error << '\n';
-        return EXIT_FAILURE;
-    }
-
     }
 
     std::vector<std::string> patch_errors;
