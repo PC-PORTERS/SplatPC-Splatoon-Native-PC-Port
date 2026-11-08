@@ -89,10 +89,20 @@ ${RBREW_SELECT_STDERR}")
         if(RBREW_MANIFEST_COUNT EQUAL 1)
             list(GET RBREW_MANIFESTS 0 RBREW_MANIFEST_PATH)
         elseif(RBREW_MANIFEST_COUNT GREATER 1)
+            # A tests-only build must not rewrite headers another tree already generated
+            # (the default revision's manifest would replace a revision 288 map with the empty one).
+            set(RBREW_HEADERS_PRESENT ON)
+            foreach(relative IN LISTS RBREW_PLT_OUTPUTS)
+                if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${relative}")
+                    set(RBREW_HEADERS_PRESENT OFF)
+                endif()
+            endforeach()
             # Without an image, fall back to the manifest of the selected revision
             # (16 by default), so builds that need no dump (CI, tests) still configure.
             set(RBREW_REVISION_MANIFEST "${RBREW_MANIFEST_DIR}/Gambit_v${RBREW_GAME_REVISION}.manifest")
-            if(EXISTS "${RBREW_REVISION_MANIFEST}")
+            if(DEFINED RBREW_BUILD_GAME AND NOT RBREW_BUILD_GAME AND RBREW_HEADERS_PRESENT)
+                message(STATUS "Tests-only build: keeping the existing generated headers")
+            elseif(EXISTS "${RBREW_REVISION_MANIFEST}")
                 set(RBREW_MANIFEST_PATH "${RBREW_REVISION_MANIFEST}")
             else()
                 message(FATAL_ERROR
