@@ -16,7 +16,7 @@ Pseudos are unique. The launcher relays presence (who is online, for 30 seconds)
 
 ## Updates and version check
 
-The launcher reads `/health` from the server: `integrity_mode`, the minimum client version and the latest released version. Below the minimum (or below the latest when the server enforces integrity), it stops with a message telling you to update. Get updates from the Releases page / the repository.
+The launcher reads `/health` from the server: `integrity_mode`, the minimum client version and the latest released version. Below the minimum (or below the latest when the server enforces integrity), it stops with a message telling you to update. Get updates from the Releases page / the repository. The version shown in the launcher comes from `build/installed-version.txt` if it exists, else `VERSION`: after a manual update, delete or fix a stale `build/installed-version.txt`.
 
 ## Anti-cheat: what it is, and what it is not
 
@@ -24,8 +24,8 @@ Cheating cannot be fully prevented in a peer-to-peer game that runs on your own 
 
 1. **Version and code proof** (`scripts/integrity.py`). Each release lists its code files with hashes in `scripts/integrity-manifest.txt`. At sign-in your PC sends the hash of its code; the server compares it with the releases it accepts. Modes in `server.json`:
    - `off` – nothing checked;
-   - `log` – unknown or missing proofs are accepted and written to the log (what the public server runs now);
-   - `enforce` – unknown, old or missing proofs are refused.
+   - `log` – unknown or missing proofs are accepted and written to the log;
+   - `enforce` – unknown, old or missing proofs are refused (**what the public server runs**, since 0.1.4).
    This makes casual edits and old versions visible. A determined cheater who copies the right hash is not stopped: it is a speed bump, not a lock.
 2. **Moderation.** Bans by account or IP (permanent or timed), an immediate kick, and a moderation log, from `ops.py` or the local admin panel (`tools/adminpanel`, reached over SSH only; the `/admin/*` routes are closed from outside).
 3. **Server-side hygiene.** Rate limits, validated pseudos, no admin route exposed, a hardened sign-up path.
@@ -38,4 +38,4 @@ The server keeps an account number, a derived key, your pseudo and creation / la
 
 ## En français
 
-Les serveurs communautaires remplacent ceux de Nintendo ; les parties sont en pair-à-pair. Lance `Play-Online.bat` (Windows) ou `./Play-Online.sh` (Linux) : pseudo, inscription automatique, vérification de version, puis jeu. `--offline` joue sans serveur. Ne partage jamais `Game/online_identity.ini`. L'anti-triche complet est impossible en pair-à-pair : le serveur vérifie la version et l'empreinte du code (modes `off`, `log`, `enforce`), et la modération peut bannir un compte ou une IP en quelques minutes.
+Les serveurs communautaires remplacent ceux de Nintendo ; les parties sont en pair-à-pair. Lance `Play-Online.bat` (Windows) ou `./Play-Online.sh` (Linux) : pseudo, inscription automatique, vérification de version, puis jeu. `--offline` joue sans serveur. Ne partage jamais `Game/online_identity.ini`. L'anti-triche complet est impossible en pair-à-pair : le serveur vérifie la version et l'empreinte du code (modes `off`, `log`, `enforce` ; le serveur public est en `enforce`), et la modération peut bannir un compte ou une IP en quelques minutes.
