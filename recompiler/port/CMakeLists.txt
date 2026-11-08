@@ -161,6 +161,10 @@ if(RBREW_PLT_GENERATED)
         BYPRODUCTS ${RBREW_PLT_FILES}
         COMMAND "${Python3_EXECUTABLE}" "${RBREW_PLT_RESOLVER}" emit
                 --manifest "${RBREW_MANIFEST_PATH}" --out "${CMAKE_CURRENT_SOURCE_DIR}"
+        # Another tree (base game, test build) may have rewritten the shared revision headers since the
+        # configure step; game_branch_tables.h drives the multiplayer case blocks, so re-emit it too.
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../tools/generate_revision_header.py"
+                --manifest "${RBREW_MANIFEST_PATH}" --out-dir "${CMAKE_CURRENT_SOURCE_DIR}/runtime"
         COMMENT "PLT addresses from ${RBREW_MANIFEST_PATH}"
         VERBATIM)
 endif()
