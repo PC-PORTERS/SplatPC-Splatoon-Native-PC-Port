@@ -900,10 +900,6 @@ void build_settings_window() {
     dirty |= ImGui::Checkbox("Invert gyro up/down", &v.gyro_invert_pitch);
     dirty |= ImGui::SliderInt("Mouse sensitivity", &v.mouse_sensitivity, 25, 400, "%d %%");
     dirty |= ImGui::SliderInt("Volume", &v.volume, 0, 100, "%d %%");
-    if (ImGui::Button("Friends (F4)")) {
-        s_menu_page = MenuPage::Friends;
-        friends_ui::s_focus_input = true;
-    }
     dirty |= ImGui::Checkbox("Confirm before quitting", &v.confirm_quit);
     if (ImGui::Button("Keyboard & mouse controls")) s_menu_page = MenuPage::Keyboard;
     if (ImGui::Button("Controller controls")) s_menu_page = MenuPage::Controller;
