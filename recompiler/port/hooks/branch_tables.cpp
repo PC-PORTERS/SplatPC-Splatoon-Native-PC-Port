@@ -72,6 +72,13 @@ const BranchTable kTables[] = {
 };
 } // namespace
 
+#if RBREW_GAME_REVISION == 288
+// Empty tables leave the multiplayer case blocks unregistered and the game freezes at the first shot online.
+static_assert(kRbrewBranchTableCount > 0,
+              "game_branch_tables.h has no table: it was generated for another game revision. Reconfigure this build "
+              "tree with the revision 288 manifest (-DRBREW_MANIFEST or -DRBREW_RPX)");
+#endif
+
 void branch_tables_install(CPUState* cpu) {
 #if RBREW_GAME_REVISION == 288
     gambit_tables_register(cpu);
@@ -89,7 +96,11 @@ void branch_tables_install(CPUState* cpu) {
             }
         }
     }
-    RBREW_LOG_INFO("branch-tables", "%u table slots linked to their case blocks\n", linked);
+    if (linked == 0)
+        RBREW_LOG_ERROR("branch-tables", "no table slot linked: the multiplayer case blocks are missing, expect a "
+                                         "freeze at the first shot online\n");
+    else
+        RBREW_LOG_INFO("branch-tables", "%u table slots linked to their case blocks\n", linked);
 #else
     (void)cpu;
 #endif
