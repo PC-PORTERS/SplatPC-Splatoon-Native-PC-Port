@@ -293,7 +293,34 @@ void pool_block_recovery() {
         free_now(second);
         require(allocated_bytes() == before, "small resource recovery leaked");
     });
-    std::puts("pool blocks: halving, next-type pooling and refusal memory passed");
+    // A refusal that was only transient is forgotten after kBlockRetryMisses pool misses: the next
+    // small resource gets a pool block in the fast type again.
+    set_up([](const VkPhysicalDeviceMemoryProperties& memory) {
+        // Restrict the resource to the first upload type the driver can really fill with a block.
+        const auto types = memory_detail::memory_types(memory, ~0u, MemoryUse::Upload);
+        uint32_t fast = ~0u;
+        for (uint32_t i = 0; i < types.count && fast == ~0u; ++i)
+            if (driver_has_room(original_allocate, types.indices[i], 64ull << 20)) fast = types.indices[i];
+        if (fast == ~0u) {
+            std::puts("refusal expiry skipped: no upload type has free memory on this machine");
+            return;
+        }
+        VkMemoryRequirements requirements{4096, 256, 1u << fast};
+        maximum_request = requirements.size;
+        auto a = allocate(requirements, MemoryUse::Upload, true); // remembers the refusal
+        require(bool(a), "small resource found no memory");
+        free_now(a);
+        maximum_request = VK_WHOLE_SIZE; // the heap has room again
+        for (uint32_t miss = 1; miss < memory_detail::kBlockRetryMisses; ++miss) {
+            a = allocate(requirements, MemoryUse::Upload, true);
+            require(bool(a) && a.block < 0, "refused block size was forgotten too early");
+            free_now(a);
+        }
+        a = allocate(requirements, MemoryUse::Upload, true);
+        require(bool(a) && a.block >= 0 && a.memory_type == fast, "transient refusal was never forgotten");
+        free_now(a);
+    });
+    std::puts("pool blocks: halving, next-type pooling, refusal memory and expiry passed");
 }
 
 void transfers() {

@@ -98,8 +98,10 @@ constexpr VkDeviceSize kBlockSize = 64ull << 20;
 constexpr VkDeviceSize kDedicatedThreshold = 16ull << 20;
 constexpr VkDeviceSize kMinBlockSize = 4ull << 20;
 // Per memory type: largest pool block worth trying after one was refused (0 = kBlockSize), and the
-// bytes given back to that type since, which lets the size grow again.
+// bytes given back to that type since, which lets the size grow again, and the pool misses since,
+// which forget the limit altogether (a transient refusal must not last).
 std::array<VkDeviceSize, VK_MAX_MEMORY_TYPES> s_block_limit{}, s_freed_since_limit{};
+std::array<uint32_t, VK_MAX_MEMORY_TYPES> s_misses_since_limit{};
 struct Block {
     VkDeviceMemory memory = VK_NULL_HANDLE;
     uint8_t* mapped = nullptr;
@@ -1633,6 +1635,7 @@ void shutdown() {
     s_allocated_by_type = {};
     s_block_limit = {};
     s_freed_since_limit = {};
+    s_misses_since_limit = {};
     s_before_end = nullptr;
     s_after_submit = nullptr;
     s_leave_rendering = nullptr;
@@ -1725,10 +1728,15 @@ Allocation allocate(const VkMemoryRequirements& requirements, MemoryUse use, boo
         // on the title screen, 8-20 % of the render thread). Halve the block on failure and remember
         // the size that failed for this type until enough of it is freed again.
         const VkDeviceSize full_block = std::min(kBlockSize, s_memory.memoryHeaps[memory_type.heapIndex].size);
-        if (s_block_limit[type] && s_freed_since_limit[type] >= 2 * s_block_limit[type]) {
-            s_block_limit[type] *= 2; // memory came back: try a bigger block again
-            s_freed_since_limit[type] = 0;
-            if (s_block_limit[type] >= full_block) s_block_limit[type] = 0;
+        if (s_block_limit[type]) {
+            if (s_freed_since_limit[type] >= 2 * s_block_limit[type]) {
+                s_block_limit[type] *= 2; // memory came back: try a bigger block again
+                s_freed_since_limit[type] = 0;
+                if (s_block_limit[type] >= full_block) s_block_limit[type] = 0;
+            } else if (++s_misses_since_limit[type] >= memory_detail::kBlockRetryMisses) {
+                s_block_limit[type] = 0; // the refusal may have been transient: try a full block again
+                s_freed_since_limit[type] = 0;
+            }
         }
         VkDeviceSize want = s_block_limit[type] ? std::min(full_block, s_block_limit[type]) : full_block;
         VkResult result = VK_ERROR_OUT_OF_DEVICE_MEMORY;
@@ -1738,6 +1746,7 @@ Allocation allocate(const VkMemoryRequirements& requirements, MemoryUse use, boo
             want /= 2;
             s_block_limit[type] = std::max(want, kMinBlockSize / 2); // below kMinBlockSize: no new block
             s_freed_since_limit[type] = 0;
+            s_misses_since_limit[type] = 0;
         }
         block.size = want;
         if (result != VK_SUCCESS) {
