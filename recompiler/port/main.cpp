@@ -36,8 +36,8 @@ struct OverlayHostMapping {
 };
 
 // RBREW_GUEST_GUARD=1: only the guest regions are accessible, any other guest address faults.
-// Off by default: the game still reads and writes a few stray addresses online (first shot of a
-// match), which the fully committed aperture absorbs.
+// Off by default: the first shot of an online match faulted on stray addresses with it on, on a build
+// whose branch tables were empty; not retried since. The fully committed aperture absorbs such accesses.
 static bool g_guest_guard = false;
 
 #if defined(_WIN32)
