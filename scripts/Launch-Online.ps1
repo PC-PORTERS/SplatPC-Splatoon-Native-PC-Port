@@ -51,8 +51,8 @@ if(-not $LocalServer -and -not $Force){
 
 if($Port -lt 1 -or $Port -gt 65534){throw 'The NEX port must be between 1 and 65534 (the secure server uses port+1).'}
 # Any Python 3.10+ works (the helper tools only use the standard library), found the same way
-# as Setup.ps1. Python is only required for a local server; with a remote one the game still
-# starts without it (no SpotPass schedule and no friends list).
+# as Setup.ps1. Playing online needs it: friends_relay.py is the only one that sends the integrity
+# proof, so without Python the server refuses every login. Fail here, before the game starts.
 $Python=$null
 foreach($Candidate in @(@('py','-3'),@('python'),@('python3'))){
   if(-not(Get-Command $Candidate[0] -ErrorAction SilentlyContinue)){continue}
@@ -60,9 +60,8 @@ foreach($Candidate in @(@('py','-3'),@('python'),@('python3'))){
   try { $Found=(& $Candidate[0] @CandidateArgs -c 'import sys; assert sys.version_info >= (3, 10); print(sys.executable)' 2>$null) } catch { $Found=$null }
   if($LASTEXITCODE -eq 0 -and "$Found".Trim()){ $Python="$Found".Trim(); break }
 }
-if($Python){ Write-LauncherLog "Python: $Python" }
-elseif($LocalServer){ throw 'Python 3.10 or newer is required to run the local server. Install it from python.org, then try again.' }
-else { Write-LauncherLog 'Python 3.10+ not found: starting without the SpotPass schedule and the friends list.' }
+if(-not $Python){ throw 'Python 3.10 or newer is required to play online. Install it from python.org, then try again.' }
+Write-LauncherLog "Python: $Python"
 $Server=$null
 $Relay=$null
 try {
