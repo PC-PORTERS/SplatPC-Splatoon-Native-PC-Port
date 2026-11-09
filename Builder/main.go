@@ -17,7 +17,16 @@ import (
 
 func main() {
 	checkOnly := flag.Bool("check", false, "Check system prerequisites and exit")
-	flag.Parse()
+	prepare := flag.Bool("prepare", false, "Run the setup without a window, print progress lines and exit")
+	play := flag.Bool("play", false, "Start the built game and wait for it")
+	gamePath := flag.String("game", "", "Path to the player's dump folder (with --prepare)")
+
+	// Launch options players add come after ours: an unknown flag must not
+	// abort the process.
+	flag.CommandLine.Init(os.Args[0], flag.ContinueOnError)
+	if err := flag.CommandLine.Parse(os.Args[1:]); err == flag.ErrHelp {
+		os.Exit(0)
+	}
 
 	if *checkOnly {
 		report := prereq.RunChecks()
@@ -39,7 +48,18 @@ func main() {
 
 	repoRoot, isStandalone, err := embedded.ResolveRepoRoot()
 	if err != nil {
+		if *prepare || *play {
+			fmt.Fprintf(os.Stderr, "Resolving builder environment: %v\n", err)
+			os.Exit(exitSetupFailed)
+		}
 		fmt.Fprintf(os.Stderr, "Warning resolving builder environment: %v\n", err)
+	}
+
+	if *prepare {
+		os.Exit(runPrepare(repoRoot, isStandalone, *gamePath))
+	}
+	if *play {
+		os.Exit(runPlay(repoRoot, isStandalone))
 	}
 
 	a := app.NewWithID("com.splatpc.builder")
@@ -54,4 +74,3 @@ func main() {
 
 	w.ShowAndRun()
 }
-

@@ -22,6 +22,17 @@ func TestDefaultConfiguration(t *testing.T) {
 	}
 }
 
+func TestOutputDirFor(t *testing.T) {
+	if got, want := OutputDirFor("/tmp/splatpc", false), filepath.Join("/tmp/splatpc", "Game"); got != want {
+		t.Errorf("Expected repository output dir %s, got %s", want, got)
+	}
+
+	t.Setenv("APPIMAGE", "/opt/splatpc/SplatPC-Builder-x86_64.AppImage")
+	if got, want := OutputDirFor("/tmp/splatpc", true), filepath.Join("/opt/splatpc", "Game"); got != want {
+		t.Errorf("Expected standalone AppImage output dir %s, got %s", want, got)
+	}
+}
+
 func TestWriteSettingsIniFresh(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "test_settings_*")
 	if err != nil {
@@ -215,5 +226,39 @@ func TestHDTexturingOption(t *testing.T) {
 	}
 	if !strings.Contains(string(sData), "RBREW_TEXTURE_DUMP") {
 		t.Errorf("Expected RBREW_TEXTURE_DUMP in launcher script when UpscaleTextures is true")
+	}
+}
+
+func TestLoadThenWriteKeepsPlayerSettings(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "test_settings_load_*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// A settings file as the game and the launcher leave it.
+	iniPath := filepath.Join(tempDir, "settings.ini")
+	content := "# Splatoon PC port settings (ESC menu)\nresolution=1440p\nframe_rate=120\nfullscreen=0\nshader_quality=2\nsimple_overlay=1\n"
+	if err := os.WriteFile(iniPath, []byte(content), 0644); err != nil {
+		t.Fatalf("Failed to write settings.ini: %v", err)
+	}
+
+	cfg := DefaultConfiguration("/tmp/splatpc")
+	if err := LoadSettingsIni(iniPath, &cfg); err != nil {
+		t.Fatalf("LoadSettingsIni failed: %v", err)
+	}
+	if err := WriteSettingsIni(cfg, tempDir); err != nil {
+		t.Fatalf("WriteSettingsIni failed: %v", err)
+	}
+
+	data, err := os.ReadFile(iniPath)
+	if err != nil {
+		t.Fatalf("Failed to read settings.ini: %v", err)
+	}
+	written := string(data)
+	for _, expected := range []string{"resolution=1440p", "frame_rate=120", "fullscreen=0", "shader_quality=2", "simple_overlay=1"} {
+		if !strings.Contains(written, expected) {
+			t.Errorf("Expected settings.ini to keep %q, got:\n%s", expected, written)
+		}
 	}
 }

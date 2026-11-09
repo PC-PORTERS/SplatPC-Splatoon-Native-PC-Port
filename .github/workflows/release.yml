@@ -76,6 +76,7 @@ jobs:
 
           cp Builder/splatpc-builder "$APPDIR/usr/bin/splatpc-builder"
           chmod +x "$APPDIR/usr/bin/splatpc-builder"
+          cp recomplauncher.json "$APPDIR/recomplauncher.json"
 
           printf '#!/usr/bin/env bash\nHERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"\nexport PATH="$HERE/usr/bin:$PATH"\nexec "$HERE/usr/bin/splatpc-builder" "$@"\n' > "$APPDIR/AppRun"
           chmod +x "$APPDIR/AppRun"
@@ -155,11 +156,16 @@ jobs:
           $env:CGO_ENABLED = "1"
           go build -trimpath -ldflags="-H windowsgui -s -w" -o ../SplatPC-Builder.exe .
 
+      - name: Package Windows release zip
+        shell: pwsh
+        run: |
+          Compress-Archive -Force -Path SplatPC-Builder.exe, recomplauncher.json -DestinationPath SplatPC-Builder-Windows-x64.zip
+
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
         with:
           name: splatpc-builder-windows
-          path: SplatPC-Builder.exe
+          path: SplatPC-Builder-Windows-x64.zip
           retention-days: 1
 
   publish:
@@ -203,7 +209,7 @@ jobs:
       - name: Generate Checksums
         run: |
           cd release-assets
-          sha256sum SplatPC-Builder-x86_64.AppImage SplatPC-Builder.exe > SHA256SUMS.txt
+          sha256sum SplatPC-Builder-x86_64.AppImage SplatPC-Builder-Windows-x64.zip > SHA256SUMS.txt
           cp SHA256SUMS.txt SHA256SUMS-BUILDER.txt
           cat SHA256SUMS.txt
 
@@ -219,14 +225,16 @@ jobs:
 
             | Platform | File | Instructions |
             |---|---|---|
-            | Windows 10/11 (x64) | `SplatPC-Builder.exe` | Run the standalone builder executable |
+            | Windows 10/11 (x64) | `SplatPC-Builder-Windows-x64.zip` | Unzip and run `SplatPC-Builder.exe` |
             | Linux (x64) | `SplatPC-Builder-x86_64.AppImage` | `chmod +x SplatPC-Builder-x86_64.AppImage && ./SplatPC-Builder-x86_64.AppImage` |
 
             The builder tool automatically configures prerequisites, verifies your Splatoon dump, and compiles the native PC port.
             No game files are included (you need your own dump of Splatoon).
+            Works with [RecompLauncher](https://recomplauncher.com): install, set up and start the port from the launcher.
             Checksums: `SHA256SUMS.txt`.
           files: |
             release-assets/SplatPC-Builder-x86_64.AppImage
-            release-assets/SplatPC-Builder.exe
+            release-assets/SplatPC-Builder-Windows-x64.zip
             release-assets/SHA256SUMS.txt
             release-assets/SHA256SUMS-BUILDER.txt
+            recomplauncher.json
