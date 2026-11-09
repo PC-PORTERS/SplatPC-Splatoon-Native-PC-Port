@@ -50,6 +50,9 @@ void note_borderless(bool borderless);
 bool consume_quit_request();
 // Mirror of the live window state, refreshed by the GX2 thread every swap.
 void note_fullscreen(bool fullscreen);
+// The game's scene kind (rbrew_control_defaults::active_scene_type), -1 unknown: friend-request notices
+// only show in the plaza and lobby, never during a match.
+void note_scene(int type);
 
 // Performance / debug overlay visibility (F3), persisted as `fps_overlay` in
 // settings.ini (RBREW_FPS_OVERLAY=1 starts visible; hidden by default). Any

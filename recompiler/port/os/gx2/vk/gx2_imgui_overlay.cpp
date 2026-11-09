@@ -34,7 +34,9 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <mutex>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -105,6 +107,7 @@ enum class MenuPage { Main, Keyboard, Controller, Friends, Amiibo };
 // render thread switches to it (or closes the menu when already there).
 std::atomic<bool> s_friends_request{false};
 std::atomic<int> s_friends_toggle{0};
+std::atomic<int> s_scene_type{-1}; // the game's scene kind, published by the GX2 thread (note_scene); -1 unknown
 MenuPage s_menu_page = MenuPage::Main;
 gx2_graphics_menu::Page s_graphics_page = gx2_graphics_menu::Page::None; // graphics/weather/camera/cinema page
 bool s_prev_menu_open = false;
@@ -575,11 +578,22 @@ void build_controls_page(MenuPage page) {
 // add.res / remove.res ("code|pseudo|text") and state.res ("friend|pid|pseudo|online" lines, "msg|text").
 namespace friends_ui {
 namespace fs = std::filesystem;
+// Not ImGui::GetTime(): it only advances while frames are built, and nothing is built when no window is shown.
+double now_seconds() {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 struct Row {
     std::string pid, name;
     bool online = false;
 };
+struct Request {
+    std::string pid, name;
+};
 std::vector<Row> s_rows;
+std::vector<Request> s_requests;          // friend requests received, from the "request|" lines of state.res
+std::map<std::string, double> s_answered; // pid -> when it was answered here: hidden until the relay catches up
+std::set<std::string> s_announced;        // requests already announced by the on-screen notice
+double s_notice_until = 0.0;
 std::string s_message, s_result;
 double s_read_at = -10.0;
 char s_input[16] = "";
@@ -603,12 +617,13 @@ bool read_file(const fs::path& path, std::string& text) {
 }
 
 void refresh() {
-    const double now = ImGui::GetTime();
+    const double now = now_seconds();
     if (dir().empty() || now - s_read_at < 1.0) return;
     s_read_at = now;
     std::string text;
     if (read_file(dir() / "state.res", text)) {
         s_rows.clear();
+        s_requests.clear();
         s_message.clear();
         std::istringstream lines(text);
         for (std::string line; std::getline(lines, line);) {
@@ -617,13 +632,29 @@ void refresh() {
                 s_message = line.substr(4);
                 continue;
             }
+            if (line.rfind("request|", 0) == 0) {
+                const auto split = line.find('|', 8);
+                if (split == std::string::npos) continue;
+                Request request{line.substr(8, split - 8), line.substr(split + 1)};
+                const auto answered = s_answered.find(request.pid);
+                if (answered != s_answered.end() && now - answered->second < 15.0) continue;
+                s_requests.push_back(std::move(request));
+                continue;
+            }
             if (line.rfind("friend|", 0) != 0) continue;
             const auto a = line.find('|', 7), b = a == std::string::npos ? a : line.find('|', a + 1);
             if (b == std::string::npos) continue;
             s_rows.push_back({line.substr(7, a - 7), line.substr(a + 1, b - a - 1), line.substr(b + 1) == "1"});
         }
+        std::set<std::string> present;
+        for (const Request& request : s_requests) {
+            present.insert(request.pid);
+            if (s_announced.insert(request.pid).second) s_notice_until = now + 10.0; // a new request: show the notice
+        }
+        std::erase_if(s_announced, [&](const std::string& pid) { return !present.count(pid); });
+        std::erase_if(s_answered, [&](const auto& entry) { return now - entry.second >= 15.0; });
     }
-    for (const char* name : {"add.res", "remove.res"}) {
+    for (const char* name : {"add.res", "remove.res", "accept.res", "decline.res"}) {
         if (!read_file(dir() / name, text)) continue;
         std::error_code ec;
         fs::remove(dir() / name, ec);
@@ -655,7 +686,7 @@ void build_page() {
     refresh();
     ImGui::TextDisabled("Your pseudo: %s", rbrew_online::pseudo().c_str());
     ImGui::TextWrapped(
-        "Type a friend's pseudo and press Enter. They must add you too (with your pseudo): you then see each other "
+        "Type a friend's pseudo and press Enter: they get a request and must accept it. You then see each other "
         "in the game's friend list and can join each other's rooms.");
     ImGui::Separator();
     if (s_focus_input) {
@@ -674,6 +705,27 @@ void build_page() {
     }
     if (!s_result.empty()) ImGui::TextWrapped("%s", s_result.c_str());
     if (!s_message.empty()) ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.35f, 1.0f), "Server: %s", s_message.c_str());
+    if (!s_requests.empty()) {
+        ImGui::Separator();
+        ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "Friend requests (%zu)", s_requests.size());
+        for (size_t i = 0; i < s_requests.size(); ++i) {
+            const Request request = s_requests[i];
+            ImGui::PushID(("request_" + request.pid).c_str());
+            ImGui::TextUnformatted(request.name.c_str());
+            ImGui::SameLine(ImGui::GetWindowWidth() - 190.0f);
+            const bool accepted = ImGui::SmallButton("Accept##request_accept");
+            ImGui::SameLine();
+            const bool declined = ImGui::SmallButton("Decline##request_decline");
+            ImGui::PopID();
+            if (accepted || declined) {
+                send(accepted ? "accept.cmd" : "decline.cmd", request.pid);
+                s_answered[request.pid] = now_seconds();
+                s_result = request.name + (accepted ? ": accepting..." : ": declining...");
+                s_requests.erase(s_requests.begin() + long(i));
+                break;
+            }
+        }
+    }
     ImGui::Separator();
     if (s_rows.empty()) ImGui::TextDisabled("No friends yet.");
     for (size_t i = 0; i < s_rows.size(); ++i) {
@@ -688,6 +740,32 @@ void build_page() {
     if (ImGui::Button("Back")) s_menu_page = MenuPage::Main;
     ImGui::SameLine();
     ImGui::TextDisabled("F4 / Esc: close");
+}
+
+// A new request is announced for a few seconds while the menu is closed, only in the plaza (scene kind 2 or 3
+// depending on the game revision): never in a match, a lobby or a tutorial.
+bool notice_wanted() {
+    const int scene = s_scene_type.load(std::memory_order_relaxed);
+    return !s_requests.empty() && now_seconds() < s_notice_until && (scene == 2 || scene == 3);
+}
+
+void build_notice() {
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x - 16.0f, viewport->WorkPos.y + 16.0f),
+                            ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+    ImGui::SetNextWindowBgAlpha(0.8f);
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs |
+                                   ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing |
+                                   ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoSavedSettings;
+    if (!ImGui::Begin("##friend_request_notice", nullptr, flags)) {
+        ImGui::End();
+        return;
+    }
+    if (s_requests.size() == 1)
+        ImGui::Text("Friend request from %s (F4)", s_requests[0].name.c_str());
+    else
+        ImGui::Text("%zu friend requests (F4)", s_requests.size());
+    ImGui::End();
 }
 } // namespace friends_ui
 
@@ -1084,6 +1162,10 @@ void note_fullscreen(bool fullscreen) {
     s_fullscreen_mirror.store(fullscreen, std::memory_order_relaxed);
 }
 
+void note_scene(int type) {
+    s_scene_type.store(type, std::memory_order_relaxed);
+}
+
 void set_visible(bool visible) {
     if (s_visible.exchange(visible, std::memory_order_relaxed) != visible)
         s_visible_changed.store(true, std::memory_order_relaxed);
@@ -1123,7 +1205,9 @@ ImDrawData* begin_frame(VkExtent2D extent) {
     if (!s_ready) return nullptr;
     const bool show_menu = menu_open();
     const bool show_simple = simple_overlay();
-    if (!visible() && !show_menu && !show_simple) {
+    friends_ui::refresh(); // once a second, only online (RBREW_FRIENDS_DIR)
+    const bool show_notice = !show_menu && friends_ui::notice_wanted();
+    if (!visible() && !show_menu && !show_simple && !show_notice) {
         s_capture_active.store(false, std::memory_order_relaxed);
         return nullptr;
     }
@@ -1184,6 +1268,7 @@ ImDrawData* begin_frame(VkExtent2D extent) {
     s_focused_action = -1;
     if (show_menu && !s_quit_opened_from_gameplay.load(std::memory_order_relaxed)) build_settings_window();
     build_quit_confirmation_popup();
+    if (show_notice) friends_ui::build_notice();
     // Phase scopes (gx2_perf.h) record while this window is visible; off they
     // cost one relaxed load per scope. An RBREW_PERF file keeps them anyway.
     gx2_set_perf_live(visible());
