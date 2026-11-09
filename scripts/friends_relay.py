@@ -7,9 +7,13 @@ writes its own <pid>.txt (the game mode, which tells friends what room it is in)
   - answers the in-game Friends window through small files in the same folder:
         add.cmd     a pseudo to add          -> add.res   (one line: "<code>|<pseudo>|<text>")
         remove.cmd  a pseudo or pid to drop  -> remove.res
-        state.res   "friend|<pid>|<pseudo>|<online 0/1>" lines and a "msg|<text>" line (rewritten each cycle)
+        accept.cmd  the pid (or pseudo) of a friend request received -> accept.res
+        decline.cmd the same, to refuse it                           -> decline.res
+        state.res   "friend|<pid>|<pseudo>|<online 0/1>" lines, "request|<pid>|<pseudo>" lines (requests received,
+                    not answered yet) and a "msg|<text>" line (rewritten each cycle)
   - keeps the player's list in <Game>\\friends.txt ("<pid> <pseudo>" per line); the server stores no list.
-Nothing here ever leaves the PC except the heartbeat, the pseudo search and the pseudo claim, over HTTPS.
+Nothing here ever leaves the PC except the heartbeat, the pseudo search, the pseudo claim and the friend
+requests (send, answer, cancel), over HTTPS.
 """
 import json
 import os
@@ -72,6 +76,7 @@ class Relay:
         self.token = None
         self.message = ""
         self.online = {}                        # pid hex -> (name, mode) from the last good heartbeat
+        self.requests = []                      # [(pid hex, pseudo)] friend requests received, not answered yet
         os.makedirs(self.dir, exist_ok=True)
 
     # -- network ------------------------------------------------------------------------------
@@ -166,10 +171,27 @@ class Relay:
             return self.answer("add.res", "already", found["pseudo"], "already in your list")
         if len(friends) >= 100:
             return self.answer("add.res", "full", found["pseudo"], "the list holds 100 friends")
+        result, problem = self.request_friend(pid)
+        if result == "error":
+            return self.answer("add.res", "error", found["pseudo"], problem)
         friends[pid] = found["pseudo"]
         self.save_list(friends)
         state = "online now" if found.get("online") else "not online now"
-        self.answer("add.res", "ok", found["pseudo"], f"added ({state}); they must add you too")
+        follow_up = {"sent": "request sent, they must accept", "friends": "they had asked you too: you are friends"}
+        self.answer("add.res", "ok", found["pseudo"], f"added ({state}); {follow_up.get(result, 'they must add you too')}")
+
+    def request_friend(self, pid):
+        """('sent' | 'friends', '') when the server took the request, ('old', '') for a server without friend
+        requests (the list alone, as before), ('error', text) when the player must not be added."""
+        status, answer = self.call("request", {"token": self.token, "pid": pid})
+        if status == 200 and answer.get("state") in ("sent", "friends"):
+            return answer["state"], ""
+        if status == 401:
+            self.token = None
+            return "error", "session expired, try again"
+        if status == 429:
+            return "error", str(answer.get("error") or "too many requests, wait a moment")[:80]
+        return "old", ""
 
     def handle_remove(self, text, friends):
         wanted = text.strip().lower()
@@ -177,8 +199,49 @@ class Relay:
             if wanted in (pid, name.lower()):
                 del friends[pid]
                 self.save_list(friends)
+                if self.ensure_session():                   # withdraws a request still waiting; a server without them says 404
+                    self.call("cancel", {"token": self.token, "pid": pid})
                 return self.answer("remove.res", "ok", name, "removed")
         self.answer("remove.res", "notfound", wanted, "not in your list")
+
+    def handle_answer(self, text, friends, accept):
+        result = "accept.res" if accept else "decline.res"
+        wanted = text.strip().lower()
+        match = next(((pid, name) for pid, name in self.requests if wanted in (pid, name.lower())), None)
+        if match is None:
+            return self.answer(result, "notfound", wanted, "no such request")
+        pid, name = match
+        if accept and pid not in friends and len(friends) >= 100:
+            return self.answer(result, "full", name, "the list holds 100 friends")
+        if not self.ensure_session():
+            return self.answer(result, "error", name, self.message)
+        status, _ = self.call("answer", {"token": self.token, "pid": pid, "accept": accept})
+        if status == 401:
+            self.token = None
+            return self.answer(result, "error", name, "session expired, try again")
+        if status not in (200, 404):
+            return self.answer(result, "error", name, "server unreachable" if status == 0 else f"error {status}")
+        self.requests.remove(match)
+        if status == 404:                                   # the sender withdrew it meanwhile
+            return self.answer(result, "gone", name, "this request is gone")
+        if accept:
+            friends[pid] = name
+            self.save_list(friends)
+        self.answer(result, "ok", name, "accepted, you are friends now" if accept else "declined")
+
+    def read_requests(self, answer, friends):
+        """The requests received, as the server lists them; one from a player already in the list is accepted at once."""
+        received = []
+        for item in answer.get("requests", []) or []:
+            pid = str(item.get("pid", ""))
+            if not re.fullmatch(r"[0-9a-f]{8}", pid):
+                continue
+            name = re.sub(r"[^A-Za-z0-9 _.\-]", "?", str(item.get("name", "Ami")))[:10]
+            if pid in friends:
+                self.call("answer", {"token": self.token, "pid": pid, "accept": True})
+            else:
+                received.append((pid, name))
+        self.requests = received
 
     # -- one cycle --------------------------------------------------------------------------------
     def step(self):
@@ -189,6 +252,10 @@ class Relay:
         command = self.take_command("remove.cmd")
         if command is not None:
             self.handle_remove(command, friends)
+        for name, accept in (("accept.cmd", True), ("decline.cmd", False)):
+            command = self.take_command(name)
+            if command is not None:
+                self.handle_answer(command, friends, accept)
         own = read_kv(os.path.join(self.dir, f"{self.pid:08x}.txt"))
         mode = own.get("mode", "")
         if not re.fullmatch(r"[0-9a-f]{88}", mode):
@@ -205,6 +272,7 @@ class Relay:
                 self.message = ""
                 self.online = {item["pid"]: (item.get("name", "Ami"), item.get("mode") or ZERO_MODE)
                                for item in answer.get("friends", []) if re.fullmatch(r"[0-9a-f]{8}", str(item.get("pid", "")))}
+                self.read_requests(answer, friends)
             elif status == 401:
                 self.token = None
                 self.message = "session expired"
@@ -212,8 +280,10 @@ class Relay:
                 self.message = "server unreachable" if status == 0 else f"error {status}"
         if not reachable:
             self.online = {}
+            self.requests = []
         self.write_friend_files()
         lines = [f"friend|{pid}|{name}|{1 if pid in self.online else 0}" for pid, name in sorted(friends.items(), key=lambda kv: kv[1].lower())]
+        lines += [f"request|{pid}|{name}" for pid, name in self.requests]
         lines.append(f"msg|{self.message}")
         write_atomic(os.path.join(self.dir, "state.res"), "\n".join(lines) + "\n")
 
