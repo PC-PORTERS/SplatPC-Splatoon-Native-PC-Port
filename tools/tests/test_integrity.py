@@ -70,6 +70,14 @@ class ClientHashTests(unittest.TestCase):
         self.assertNotEqual(integrity.attestation(str(self.root))["code"], good)
         self.assertIn("recompiler/a.cpp", integrity.differing(str(self.root)))
 
+    def test_the_version_comes_from_VERSION_not_from_installed_version(self):
+        stale = self.root / "build"
+        stale.mkdir()
+        (stale / "installed-version.txt").write_text("0.0.1\n")
+        self.assertEqual(integrity.read_version(str(self.root)), "0.1.3")
+        (self.root / "VERSION").unlink()
+        self.assertEqual(integrity.read_version(str(self.root)), "")
+
     def test_no_manifest_means_no_proof(self):
         (self.root / "scripts" / "integrity-manifest.txt").unlink()
         self.assertEqual(integrity.attestation(str(self.root))["code"], "")

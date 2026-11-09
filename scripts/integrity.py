@@ -83,15 +83,13 @@ def current_text(entries, root=ROOT):
 
 
 def read_version(root=ROOT):
-    for relative in (os.path.join("build", "installed-version.txt"), "VERSION"):
-        try:
-            with open(os.path.join(root, relative), encoding="ascii", errors="replace") as handle:
-                text = handle.read().strip().lstrip("v")
-        except OSError:
-            continue
-        if text and all(c.isdigit() or c == "." for c in text):
-            return text
-    return ""
+    """The version in VERSION (build/installed-version.txt is a leftover of the removed auto-update)."""
+    try:
+        with open(os.path.join(root, "VERSION"), encoding="ascii", errors="replace") as handle:
+            text = handle.read().strip().lstrip("v")
+    except OSError:
+        return ""
+    return text if text and all(c.isdigit() or c == "." for c in text) else ""
 
 
 def attestation(root=ROOT):
