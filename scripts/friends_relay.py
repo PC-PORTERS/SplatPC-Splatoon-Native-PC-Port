@@ -196,6 +196,10 @@ class Relay:
         reachable = False
         if self.ensure_session():
             status, answer = self.call("presence", {"token": self.token, "mode": mode, "friends": list(friends)})
+            if status == 401:                   # the server forgot the session (a restart): sign in again at once, which
+                self.token = None               # also sends the integrity proof back before the game logs in again
+                if self.ensure_session():
+                    status, answer = self.call("presence", {"token": self.token, "mode": mode, "friends": list(friends)})
             if status == 200:
                 reachable = True
                 self.message = ""

@@ -89,6 +89,18 @@ class RelayTests(unittest.TestCase):
         self.assertEqual(self.command("Alice", "remove.cmd", "Carol")[0], "ok")
         self.assertEqual(self.command("Alice", "remove.cmd", "Carol")[0], "notfound")
 
+    def test_forgotten_session_is_reopened_in_the_same_cycle(self):
+        self.own_file("Alice", "aa" * 44)
+        self.own_file("Bob", "bb" * 44)
+        self.assertEqual(self.command("Alice", "add.cmd", "Bob")[0], "ok")
+        self.assertEqual(self.command("Bob", "add.cmd", "Alice")[0], "ok")
+        relay = self.relays["Alice"]
+        relay.token = "0" * 32                                              # unknown to the server, as after a restart
+        relay.step()
+        self.assertNotEqual(relay.token, "0" * 32)
+        self.assertEqual(self.friend_files("Alice"), ["10000002.txt"])      # one cycle: no 'session expired' gap
+        self.assertIn("msg|\n", pathlib.Path(relay.dir, "state.res").read_text())
+
     def test_server_down_keeps_the_game_working(self):
         relay = self.relays["Alice"]
         relay.base = "http://127.0.0.1:9"                                   # nothing listens there
