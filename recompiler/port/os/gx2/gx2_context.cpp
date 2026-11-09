@@ -1137,8 +1137,6 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
                                        std::memory_order_relaxed);
     rbrew::discord_rpc_poll_game_state(cpu ? cpu->mem : nullptr, s_swap_count.load());
 #if defined(HAVE_SDL2)
-    if (cpu && s_swap_count.load() % 30 == 0)
-        gx2_imgui::note_scene(rbrew_control_defaults::active_scene_type(cpu->mem));
     if (s_window) {
         // Pump SDL events first (the ImGui menu frees the cursor itself:
         // sync_overlay_mouse_mode).
