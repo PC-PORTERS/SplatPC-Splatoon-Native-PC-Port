@@ -369,14 +369,18 @@ void vpad_update_motion(uint8_t* mem, uint32_t buf, float rx, float ry, float dt
     const float mouse_rate = dt > 0 ? mouse_yaw / dt : 0.0f;
     const float report_rate = yaw_rate - (variant == 1 ? mouse_rate : 0.0f);
     const float dir_yaw = v.yaw - (variant == 2 ? v.mouse_acc : 0.0f);
-    // RBREW_MOUSE_TRACE=<file> (diagnostic, off by default): one line per read that carries mouse motion.
+    // RBREW_MOUSE_TRACE=<file> (diagnostic, off by default): one line per read.
     static FILE* const mouse_trace = [] {
         const char* p = std::getenv("RBREW_MOUSE_TRACE");
         return p && *p ? std::fopen(p, "w") : nullptr;
     }();
-    if (mouse_trace && (mouse_yaw != 0.0f || mouse_pitch != 0.0f)) {
-        std::fprintf(mouse_trace, "dt=%.4f mouse_yaw=%.3f mouse_pitch=%.3f yaw_rate=%.1f yaw=%.2f tutorial=%d\n", dt,
-                     mouse_yaw, mouse_pitch, yaw_rate, v.yaw, int(tutorial));
+    // Direct mode accumulates in s_mouse_yaw (traced_mouse_yaw), the other modes pass mouse_yaw.
+    static unsigned trace_read = 0;
+    ++trace_read;
+    if (mouse_trace) { // every read, so reads that receive 0 right after a motion show up too
+        std::fprintf(mouse_trace,
+                     "read=%u dt=%.4f direct_yaw=%.3f mouse_yaw=%.3f mouse_pitch=%.3f yaw_rate=%.1f yaw=%.2f tutorial=%d\n",
+                     trace_read, dt, traced_mouse_yaw, mouse_yaw, mouse_pitch, yaw_rate, v.yaw, int(tutorial));
         std::fflush(mouse_trace);
     }
     const float pitch = std::fmax(-kPitchLimit, std::fmin(kPitchLimit, v.pitch + pitch_rate * dt + mouse_pitch));
