@@ -63,6 +63,12 @@ foreach ($Name in 'A', 'B') {
   }
 }
 
+# Both players share this PC, so the server must advertise the router's public address for LAN stations
+# (NEXLAB_LAN_PUBLIC, as on the public server), or joining the other player's match fails with "match full".
+$WanFile = Join-Path $Bench 'wan.txt'
+if (-not (Test-Path -LiteralPath $WanFile)) { throw "Put this connection's public IP address in $WanFile." }
+$env:NEXLAB_LAN_PUBLIC = (Get-Content -LiteralPath $WanFile -TotalCount 1).Trim()
+
 # Server (kept when one already runs on the bench port)
 if (-not (Get-NetUDPEndpoint -LocalPort 60000 -ErrorAction SilentlyContinue)) {
   Start-Process $Server -ArgumentList '--config', "`"$(Join-Path $Bench 'server.json')`"" -WindowStyle Minimized `
