@@ -1,7 +1,8 @@
 param(
   [switch]$CaptureTrace,
   [switch]$Ring,
-  [switch]$Friends   # test the friends feature: each window gets its own friends folder and relay (see friends_relay.py)
+  [switch]$Friends,  # test the friends feature: each window gets its own friends folder and the game's relay
+  [string]$SocialUrl = ''   # the relay's server (default: register= of server.txt); http://127.0.0.1:<port> for a tunnel
 )
 # Two players on this PC against the PUBLIC NEX server (scripts\server.txt: server=, nncs1=, nncs2=).
 # Same layout as Launch-Duo.ps1 (each player in build\duo\A and build\duo\B, own identity, save and
@@ -27,9 +28,7 @@ if (-not (Test-Path -LiteralPath $File)) { $File = Join-Path $PSScriptRoot 'serv
 if (Test-Path -LiteralPath $File) { foreach ($Line in Get-Content -LiteralPath $File) { if ($Line -match '^\s*(\w+)\s*=\s*(\S+)\s*$') { $Cfg[$Matches[1].ToLower()] = $Matches[2] } } }
 if (-not $Cfg['server'] -or -not $Cfg['nncs1'] -or -not $Cfg['nncs2']) { throw 'scripts\server.txt needs server=, nncs1= and nncs2=.' }
 
-foreach ($Tool in 'make_vssetting.py', 'make_festival.py') {
-  cmd /c "py -3.12 `"$(Join-Path $Root "tools\boss\$Tool")`" > `"$(Join-Path $Logs "duop-$Stamp-boss.log")`" 2>&1"
-}
+# The games write the SpotPass files themselves (Game\boss, recompiler\port\online).
 $env:RBREW_CONTENT_DIR = Join-Path $Game 'content'
 $env:RBREW_TITLE_METADATA = Join-Path $Game 'meta\meta.xml'
 $env:RBREW_SYSTEM_MLC_DIR = Join-Path $Game 'mlc01'
@@ -45,7 +44,6 @@ $env:RBREW_DUO_NO_AFK = '1'
 $SharedFriends = Join-Path $Root 'build\duo\friends'
 Remove-Item -Path $SharedFriends -Recurse -Force -ErrorAction SilentlyContinue
 if (-not $Friends) { $env:RBREW_FRIENDS_DIR = $SharedFriends } else { Remove-Item Env:RBREW_FRIENDS_DIR -ErrorAction SilentlyContinue }
-$SocialUrl = ''
 foreach ($ConfigFile in (Join-Path $PSScriptRoot 'server.txt'), (Join-Path $PSScriptRoot 'server.public.txt')) {
   if (-not $SocialUrl -and (Test-Path $ConfigFile)) {
     foreach ($Line in Get-Content $ConfigFile) { if ($Line -match '^\s*register\s*=\s*(https://[A-Za-z0-9.\-]+(:\d{1,5})?)/') { $SocialUrl = $Matches[1] } }
@@ -69,6 +67,9 @@ foreach ($Name in 'A', 'B') {
   if ($Friends) {
     $env:RBREW_FRIENDS_DIR = Join-Path $Dir 'friends'
     New-Item -ItemType Directory -Path $env:RBREW_FRIENDS_DIR -Force | Out-Null
+    # The game's relay sends the integrity proof of this checkout (the copy runs from build\duo).
+    $env:RBREW_SOCIAL_URL = $SocialUrl
+    $env:RBREW_INTEGRITY_ROOT = $Root
   }
   $env:RBREW_NET_TRACE = Join-Path $Logs "duop-$Stamp-$Name-net.txt"
   if ($CaptureTrace) { $env:RBREW_CAPTURE_TRACE = Join-Path $Logs "duop-$Stamp-$Name-capture.txt" } else { Remove-Item Env:RBREW_CAPTURE_TRACE -ErrorAction SilentlyContinue }
@@ -76,9 +77,6 @@ foreach ($Name in 'A', 'B') {
   if ($Ring) { $env:RBREW_DISPATCH_RING = Join-Path $Logs "duop-$Stamp-$Name-ring.bin" } else { Remove-Item Env:RBREW_DISPATCH_RING -ErrorAction SilentlyContinue }
   $Players += Start-Process (Join-Path $Dir $ExeName) -WorkingDirectory $Dir -PassThru `
     -RedirectStandardOutput (Join-Path $Logs "duop-$Stamp-$Name-stdout.log") -RedirectStandardError (Join-Path $Logs "duop-$Stamp-$Name-stderr.log")
-  if ($Friends -and $SocialUrl) {
-    Start-Process py -ArgumentList '-3.12', "`"$(Join-Path $PSScriptRoot 'friends_relay.py')`"", '--game-dir', "`"$Dir`"", '--server', $SocialUrl, '--watch-pid', "$($Players[-1].Id)" -WindowStyle Hidden
-  }
   Start-Sleep 2
 }
 $Players | ForEach-Object { $_.WaitForExit() }

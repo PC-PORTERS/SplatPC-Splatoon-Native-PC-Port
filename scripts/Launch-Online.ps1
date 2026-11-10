@@ -50,53 +50,50 @@ if(-not $LocalServer -and -not $Force){
 }
 
 if($Port -lt 1 -or $Port -gt 65534){throw 'The NEX port must be between 1 and 65534 (the secure server uses port+1).'}
-# Any Python 3.10+ works (the helper tools only use the standard library), found the same way
-# as Setup.ps1. Playing online needs it: friends_relay.py is the only one that sends the integrity
-# proof, so without Python the server refuses every login. Fail here, before the game starts.
+# Playing on a remote server needs no Python: the game itself writes the SpotPass files (Game\boss)
+# and runs the friends relay with the integrity proof (recompiler\port\online). Only the local lab
+# server (tools\nexlab\nexserver.py) is a Python program; Python 3.10+ is found the same way as Setup.ps1.
 $Python=$null
-foreach($Candidate in @(@('py','-3'),@('python'),@('python3'))){
-  if(-not(Get-Command $Candidate[0] -ErrorAction SilentlyContinue)){continue}
-  $CandidateArgs=@($Candidate | Select-Object -Skip 1)
-  try { $Found=(& $Candidate[0] @CandidateArgs -c 'import sys; assert sys.version_info >= (3, 10); print(sys.executable)' 2>$null) } catch { $Found=$null }
-  if($LASTEXITCODE -eq 0 -and "$Found".Trim()){ $Python="$Found".Trim(); break }
+if($LocalServer){
+  foreach($Candidate in @(@('py','-3'),@('python'),@('python3'))){
+    if(-not(Get-Command $Candidate[0] -ErrorAction SilentlyContinue)){continue}
+    $CandidateArgs=@($Candidate | Select-Object -Skip 1)
+    try { $Found=(& $Candidate[0] @CandidateArgs -c 'import sys; assert sys.version_info >= (3, 10); print(sys.executable)' 2>$null) } catch { $Found=$null }
+    if($LASTEXITCODE -eq 0 -and "$Found".Trim()){ $Python="$Found".Trim(); break }
+  }
+  Write-LauncherLog "Python: $Python"
 }
-if(-not $Python){ throw 'Python 3.10 or newer is required to play online. Install it from python.org, then try again.' }
-Write-LauncherLog "Python: $Python"
 $Server=$null
-$Relay=$null
 try {
 if($LocalServer){
 $Running=Get-CimInstance Win32_Process -Filter "Name like 'py%' or Name like 'python%'" | Where-Object { $_.CommandLine -match 'nexserver\.py' -and ($_.CommandLine -match ('--port[ ="'']+'+$Port+'(?:[ "'']|$)') -or ($Port -eq 60000 -and $_.CommandLine -notmatch '--port')) }
 if(-not $Running){
   $Busy=Get-NetUDPEndpoint -LocalPort $Port,($Port+1) -ErrorAction SilentlyContinue
   if($Busy){throw "UDP port $Port or $($Port+1) is already in use; close the program using it."}
+  if(-not $Python){ throw 'The local lab server needs Python 3.10 or newer (python.org).' }
   $Script=Join-Path $Root 'tools\nexlab\nexserver.py'
   $Log=Join-Path $LogDirectory ('online-'+$RunName+'-server.log')
   # python.exe itself (py.exe runs it as a child, which Stop-Process would leave running)
-  # Python was checked before starting the server.
   $Server=Start-Process -FilePath $Python -ArgumentList "`"$Script`"",'--port',"$Port",'--log',"`"$Log`"" -WindowStyle Hidden -PassThru
   Start-Sleep -Seconds 2
   if($Server.HasExited){throw "The NEX lab server did not start; see $Log"}
 }
 }
 
-  # SpotPass schedule (stages, weapon unlock dates) from Game\boss\planning.json, dated from now.
-  # SpotPass festival (Festival.byaml + textures) from Game\boss\festival.json.
-  # A failing tool must not stop the launch: its output goes to the schedule log.
-  if($Python){
-    $Schedule=Join-Path $LogDirectory ('online-'+$RunName+'-schedule.log')
-    foreach($Tool in 'make_vssetting.py','make_festival.py'){
-      cmd /c "`"$Python`" `"$(Join-Path $Root "tools\boss\$Tool")`" >> `"$Schedule`" 2>&1"
-      if($LASTEXITCODE -ne 0){ Write-LauncherLog "$Tool failed (exit $LASTEXITCODE), see $Schedule" }
-    }
-  }
+  # SpotPass schedule and festival: the game builds them at start from Game\boss\planning.json and
+  # festival.json (same result as tools\boss\make_vssetting.py and make_festival.py).
   # Language: settings.ini language=, English by default (main.cpp).
   $env:RBREW_ONLINE_SERVER=$NexServer
-  # Friends: the game reads <Game>\friends (one file per ONLINE friend); friends_relay.py fills it from the server
-  # when -SocialUrl is given (the sign-in screen passes it). Without it the list stays empty.
+  # Friends: the game reads <Game>\friends (one file per ONLINE friend); its relay fills it from the server
+  # and sends the integrity proof when -SocialUrl is given (the sign-in screen passes it). Without it the
+  # list stays empty and a server in enforce mode refuses the login.
   $FriendsDir=Join-Path $Game 'friends'
   New-Item -ItemType Directory -Path $FriendsDir -Force | Out-Null
   $env:RBREW_FRIENDS_DIR=$FriendsDir
+  $env:RBREW_SOCIAL_URL=''
+  if($SocialUrl -and $SocialUrl -match '^(https://[A-Za-z0-9.\-]+(:\d{1,5})?|http://(127\.0\.0\.1|localhost)(:\d{1,5})?)$'){
+    $env:RBREW_SOCIAL_URL=$SocialUrl
+  }
   # NAT check before peer-to-peer: Nintendo's NNCS names go to the nncs1/nncs2 addresses
   # (lab loopback by default, the server's two public IPs with -Nncs1/-Nncs2).
   $env:RBREW_DNS_OVERRIDE="nncs1.app.nintendowifi.net=$Nncs1,nncs2.app.nintendowifi.net=$Nncs2"
@@ -120,15 +117,11 @@ if(-not $Running){
   }
   $Process=Start-Process -FilePath $Executable -WorkingDirectory $Game -WindowStyle Normal -RedirectStandardOutput (Join-Path $LogDirectory ('online-'+$RunName+'-stdout.log')) -RedirectStandardError (Join-Path $LogDirectory ('online-'+$RunName+'-stderr.log')) -PassThru
   Write-LauncherLog "Game started (server $NexServer)"
-  if($Python -and $SocialUrl -and $SocialUrl -match '^(https://[A-Za-z0-9.\-]+(:\d{1,5})?|http://(127\.0\.0\.1|localhost)(:\d{1,5})?)$'){
-    $Relay=Start-Process -FilePath $Python -ArgumentList "`"$(Join-Path $PSScriptRoot 'friends_relay.py')`"",'--game-dir',"`"$Game`"",'--server',$SocialUrl,'--watch-pid',"$($Process.Id)" -WindowStyle Hidden -PassThru
-  }
   $Process.WaitForExit()
   $Process.ExitCode | Set-Content -LiteralPath (Join-Path $LogDirectory ('online-'+$RunName+'-exit.txt'))
   Write-LauncherLog "Game exited with code $($Process.ExitCode)"
 }
 finally {
-  if($Relay -and -not $Relay.HasExited){Stop-Process -Id $Relay.Id -Force -ErrorAction SilentlyContinue}
   if($Server -and -not $Server.HasExited){Stop-Process -Id $Server.Id -Force}
 }
 

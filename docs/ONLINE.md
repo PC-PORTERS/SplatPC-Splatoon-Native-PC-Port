@@ -12,11 +12,11 @@ Community servers replace Nintendo's: sign-in, matchmaking, friends and the NAT 
 
 ## Friends
 
-Pseudos are unique. The launcher relays presence (who is online, for 30 seconds) so the in-game friends list works across PCs; private matches use it.
+Pseudos are unique. The game relays presence (who is online, for 30 seconds) so the in-game friends list works across PCs; private matches use it. On Windows the game does this itself, with the SpotPass schedule, so playing online needs no Python; on Linux the launcher runs `scripts/friends_relay.py` and `tools/boss`.
 
 ## Updates and version check
 
-The launcher reads `/health` from the server: `integrity_mode`, the minimum client version and the latest released version. Below the minimum (or below the latest when the server enforces integrity), it stops with a message telling you to update. Get updates from the Releases page / the repository. The version shown in the launcher comes from `build/installed-version.txt` if it exists, else `VERSION`: after a manual update, delete or fix a stale `build/installed-version.txt`.
+The launcher reads `/health` from the server: `integrity_mode`, the minimum client version and the latest released version. Below the minimum (or below the latest when the server enforces integrity), it stops with a message telling you to update. Get updates from the Releases page / the repository. The version shown in the launcher comes from `VERSION`.
 
 ## Anti-cheat: what it is, and what it is not
 
