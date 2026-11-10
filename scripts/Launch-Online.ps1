@@ -115,11 +115,22 @@ if(-not $Running){
     $env:RBREW_NET_PROBE='0209674C'
     $env:RBREW_IMPORT_TRACE=Join-Path $LogDirectory ('online-'+$RunName+'-imports.txt')
   }
+  $Started=Get-Date
   $Process=Start-Process -FilePath $Executable -WorkingDirectory $Game -WindowStyle Normal -RedirectStandardOutput (Join-Path $LogDirectory ('online-'+$RunName+'-stdout.log')) -RedirectStandardError (Join-Path $LogDirectory ('online-'+$RunName+'-stderr.log')) -PassThru
+  $null=$Process.Handle   # without this PowerShell loses the exit code of a process started with redirections
   Write-LauncherLog "Game started (server $NexServer)"
   $Process.WaitForExit()
   $Process.ExitCode | Set-Content -LiteralPath (Join-Path $LogDirectory ('online-'+$RunName+'-exit.txt'))
   Write-LauncherLog "Game exited with code $($Process.ExitCode)"
+  # The game's relay leaves its last words in friends\state.res: a server that refused the game files (HTTP 426)
+  # or could not be reached is written here, for bug reports.
+  $State=Join-Path $FriendsDir 'state.res'
+  if((Test-Path -LiteralPath $State) -and (Get-Item -LiteralPath $State).LastWriteTime -ge $Started){
+    foreach($Line in Get-Content -LiteralPath $State){
+      if($Line -match '^msg\|(.+)$'){ Write-LauncherLog "Friends server said: $($Matches[1])" }
+      if($Line -match '^detail\|(.+)$'){ Write-LauncherLog "Game files refused by the server (HTTP 426): $($Matches[1])" }
+    }
+  }
 }
 finally {
   if($Server -and -not $Server.HasExited){Stop-Process -Id $Server.Id -Force}
