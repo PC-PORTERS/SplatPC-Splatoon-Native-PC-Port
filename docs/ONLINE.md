@@ -35,7 +35,3 @@ Report a cheater with their pseudo and the time of the match; the operator can b
 ## Privacy
 
 The server keeps an account number, a derived key, your pseudo and creation / last-seen dates. IP addresses appear in the server logs (rotating) and briefly for rate limiting. Nothing else about you or your game is collected.
-
-## En français
-
-Les serveurs communautaires remplacent ceux de Nintendo ; les parties sont en pair-à-pair. Lance `Play-Online.bat` (Windows) ou `./Play-Online.sh` (Linux) : pseudo, inscription automatique, vérification de version, puis jeu. `--offline` joue sans serveur. Ne partage jamais `Game/online_identity.ini`. L'anti-triche complet est impossible en pair-à-pair : le serveur vérifie la version et l'empreinte du code (modes `off`, `log`, `enforce` ; le serveur public est en `enforce`), et la modération peut bannir un compte ou une IP en quelques minutes.

@@ -26,7 +26,3 @@ go build .             # the root package needs cgo and a C compiler (Fyne)
 ```
 
 `go generate` bundles the repository files the standalone Builder embeds (`scripts/bundle_builder_assets.py`). The root package (Fyne) only builds with a C compiler: on Windows install MinGW/gcc, on Linux the OpenGL and X11 development packages.
-
-## En français
-
-Le Builder est un assistant graphique : outils requis, ton dump (plus une mise à jour comme la 288 en couches), réglages, compilation, bouton **Jouer**. En ligne, le lanceur écrit par le Builder passe par le script d'inscription (version, compte, pseudo, amis) quand le jeu est dans le dossier `Game/` du dépôt ; `--offline` joue sans serveur.

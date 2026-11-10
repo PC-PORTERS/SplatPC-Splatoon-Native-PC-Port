@@ -1,7 +1,9 @@
 # Run your own server
 
 The server in `tools/nexlab/` (Python) replaces Nintendo's servers for online play: sign-in, matchmaking and the NAT test.
-It contains and reads no Nintendo content.
+It contains and reads no Nintendo content. Use it to host your own server or to test on one PC.
+
+The public server runs a Go version of the same server (its repository will be published soon).
 
 ## Steps
 
@@ -59,34 +61,3 @@ py -3.12 -m tools.nexlab.accounts backup backup.sqlite3                     # st
 ## Privacy (what you store)
 
 An account number, a derived key (never the password), the player's pseudo, creation and last-seen dates (who is online lives in memory only, for 30 seconds); IP addresses in the logs and, briefly, for sign-up limits and bans. Say so to your players (see the README).
-
----
-
-# Héberger son propre serveur
-
-Le serveur de `tools/nexlab/` (Python) remplace les serveurs de Nintendo pour le jeu en ligne : connexion, matchmaking et test NAT.
-Il ne contient ni ne lit aucun contenu de Nintendo.
-
-## Étapes
-
-1. **Machine :** Windows ou Linux, Python 3.12, une IP publique. Le test NAT demande **deux IP publiques différentes** (sinon `"natcheck": false`, et le jeu peut quitter la session).
-2. **Installer :** `py -3.12 -m pip install -r tools\nexlab\requirements.txt` (Linux : un venv et `.venv/bin/pip`).
-3. **Configurer :** copie `tools/nexlab/server.example.json` en `server.json` et adapte-le (même exemple que ci-dessus : `mode`, `advertise`, `natcheck_addresses`, `accounts_db`, `registration`, `registration_proxy`, `min_client_version`).
-4. **Ouvrir les ports :** UDP 60000, 60001, 10025, 10125 (10025 et 10125 sur **les deux** IP), et TCP 80 et 443 pour l'inscription HTTPS. N'expose jamais le TCP 60002.
-5. **Inscription et amis en HTTPS (Caddy) :** pointe un nom de domaine (un DuckDNS gratuit suffit) vers le serveur et utilise le `Caddyfile` ci-dessus (la ligne `/social/*` sert la liste d'amis : pseudos uniques, joueurs en ligne) ; Caddy obtient seul le certificat.
-6. **Démarrer :** `py -3.12 tools\nexlab\nexserver.py --config server.json` (Linux : `.venv/bin/python tools/nexlab/nexserver.py --config server.json` ; un service systemd le garde en marche). Le journal doit afficher `mode=public`, `NAT check on ...` et `accounts: ...`.
-7. **Indiquer le serveur aux joueurs :** dans `scripts/server.public.txt` (ou un `scripts/server.txt` local, prioritaire), avec `server=`, `nncs1=`, `nncs2=` et `register=` (voir l'exemple ci-dessus).
-8. **Vérifier :** `https://ton-domaine/health` doit répondre `{"ok": true, ...}`.
-
-## Exploitation
-
-- **Bannir / débannir / sauvegarder :** les commandes `accounts ban`, `unban` et `backup` ci-dessus (arrête le serveur avant une restauration).
-- **Anciennes versions du jeu :** `min_client_version` est publié dans `/health` ; le lanceur refuse de jouer en ligne en dessous. Augmente-le après une mise à jour qui casse la compatibilité, puis redémarre le serveur.
-- **Intégrité du jeu :** chaque version liste ses fichiers de code dans `scripts/integrity-manifest.txt` (fait par `py -3 scripts/integrity.py --make` avant le tag ; il affiche le `release_hash`). Le relais du joueur envoie sa version et un hash de ces fichiers à la connexion (`/social/session`). Dans `server.json` : `"integrity_mode": "log"` note seulement les hash inconnus ; `"enforce"` refuse la connexion (HTTP 426) **et** le login NEX d'un PC qui n'a pas prouvé une version listée dans les 12 dernières heures ; `"integrity_releases": {"0.1.3": "<release_hash>"}` liste les versions acceptées (une version peut avoir plusieurs hash). Commence par `log`, lis le journal (`integrity: pid ... refused proof`), puis passe à `enforce` quand les joueurs ont mis à jour. Cela rend les modifications simples et les vieilles versions visibles et refusées ; cela n'arrête pas quelqu'un qui copie le bon hash, la modération reste donc la vraie réponse.
-- **Modération :** `py -3.12 tools/nexlab/ops.py --url ... --token <admin_token> ban --pid 5eea2491 --hours 24 --reason "insultes"` bannit tout de suite (le joueur est déconnecté, sa session et sa preuve d'intégrité sont supprimées) ; `--hours` est facultatif (sans valeur : définitif) ; `unban`, `bans` et `log` (chaque ban, déban et expulsion, avec date et raison) fonctionnent pareil. Le panel admin a les mêmes boutons. Un ban d'adresse (`--ip`) bloque aussi un nouveau compte depuis la même adresse.
-- **Journaux :** tournants, 8 Mo x 3. À lire en premier quand le jeu s'arrête à une étape.
-- **Problèmes courants :** `Address already in use` (port pris) ; le joueur quitte après le matchmaking (test NAT injoignable : ports 10025/10125 et deux IP) ; `RendezVous::InvalidUsername` (compte pas encore inscrit, ou banni).
-
-## Vie privée (ce que tu stockes)
-
-Un numéro de compte, une clé dérivée (jamais le mot de passe), le pseudo du joueur, les dates de création et de dernière connexion (qui est en ligne reste en mémoire, 30 secondes) ; des adresses IP dans les journaux et, brièvement, pour les limites d'inscription et les bannissements. Dis-le à tes joueurs (voir le README).

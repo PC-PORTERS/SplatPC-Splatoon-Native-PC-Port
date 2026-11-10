@@ -36,7 +36,3 @@ The AppImage / binary from the Releases page does the same steps with a wizard, 
 - **AppImage and online:** the AppImage folder is read-only, but the game needs to write `settings.ini` and `online_identity.ini` next to the program. Online play works from a normal folder (the build output or the repository's `Game/`), not from inside the AppImage.
 - **Software rendering (lavapipe, WSL):** the game starts but is far too slow to play.
 - **Tests:** the Python suite passes on Linux; the Go tests pass except `TestCreateAppImage` when `appimagetool` is missing.
-
-## En français
-
-Statut : **testé en partie.** Le jeu compile, se lance, s'inscrit et crée un personnage sous Ubuntu 24.04 (WSL). Le gameplay sur un vrai Linux avec carte graphique n'est pas encore testé. Commandes : `./setup.sh --dump "/chemin/du/dump"` puis `./Play-Online.sh` (`--offline` pour jouer sans serveur). L'AppImage est en lecture seule : pour jouer en ligne, utilise un dossier normal.

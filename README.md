@@ -83,9 +83,6 @@ Supported game versions: [VersionDb.md](VersionDb.md) (base game v16 and update 
 
 ### Optional: HD textures
 
-Versions du jeu prises en charge : [VersionDb.md](VersionDb.md) (jeu de base v16 et mise à jour 288, EUR). Détails de la mise à jour 288 : [docs/update-288.md](docs/update-288.md).
-
-## Jouer
 Upscales textures captured during gameplay using Real-ESRGAN into `textures/`.
 - **SplatPC Builder** detects compatible NVIDIA GPUs and automatically activates HD texturing (CUDA acceleration).
 - You can also run the standalone scripts: `HD-Textures.bat` (Windows) or `./HD-Textures.sh` (Linux).
