@@ -36,7 +36,7 @@ PSEUDO_RE = re.compile(r"^[A-Za-z0-9 _.\-]{2,10}$")
 SERVER_RE = re.compile(r"^[A-Za-z0-9.\-]{1,253}:\d{1,5}$")
 REGISTER_RE = re.compile(r"^(https://[A-Za-z0-9.\-]+(:\d{1,5})?(/\S*)?|http://(127\.0\.0\.1|localhost)(:\d{1,5})?(/\S*)?)$")
 SOCIAL_RE = re.compile(r"^(https://[A-Za-z0-9.\-]+(:\d{1,5})?|http://(127\.0\.0\.1|localhost)(:\d{1,5})?)$")
-VERSION_FILES = (os.path.join("build", "installed-version.txt"), "VERSION")
+VERSION_FILES = ("VERSION",)  # build/installed-version.txt is a leftover of the removed auto-update
 
 # Wii U system language numbers (settings.ini language=), offered when the player's own dump has
 # content/Message/CommonMsg_<region><lang>.szs.

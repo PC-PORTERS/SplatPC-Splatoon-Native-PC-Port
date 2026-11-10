@@ -283,7 +283,7 @@ $versionLabel.Location = New-Object System.Drawing.Point(20, 214)
 $versionLabel.Size = New-Object System.Drawing.Size(196, 18)
 $versionLabel.ForeColor = $dark.Muted
 $form.Controls.Add($versionLabel)
-foreach ($file in @((Join-Path $Root 'build\installed-version.txt'), (Join-Path $Root 'VERSION'))) {
+foreach ($file in @((Join-Path $Root 'VERSION'))) {
     if (Test-Path -LiteralPath $file) {
         $text = (Get-Content -LiteralPath $file -Raw).Trim()
         if ($text -match '^v?\d+\.\d+(\.\d+)?$') { $versionLabel.Text = 'v' + $text.TrimStart('v'); break }
@@ -312,7 +312,7 @@ function Test-ServerVersion($cfg) {
         }
         if (-not $minimum) { return '' }
         $installed = $null
-        foreach ($file in @((Join-Path $Root 'build\installed-version.txt'), (Join-Path $Root 'VERSION'))) {
+        foreach ($file in @((Join-Path $Root 'VERSION'))) {
             if (Test-Path -LiteralPath $file) { $installed = ConvertTo-GameVersion (Get-Content -LiteralPath $file -Raw); if ($installed) { break } }
         }
         if ($installed -and $installed -lt $minimum) { return (T 'This server needs version {0} or newer. Update the game, then try again.') -f $minimum.ToString(3) }
