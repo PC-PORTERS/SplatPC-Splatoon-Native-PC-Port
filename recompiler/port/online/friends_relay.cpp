@@ -14,10 +14,11 @@ using json = nlohmann::json;
 namespace rbrew_native {
 namespace {
 
-const std::string kZeroMode(88, '0');
-const std::regex kPid("[0-9a-f]{8}");
-const std::regex kMode("[0-9a-f]{88}");
-const std::regex kPseudo("[A-Za-z0-9 _.\\-]{2,10}");
+// The relay thread can still run while the program ends: these are never destroyed.
+const std::string& kZeroMode = *new std::string(88, '0');
+const std::regex& kPid = *new std::regex("[0-9a-f]{8}");
+const std::regex& kMode = *new std::regex("[0-9a-f]{88}");
+const std::regex& kPseudo = *new std::regex("[A-Za-z0-9 _.\\-]{2,10}");
 constexpr size_t kMaxFriends = 100;
 
 std::string strip(const std::string& s) {
@@ -28,6 +29,13 @@ std::string strip(const std::string& s) {
 std::string lower(std::string s) {
     for (char& c : s)
         if (c >= 'A' && c <= 'Z') c = char(c - 'A' + 'a');
+    return s;
+}
+
+// state.res is read line by line: text from the server never brings a line break or a '|' of its own.
+std::string one_line(std::string s) {
+    for (char& c : s)
+        if (static_cast<unsigned char>(c) < 0x20 || c == '|') c = ' ';
     return s;
 }
 
@@ -111,6 +119,8 @@ static std::string pid_text(uint32_t pid) {
 
 bool FriendsRelay::ensure_session() {
     if (!token_.empty()) return true;
+    if (std::chrono::steady_clock::now() < refused_until_) return false; // the refusal stays shown
+    detail_.clear();
     const Reply r = call("session", {{"pid", pid_text(pid_)}, {"password", password_}, {"client", client_}});
     const json token = r.body.value("token", json());
     if (r.status == 200 && token.is_string() && !token.get<std::string>().empty()) {
@@ -119,9 +129,9 @@ bool FriendsRelay::ensure_session() {
     }
     if (r.status == 426) { // the server only takes official, up-to-date game files
         const json error = r.body.value("error", json());
-        message_ =
-            (error.is_string() && !error.get<std::string>().empty() ? error.get<std::string>() : "update the game")
-                .substr(0, 120);
+        message_ = "Game files not recognised by the server. Update the game.";
+        detail_ = one_line(error.is_string() ? error.get<std::string>() : "").substr(0, 200);
+        refused_until_ = std::chrono::steady_clock::now() + refusal_pause_;
     } else {
         message_ = r.status == 0 ? "server unreachable" : "sign-in refused";
     }
@@ -366,6 +376,7 @@ void FriendsRelay::cycle() {
         lines += "friend|" + pid + "|" + name + "|" + (online_.count(pid) ? "1" : "0") + "\n";
     for (const auto& [pid, name] : requests_) lines += "request|" + pid + "|" + name + "\n";
     lines += "msg|" + message_ + "\n";
+    if (!detail_.empty()) lines += "detail|" + detail_ + "\n";
     write_atomic(dir_ / "state.res", lines);
 }
 

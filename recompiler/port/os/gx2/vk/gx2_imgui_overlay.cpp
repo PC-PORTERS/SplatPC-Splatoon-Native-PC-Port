@@ -690,7 +690,11 @@ void build_page() {
         s_focus_input = true;
     }
     if (!s_result.empty()) ImGui::TextWrapped("%s", s_result.c_str());
-    if (!s_message.empty()) ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.35f, 1.0f), "Server: %s", s_message.c_str());
+    if (!s_message.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.55f, 0.35f, 1.0f));
+        ImGui::TextWrapped("Server: %s", s_message.c_str());
+        ImGui::PopStyleColor();
+    }
     if (!s_requests.empty()) {
         ImGui::Separator();
         ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "Friend requests (%zu)", s_requests.size());

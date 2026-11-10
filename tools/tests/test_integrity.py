@@ -214,7 +214,8 @@ class RelayIntegrityTests(unittest.TestCase):
         self.assertIn("not recognised", relay.message)
         self.assertFalse(self.server.social.is_attested(self.pid))
         state = (self.game / "friends" / "state.res").read_text()
-        self.assertIn("msg|game files not recognised", state)
+        self.assertIn("msg|Game files not recognised by the server. Update the game.", state)
+        self.assertIn("detail|game files not recognised", state)   # the server's words, for the launcher log
 
     def test_health_publishes_mode_and_latest_version_but_no_hash(self):
         import json, urllib.request
@@ -228,12 +229,12 @@ class RelayIntegrityTests(unittest.TestCase):
         (self.root / "recompiler" / "a.cpp").write_bytes(b"int cheat;\n")
         relay = self.relay(integrity.attestation(str(self.root)))
         relay.step()
-        self.assertIn("update the game to " + self.server.social.latest_version(), relay.message)
+        self.assertIn("update the game to " + self.server.social.latest_version(), relay.detail)
 
     def test_an_old_relay_without_a_proof_is_refused(self):
         relay = self.relay(None)
         relay.step()
-        self.assertIn("update the game", relay.message)
+        self.assertIn("Update the game", relay.message)
 
 
 class ModerationTests(unittest.TestCase):

@@ -162,9 +162,22 @@ void test_relay() {
 
     FakeTransport closed;
     closed.replies["session"] = {Reply{426, {{"error", "update the game to 0.1.5"}}}};
-    FriendsRelay old(closed, 1, "pw", "", game, scratch("relay_old"), proof);
+    const fs::path old_game = scratch("relay_old"), old_dir = old_game / "friends";
+    FriendsRelay old(closed, 1, "pw", "", old_game, old_dir, proof);
     old.step();
-    check(old.message() == "update the game to 0.1.5", "426 shows the server's reason");
+    old.step();
+    check(old.message() == "Game files not recognised by the server. Update the game.", "426 shows a short reason");
+    check(read(old_dir / "state.res") ==
+              "msg|Game files not recognised by the server. Update the game.\ndetail|update the game to 0.1.5\n",
+          "426 keeps the server's words for the launcher log");
+    check(closed.count("session") == 1, "no new sign-in right after a 426");
+    FakeTransport reopened;
+    reopened.replies["session"] = {Reply{426, json::object()}, Reply{200, {{"token", "t"}}}};
+    FriendsRelay back(reopened, 1, "pw", "", scratch("relay_back"), scratch("relay_back") / "friends", proof);
+    back.set_refusal_pause(std::chrono::seconds(0));
+    back.step();
+    back.step();
+    check(reopened.count("session") == 2 && back.message().empty(), "sign-in tried again after the pause");
 }
 
 void test_schedule_errors() {

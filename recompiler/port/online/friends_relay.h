@@ -6,11 +6,13 @@
 // added, writes back one file per friend online who added this player too, and answers the F4 window through files
 // in the same folder:
 //     add.cmd / remove.cmd / accept.cmd / decline.cmd  ->  add.res / remove.res / accept.res / decline.res
-//     state.res: "friend|<pid>|<pseudo>|<online 0/1>", "request|<pid>|<pseudo>" and "msg|<text>" lines
+//     state.res: "friend|<pid>|<pseudo>|<online 0/1>", "request|<pid>|<pseudo>" and "msg|<text>" lines, and
+//                "detail|<the server's own words>" after a refusal of the game files (for the launcher's log)
 // The player's list stays in <game dir>/friends.txt ("<pid> <pseudo>" per line); the server stores no list.
 #pragma once
 #include "social_http.h"
 
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <map>
@@ -29,6 +31,9 @@ public:
     void step();         // one cycle; never throws
 
     const std::string& message() const { return message_; }
+    // After the server refuses the game files (426) the next sign-in waits this long: the files do not change
+    // while the game runs.
+    void set_refusal_pause(std::chrono::steady_clock::duration pause) { refusal_pause_ = pause; }
 
 private:
     using Friends = std::vector<std::pair<std::string, std::string>>; // (pid hex, pseudo), in file order
@@ -52,7 +57,9 @@ private:
     std::string password_, pseudo_;
     std::filesystem::path dir_, list_path_;
     nlohmann::json client_; // the integrity proof sent with each sign-in
-    std::string token_, message_;
+    std::string token_, message_, detail_;
+    std::chrono::steady_clock::duration refusal_pause_ = std::chrono::minutes(5);
+    std::chrono::steady_clock::time_point refused_until_{};
     std::map<std::string, std::pair<std::string, std::string>> online_; // pid -> (name, mode), last good heartbeat
     Friends requests_;                                                  // friend requests received, not answered yet
 };

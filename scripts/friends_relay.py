@@ -42,6 +42,7 @@ def game_integrity():
 PSEUDO_RE = re.compile(r"^[A-Za-z0-9 _.\-]{2,10}$")
 ZERO_MODE = "00" * 44
 INTERVAL = 5.0
+REFUSAL_PAUSE = 300.0   # after the server refuses the game files (426), seconds before the next sign-in
 
 
 def read_kv(path):
@@ -75,6 +76,8 @@ class Relay:
         self.client = client or {}              # the integrity proof sent with each sign-in (see integrity.py)
         self.token = None
         self.message = ""
+        self.detail = ""
+        self.refused_until = 0.0
         self.online = {}                        # pid hex -> (name, mode) from the last good heartbeat
         self.requests = []                      # [(pid hex, pseudo)] friend requests received, not answered yet
         os.makedirs(self.dir, exist_ok=True)
@@ -97,12 +100,17 @@ class Relay:
     def ensure_session(self):
         if self.token:
             return True
+        if time.monotonic() < self.refused_until:
+            return False                        # the refusal stays shown: the files do not change while the game runs
+        self.detail = ""
         status, answer = self.call("session", {"pid": f"0x{self.pid:08x}", "password": self.password, "client": self.client})
         if status == 200 and answer.get("token"):
             self.token = answer["token"]
             return True
         if status == 426:                       # the server only takes official, up-to-date game files
-            self.message = str(answer.get("error") or "update the game")[:120]
+            self.message = "Game files not recognised by the server. Update the game."
+            self.detail = re.sub(r"[\x00-\x1f|]", " ", str(answer.get("error") or ""))[:200]
+            self.refused_until = time.monotonic() + REFUSAL_PAUSE
         else:
             self.message = "server unreachable" if status == 0 else "sign-in refused"
         return False
@@ -285,6 +293,8 @@ class Relay:
         lines = [f"friend|{pid}|{name}|{1 if pid in self.online else 0}" for pid, name in sorted(friends.items(), key=lambda kv: kv[1].lower())]
         lines += [f"request|{pid}|{name}" for pid, name in self.requests]
         lines.append(f"msg|{self.message}")
+        if self.detail:
+            lines.append(f"detail|{self.detail}")   # the server's own words, for the launcher's log
         write_atomic(os.path.join(self.dir, "state.res"), "\n".join(lines) + "\n")
 
     def write_friend_files(self):
