@@ -36,7 +36,7 @@ Supported game versions: [VersionDb.md](VersionDb.md) (base game v16 and update 
 
 **Releases for Windows and Linux**
 - The [Releases page](https://github.com/NEVESYA/SPLATOON-1-PC-PORT/releases) provides standalone graphical builder tools for each release:
-  - **`SplatPC-Builder.exe`** for Windows
+  - **`SplatPC-Builder-Windows-x64.zip`** for Windows (unzip it and run `SplatPC-Builder.exe`)
   - **`SplatPC-Builder-x86_64.AppImage`** for Linux
   Simply download the builder tool from the release, follow the wizard steps, and build your game without dealing with manual scripts.
 
@@ -67,7 +67,7 @@ Supported game versions: [VersionDb.md](VersionDb.md) (base game v16 and update 
 ## Installation
 
 1. Download **SplatPC Builder** from the latest [Release](https://github.com/NEVESYA/SPLATOON-1-PC-PORT/releases):
-   - **Windows:** **`SplatPC-Builder.exe`**
+   - **Windows:** **`SplatPC-Builder-Windows-x64.zip`** (unzip it, then run `SplatPC-Builder.exe`)
    - **Linux:** **`SplatPC-Builder-x86_64.AppImage`** (make it executable: `chmod +x SplatPC-Builder-x86_64.AppImage`)
 2. Launch the builder and follow the wizard steps:
    - **Prerequisites:** Automatically checks for required tools and offers to install anything missing.

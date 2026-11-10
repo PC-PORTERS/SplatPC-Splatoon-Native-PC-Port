@@ -134,6 +134,26 @@ func DefaultConfiguration(repoRoot string) Configuration {
 	}
 }
 
+// OutputDirFor returns the folder the built game goes to: next to the program
+// in a standalone release (beside the AppImage when one is running), or
+// repoRoot/Game inside the repository.
+func OutputDirFor(repoRoot string, standalone bool) string {
+	if standalone {
+		if appImage := os.Getenv("APPIMAGE"); appImage != "" {
+			return filepath.Join(filepath.Dir(appImage), "Game")
+		}
+		if exe, err := os.Executable(); err == nil {
+			exeDir := filepath.Dir(exe)
+			if !strings.HasPrefix(exeDir, os.TempDir()) {
+				return filepath.Join(exeDir, "Game")
+			}
+		} else if cwd, err := os.Getwd(); err == nil {
+			return filepath.Join(cwd, "Game")
+		}
+	}
+	return filepath.Join(repoRoot, "Game")
+}
+
 func CalculateDefaultJobs() int {
 	cpus := runtime.NumCPU()
 	if cpus < 1 {
