@@ -95,6 +95,36 @@ class NativeTests(unittest.TestCase):
         self.assertEqual(received[1][2], {"pid": "0x12345678", "password": "secret", "client": {"version": "0.1.5", "code": "ab"}})
         self.assertEqual(received[2][2], {"token": "t1", "mode": "", "friends": ["0000000a"]})
 
+    def test_relay_follows_no_redirect(self):
+        received = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                received.append((self.path, self.rfile.read(int(self.headers["Content-Length"]))))
+                if self.path == "/social/session":      # a 307 would carry the password to the new address
+                    self.send_response(307)
+                    self.send_header("Location", "/social/elsewhere")
+                else:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                result = subprocess.run([str(TOOL), "relay-once", f"http://127.0.0.1:{server.server_address[1]}", tmp,
+                                         "12345678", "secret"], capture_output=True, text=True, timeout=120)
+                self.assertEqual(result.returncode, 5, result.stderr)   # not signed in
+        finally:
+            server.shutdown()
+        self.assertEqual([path for path, _ in received], ["/social/pseudo", "/social/session"])
+
     # -- SpotPass files -------------------------------------------------------------------------------
     def compare_boss(self, schedule, festival, now):
         with tempfile.TemporaryDirectory() as tmp:

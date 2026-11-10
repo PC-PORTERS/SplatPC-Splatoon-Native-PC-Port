@@ -35,7 +35,11 @@ public:
         : host_(std::move(host)), port_(port), secure_(secure), prefix_(std::move(prefix)) {
         session_.h = WinHttpOpen(L"SplatoonPort-Friends/1", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME,
                                  WINHTTP_NO_PROXY_BYPASS, 0);
-        if (session_.h) WinHttpSetTimeouts(session_.h, timeout_ms, timeout_ms, timeout_ms, timeout_ms);
+        if (!session_.h) return;
+        WinHttpSetTimeouts(session_.h, timeout_ms, timeout_ms, timeout_ms, timeout_ms);
+        // The password and the session token only go to the address the launcher gave: no redirect is followed.
+        DWORD never = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
+        WinHttpSetOption(session_.h, WINHTTP_OPTION_REDIRECT_POLICY, &never, sizeof never);
     }
 
     Reply post(const std::string& route, const nlohmann::json& body) override {
