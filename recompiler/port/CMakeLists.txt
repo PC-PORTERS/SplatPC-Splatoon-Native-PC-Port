@@ -294,6 +294,43 @@ endif()
 
 set(GAMBIT_GENERATED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../Gambit" CACHE PATH
     "Directory containing RebrewU-generated Gambit C++")
+# Online mode without Python on Windows: SpotPass files and the friends relay, built into the game
+# (online/online_boot.h). Its own library, so nlohmann/json reaches these files only.
+if(WIN32)
+    set(RBREW_NLOHMANN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party")
+    if(NOT EXISTS "${RBREW_NLOHMANN_DIR}/nlohmann/json.hpp")
+        # Same header and hash as the recompiler (recompiler/CMakeLists.txt).
+        file(DOWNLOAD https://github.com/nlohmann/json/releases/download/v3.11.3/json.hpp
+             "${RBREW_NLOHMANN_DIR}/nlohmann/json.hpp"
+             EXPECTED_HASH SHA256=9bea4c8066ef4a1c206b2be5a36302f8926f7fdc6087af5d20b417d0cf103ea6)
+    endif()
+    add_library(gambit_online STATIC
+        online/boss_schedule.cpp
+        online/byaml.cpp
+        online/friends_relay.cpp
+        online/hashing.cpp
+        online/integrity_proof.cpp
+        online/online_boot.cpp
+        online/py_random.cpp
+        online/social_http.cpp
+    )
+    target_include_directories(gambit_online PRIVATE ${RBREW_NLOHMANN_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+    target_link_libraries(gambit_online PUBLIC winhttp bcrypt)
+    if(MSVC)
+        target_compile_options(gambit_online PRIVATE /utf-8)
+    endif()
+    if(NOT RBREW_DIAGNOSTIC_RUNTIME)
+        target_compile_definitions(gambit_online PRIVATE RBREW_DISABLE_LOGGING)
+    endif()
+    # Unit tests, and the commands the Python cross-checks run (tools/tests/test_online_native.py).
+    add_executable(gambit_online_tests EXCLUDE_FROM_ALL ../tests/test_online_native.cpp)
+    target_include_directories(gambit_online_tests PRIVATE ${RBREW_NLOHMANN_DIR} ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(gambit_online_tests PRIVATE gambit_online)
+    if(MSVC)
+        target_compile_options(gambit_online_tests PRIVATE /utf-8)
+    endif()
+endif()
+
 set(RBREW_GAME_DEFAULT OFF)
 if(EXISTS "${GAMBIT_GENERATED_DIR}/Gambit_data.cpp")
     set(RBREW_GAME_DEFAULT ON)
@@ -354,6 +391,9 @@ target_include_directories(Gambit PRIVATE
 )
 
 target_link_libraries(Gambit PRIVATE gambit_generated gambit_runtime)
+if(TARGET gambit_online)
+    target_link_libraries(Gambit PRIVATE gambit_online)
+endif()
 set_target_properties(Gambit PROPERTIES OUTPUT_NAME Splatoon)
 endif()
 if(WIN32)
@@ -369,7 +409,7 @@ if(WIN32)
     endif()
     add_library(splport_host SHARED EXCLUDE_FROM_ALL main.cpp runtime/splport_host.def)
     target_compile_definitions(splport_host PRIVATE RBREW_DISTRIBUTABLE_RUNTIME RBREW_DISABLE_LOGGING)
-    target_link_libraries(splport_host PRIVATE gambit_runtime)
+    target_link_libraries(splport_host PRIVATE gambit_runtime gambit_online)
     if(MSVC)
         target_compile_options(splport_host PRIVATE /utf-8)
     endif()
@@ -487,6 +527,9 @@ if(RBREW_BUILD_TESTS)
     target_link_libraries(gambit_quit_confirm_tests PRIVATE gambit_runtime)
     target_include_directories(gambit_quit_confirm_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME native_quit_confirm COMMAND gambit_quit_confirm_tests)
+    if(TARGET gambit_online_tests)
+        add_test(NAME native_online COMMAND gambit_online_tests)
+    endif()
     # Local developer tests/tools below are optional (not in the public tree).
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../tests/test_frame_pacing.cpp")
         add_executable(gambit_frame_pacing_tests ../tests/test_frame_pacing.cpp)
