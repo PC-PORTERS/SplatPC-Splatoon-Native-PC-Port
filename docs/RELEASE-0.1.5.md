@@ -25,12 +25,24 @@ sign-in screen with "This server needs version 0.1.5 or newer". Offline play is 
   Windows (`tools/tests/test_online_native.py` compares them).
 - Server owners: declare the new hash and raise `min_client_version` together, see `docs/SERVEUR.md`.
 
+## Installing
+
+Online play needs a Git checkout of the `SplatPc-ONLINE` branch: the game proves its files to the server from the
+files of that checkout.
+
+1. `git clone -b SplatPc-ONLINE https://github.com/PC-PORTERS/SplatPC-Splatoon-Native-PC-Port.git`
+2. Run `Setup.bat` (Linux: `./setup.sh`) and follow it.
+3. Start the game with `Play-Online.bat` (Linux: `./Play-Online.sh`) or the desktop shortcut.
+
 ## Updating
 
-1. `git pull` on the `SplatPc-ONLINE` branch, or run the Builder again.
+1. `git pull` on the `SplatPc-ONLINE` branch.
 2. Run `Setup.bat` again (Linux: `./setup.sh`).
 3. Start the game from the usual shortcut.
 
-## Known issue
+## Known issues
 
-When the server refuses the game, the lobby only sends you back to the plaza. The reason is in the F4 page.
+- This release has no Builder download. A game installed by the standalone Builder (the `.exe` or AppImage used
+  outside a checkout) cannot play online: it has no files to prove to the server. Use the steps above instead.
+  The Builder started from inside a checkout is fine.
+- When the server refuses the game, the lobby only sends you back to the plaza. The reason is in the F4 page.
