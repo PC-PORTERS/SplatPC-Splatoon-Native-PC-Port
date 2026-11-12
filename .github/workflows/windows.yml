@@ -30,6 +30,7 @@ jobs:
       - name: Python tests (manifests and update scripts)
         run: |
           python recompiler/tools/test_revision_profile.py
+          python recompiler/tools/test_vulkan_dependencies.py
           python scripts/tests/test_update_scripts.py
 
       - name: Cache vcpkg binary artifacts

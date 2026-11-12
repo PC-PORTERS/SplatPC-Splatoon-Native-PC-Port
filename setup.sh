@@ -496,7 +496,9 @@ GAME_BUILD="$WORK/game"
 SDL2_CONFIG="$(find "$DEPS/sdl2-vulkan" -name SDL2Config.cmake -print -quit)"
 [ -n "$SDL2_CONFIG" ] || fail 'SDL2Config.cmake not found in the dependency profile.'
 SDL2_DIR="$(dirname -- "$SDL2_CONFIG")"
-GLSLANG_DIR="$DEPS/glslang-vulkan/lib/cmake/glslang"
+GLSLANG_CONFIG="$(find "$DEPS/glslang-vulkan" \( -name glslang-config.cmake -o -name glslangConfig.cmake \) -print -quit)"
+[ -n "$GLSLANG_CONFIG" ] || fail 'glslang config file not found in the dependency profile.'
+GLSLANG_DIR="$(dirname -- "$GLSLANG_CONFIG")"
 [ -f "$GLSLANG_DIR/GlslangVulkanOnly.cmake" ] || fail 'glslang dependency profile marker missing.'
 
 cmake -S "$RECOMPILER/port" -B "$GAME_BUILD" -G "$GENERATOR" \

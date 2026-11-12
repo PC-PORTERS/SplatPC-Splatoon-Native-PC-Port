@@ -31,6 +31,7 @@ jobs:
       - name: Python tests (manifests and update scripts)
         run: |
           python recompiler/tools/test_revision_profile.py
+          python recompiler/tools/test_vulkan_dependencies.py
           python scripts/tests/test_update_scripts.py
 
       - name: Install system build dependencies
@@ -132,7 +133,9 @@ jobs:
           SDL2_CONFIG="$(find "$PWD/build/deps/sdl2-vulkan" -name SDL2Config.cmake -print -quit)"
           test -n "$SDL2_CONFIG"
           SDL2_DIR="$(dirname -- "$SDL2_CONFIG")"
-          GLSLANG_DIR="$PWD/build/deps/glslang-vulkan/lib/cmake/glslang"
+          GLSLANG_CONFIG="$(find "$PWD/build/deps/glslang-vulkan" \( -name glslang-config.cmake -o -name glslangConfig.cmake \) -print -quit)"
+          test -n "$GLSLANG_CONFIG"
+          GLSLANG_DIR="$(dirname -- "$GLSLANG_CONFIG")"
           VOLK_DIR="$PWD/build/deps/volk"
           VULKAN_HEADERS_DIR="$PWD/build/deps/VulkanHeaders"
 

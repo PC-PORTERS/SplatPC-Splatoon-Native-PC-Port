@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -297,11 +298,14 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 	progress(7, "Compiling Splatoon", fmt.Sprintf("C++ compilation with %d parallel jobs", cfg.ParallelJobs), 0.70)
 	log("=== Step 7/8: Compiling Native Game (%d jobs) ===", cfg.ParallelJobs)
 	gameBuild := filepath.Join(buildDir, "game")
-	sdl2Dir := filepath.Join(depsDir, "sdl2-vulkan", "lib", "cmake", "SDL2")
-	if _, err := os.Stat(sdl2Dir); err != nil {
-		sdl2Dir = filepath.Join(depsDir, "sdl2-vulkan", "share", "cmake", "SDL2")
+	sdl2Dir, ok := findConfigDir(filepath.Join(depsDir, "sdl2-vulkan"), "SDL2Config.cmake")
+	if !ok {
+		sdl2Dir = filepath.Join(depsDir, "sdl2-vulkan", "lib", "cmake", "SDL2")
 	}
-	glslangDir := filepath.Join(depsDir, "glslang-vulkan", "lib", "cmake", "glslang")
+	glslangDir, ok := findConfigDir(filepath.Join(depsDir, "glslang-vulkan"), "glslang-config.cmake", "glslangConfig.cmake")
+	if !ok {
+		glslangDir = filepath.Join(depsDir, "glslang-vulkan", "lib", "cmake", "glslang")
+	}
 
 	cmdGameCfg := exec.CommandContext(ctx, "cmake",
 		"-S", filepath.Join(recompilerDir, "port"),
@@ -422,6 +426,25 @@ func runCmdWithLog(cmd *exec.Cmd, log func(string, ...interface{})) error {
 	}()
 
 	return cmd.Wait()
+}
+
+// findConfigDir returns the directory under root holding one of the CMake
+// package config files, whatever the lib, lib64 or multiarch install layout.
+func findConfigDir(root string, configNames ...string) (string, bool) {
+	var found string
+	_ = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return nil
+		}
+		for _, name := range configNames {
+			if entry.Name() == name {
+				found = filepath.Dir(path)
+				return filepath.SkipAll
+			}
+		}
+		return nil
+	})
+	return found, found != ""
 }
 
 func findVolkConfig(buildDir string) (string, error) {
