@@ -65,6 +65,7 @@ private:
     void collect_inline_candidates();
     void emit_inline_header(std::ostream& out);
     std::string inline_name(uint32_t addr) const;
+    std::string direct_call(uint32_t addr) const;
     void declare_temps(const ir::IRFunction& func, std::ostream& out, int indent);
 
     const ir::IRModule& m_ir;
