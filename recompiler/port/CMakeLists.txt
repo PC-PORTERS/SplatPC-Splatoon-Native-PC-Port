@@ -224,6 +224,7 @@ add_library(gambit_runtime STATIC
     hooks/player_anim.cpp
     hooks/branch_tables.cpp
     hooks/broadcast_guard.cpp
+    hooks/mouse_camera.cpp
     loader/gambit_loader.cpp
     loader/native_console_profile.cpp
     runtime/splatoon_diagnostics.cpp
@@ -527,6 +528,9 @@ if(RBREW_BUILD_TESTS)
     target_link_libraries(gambit_quit_confirm_tests PRIVATE gambit_runtime)
     target_include_directories(gambit_quit_confirm_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME native_quit_confirm COMMAND gambit_quit_confirm_tests)
+    add_executable(gambit_mouse_camera_tests ../tests/test_mouse_camera.cpp)
+    target_include_directories(gambit_mouse_camera_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME native_mouse_camera COMMAND gambit_mouse_camera_tests)
     if(TARGET gambit_online_tests)
         add_test(NAME native_online COMMAND gambit_online_tests)
     endif()
