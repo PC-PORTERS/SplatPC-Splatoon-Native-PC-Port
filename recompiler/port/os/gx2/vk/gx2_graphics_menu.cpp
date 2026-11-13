@@ -221,16 +221,6 @@ bool build_weather(rs::Values& v) {
 
 bool build_camera(rs::Values& v) {
     bool dirty = false;
-    static const char* const kAim[] = {"Classic (stick)", "Direct (PC)"};
-    int aim = v.mouse_direct ? 1 : 0;
-    if (combo("Mouse aiming", aim, kAim, 2,
-              "Direct turns 1:1 like a PC game. Needs Motion Controls On in the game's options.")) {
-        v.mouse_direct = aim == 1;
-        dirty = true;
-    }
-    dirty |= slider("Mouse sensitivity", v.mouse_sensitivity, 25, 400, "%d %%",
-                    "How far the camera turns per mouse movement.");
-    if (gx2env::online_mode()) return dirty; // online keeps the Wii U camera (gx2_env_light.cpp)
     dirty |=
         slider("Field of view", v.camera_fov, 40, 90, "%d", "Wider makes the plaza feel bigger. The game's own is 55.");
     dirty |= slider("Camera distance", v.camera_distance, 50, 250, "%d %%",
@@ -292,43 +282,9 @@ bool build_cinema(rs::Values& v) {
     return dirty;
 }
 
-} // namespace
-
-const char* title(Page page) {
-    switch (page) {
-    case Page::Graphics: return "Graphics (experimental)";
-    case Page::Weather: return "Weather & time (experimental)";
-    case Page::Camera: return "Camera & mouse";
-    case Page::Cinema: return "Cinema, photo & hacks (experimental)";
-    default: return "Settings";
-    }
-}
-
-Page build_main_rows(rs::Values& v, bool& dirty) {
-    s_help = nullptr;
-    int preset = preset_of(v);
-    if (ImGui::BeginCombo("Graphics preset (experimental)", preset < 0 ? "Custom" : kPresetLabels[preset])) {
-        for (int p = 0; p < kPresetCount; ++p)
-            if (ImGui::Selectable(kPresetLabels[p], p == preset)) {
-                apply_preset(v, p);
-                dirty = true;
-            }
-        ImGui::EndCombo();
-    }
-    help("One switch for the whole look. Original = the clean game at 60 FPS.");
-    static const char* const kRates[] = {"30 (low-end PC)", "60", "120", "180 (plaza 120)"};
-    static const int kRateValues[] = {30, 60, 120, 180};
-    int rate = 1;
-    for (int i = 0; i < 4; ++i)
-        if (kRateValues[i] == v.frame_rate) rate = i;
-    ImGui::BeginDisabled(v.shader_quality != rs::kShadersOff);
-    if (combo("Frame rate", rate, kRates, 4, "120/180 add in-between frames; needs the graphics preset Original.")) {
-        v.frame_rate = kRateValues[rate];
-        v.fps120 = v.frame_rate >= 120;
-        dirty = true;
-    }
-    ImGui::EndDisabled();
-    dirty |= check("G-Sync / FreeSync", v.gsync, "For G-Sync/FreeSync monitors: frames are shown without waiting.");
+// The GamePad screen somewhere else than under the TV picture.
+bool build_gamepad(rs::Values& v) {
+    bool dirty = false;
     dirty |= check("Separate GamePad window", v.gamepad_window,
                    "The GamePad screen in its own window (move it to a second screen). Tab: the mouse aims or "
                    "touches the GamePad window.");
@@ -366,21 +322,63 @@ Page build_main_rows(rs::Values& v, bool& dirty) {
         const std::string status = pad_remote::status();
         if (!status.empty()) ImGui::TextWrapped("%s", status.c_str());
     }
-    Page open = Page::None;
-    if (button("Graphics (experimental)", "New shaders: clouds, sun rays, colours, picture quality."))
-        open = Page::Graphics;
-    ImGui::SameLine();
-    if (button("Weather & time (experimental)", "Weather, time of day, day/night cycle and clouds."))
-        open = Page::Weather;
-    if (button("Camera & mouse", gx2env::online_mode() ? "Mouse aiming and sensitivity."
-                                                       : "Mouse aiming, field of view, camera distance, wiggle."))
-        open = Page::Camera;
-    if (!gx2env::online_mode()) { // free camera and spawn hacks: offline only
-        ImGui::SameLine();
-        if (button("Cinema, photo & hacks (experimental)", "Cinema mode, photos, focus blur, free camera, spawn."))
-            open = Page::Cinema;
+    return dirty;
+}
+
+} // namespace
+
+const char* title(Page page) {
+    switch (page) {
+    case Page::Graphics: return "Graphics (experimental)";
+    case Page::GamePad: return "GamePad screen";
+    case Page::Camera: return "Camera";
+    case Page::Weather: return "Weather & time (experimental)";
+    case Page::Cinema: return "Cinema, photo & hacks (experimental)";
+    default: return "Settings";
     }
-    return open;
+}
+
+bool available(Page page) {
+    return !gx2env::online_mode() || (page != Page::Camera && page != Page::Cinema);
+}
+
+bool build_frame_rows(rs::Values& v) {
+    bool dirty = false;
+    static const char* const kRates[] = {"30 (low-end PC)", "60", "120", "180 (plaza 120)"};
+    static const int kRateValues[] = {30, 60, 120, 180};
+    int rate = 1;
+    for (int i = 0; i < 4; ++i)
+        if (kRateValues[i] == v.frame_rate) rate = i;
+    ImGui::BeginDisabled(v.shader_quality != rs::kShadersOff);
+    if (combo("Frame rate", rate, kRates, 4, "120/180 add in-between frames; needs the graphics preset Original.")) {
+        v.frame_rate = kRateValues[rate];
+        v.fps120 = v.frame_rate >= 120;
+        dirty = true;
+    }
+    ImGui::EndDisabled();
+    dirty |= check("G-Sync / FreeSync", v.gsync, "For G-Sync/FreeSync monitors: frames are shown without waiting.");
+    return dirty;
+}
+
+void build_mouse_rows() {
+    auto v = rs::get();
+    static const char* const kAim[] = {"Classic (stick)", "Direct (PC)"};
+    int aim = v.mouse_direct ? 1 : 0;
+    bool dirty = combo("Mouse aiming", aim, kAim, 2,
+                       "Direct turns 1:1 like a PC game. Needs Motion Controls On in the game's options.");
+    v.mouse_direct = aim == 1;
+    dirty |= slider("Mouse sensitivity", v.mouse_sensitivity, 25, 400, "%d %%",
+                    "How far the camera turns per mouse movement.");
+    if (dirty) rs::set(v);
+}
+
+void build_gyro_rows() {
+    auto v = rs::get();
+    bool dirty = check("Controller gyro", v.gyro, "Aim by moving a controller that has a motion sensor.");
+    dirty |= slider("Gyro sensitivity", v.gyro_sensitivity, 25, 300, "%d %%",
+                    "How far the camera turns when the controller moves.");
+    dirty |= check("Invert gyro up/down", v.gyro_invert_pitch, "Tilting the controller up looks down.");
+    if (dirty) rs::set(v);
 }
 
 bool build_page(Page page) {
@@ -389,6 +387,7 @@ bool build_page(Page page) {
     bool dirty = false;
     switch (page) {
     case Page::Graphics: dirty = build_graphics(v); break;
+    case Page::GamePad: dirty = build_gamepad(v); break;
     case Page::Weather: dirty = build_weather(v); break;
     case Page::Camera: dirty = build_camera(v); break;
     case Page::Cinema: dirty = build_cinema(v); break;
