@@ -1,6 +1,11 @@
 package prereq
 
 import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -45,6 +50,117 @@ func TestGenerateInstallCommand(t *testing.T) {
 	cmdDeb := generateInstallCommand("debian", items)
 	if cmdDeb == "" {
 		t.Errorf("Expected install command for debian")
+	}
+}
+
+func TestGenerateInstallCommandWindows(t *testing.T) {
+	// 1. Only Python missing
+	itemsOnlyPy := []CheckItem{
+		{ID: "cmake", Found: true},
+		{ID: "python3", Found: false},
+	}
+	cmdPy := generateInstallCommand("windows", itemsOnlyPy)
+	if cmdPy != "winget install Python.Python.3.12" {
+		t.Errorf("Unexpected windows install command for Python: %q", cmdPy)
+	}
+
+	// 2. CMake and Ninja missing
+	itemsCmakeNinja := []CheckItem{
+		{ID: "cmake", Found: false},
+		{ID: "ninja", Found: false},
+		{ID: "python3", Found: true},
+	}
+	cmdCmakeNinja := generateInstallCommand("windows", itemsCmakeNinja)
+	if !strings.Contains(cmdCmakeNinja, "Kitware.CMake") || !strings.Contains(cmdCmakeNinja, "Ninja-build.Ninja") {
+		t.Errorf("Expected CMake and Ninja in command, got %q", cmdCmakeNinja)
+	}
+
+	// 3. Compiler missing
+	itemsCompiler := []CheckItem{
+		{ID: "compiler", Found: false},
+	}
+	cmdCompiler := generateInstallCommand("windows", itemsCompiler)
+	if !strings.Contains(cmdCompiler, "Microsoft.VisualStudio.2022.BuildTools") {
+		t.Errorf("Expected Visual Studio build tools in command, got %q", cmdCompiler)
+	}
+
+	// 4. None missing
+	itemsNone := []CheckItem{
+		{ID: "cmake", Found: true},
+		{ID: "python3", Found: true},
+	}
+	cmdNone := generateInstallCommand("windows", itemsNone)
+	if cmdNone != "" {
+		t.Errorf("Expected empty command when none missing, got %q", cmdNone)
+	}
+}
+
+func TestPrependToPath(t *testing.T) {
+	orig := os.Getenv("PATH")
+	defer os.Setenv("PATH", orig)
+
+	dummyDir := filepath.Join(os.TempDir(), "dummy-splatpc-path-test")
+	_ = os.MkdirAll(dummyDir, 0755)
+	defer os.RemoveAll(dummyDir)
+
+	PrependToPath(dummyDir)
+	current := os.Getenv("PATH")
+	if !strings.Contains(current, dummyDir) {
+		t.Errorf("Expected PATH to contain %s, got %s", dummyDir, current)
+	}
+
+	// Ensure no duplicate insertion
+	PrependToPath(dummyDir)
+	count := strings.Count(os.Getenv("PATH"), dummyDir)
+	if count != 1 {
+		t.Errorf("Expected exactly 1 occurrence of dummyDir, got %d", count)
+	}
+}
+
+func TestPythonInfoCommand(t *testing.T) {
+	py := PythonInfo{
+		Executable: "py",
+		Args:       []string{"-3"},
+		Version:    "3.12.0",
+		Path:       `C:\Windows\py.exe`,
+	}
+
+	cmd := py.Command(context.Background(), "-c", "print('hello')")
+	if cmd.Args[0] != "py" {
+		t.Errorf("Expected Args[0] 'py', got %q", cmd.Args[0])
+	}
+	base := filepath.Base(cmd.Path)
+	if base != "py" && base != "py.exe" {
+		t.Errorf("Expected base executable 'py' or 'py.exe', got %q", base)
+	}
+	if len(cmd.Args) < 4 || cmd.Args[1] != "-3" || cmd.Args[2] != "-c" || cmd.Args[3] != "print('hello')" {
+		t.Errorf("Expected args ['py', '-3', '-c', 'print(\\'hello\\')'], got %v", cmd.Args)
+	}
+}
+
+func TestVSWhereJsonParsing(t *testing.T) {
+	sampleJSON := `[
+		{
+			"instanceId": "1234abcd",
+			"installationPath": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community",
+			"installationVersion": "17.8.34330.188",
+			"displayName": "Visual Studio Community 2022"
+		}
+	]`
+
+	var entries []vsWhereEntry
+	err := json.Unmarshal([]byte(sampleJSON), &entries)
+	if err != nil {
+		t.Fatalf("Failed to parse sample vswhere json: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("Expected 1 entry, got %d", len(entries))
+	}
+	if entries[0].DisplayName != "Visual Studio Community 2022" {
+		t.Errorf("Unexpected display name: %s", entries[0].DisplayName)
+	}
+	if !strings.Contains(entries[0].InstallationPath, "Community") {
+		t.Errorf("Unexpected path: %s", entries[0].InstallationPath)
 	}
 }
 

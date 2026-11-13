@@ -39,10 +39,12 @@ func IsRepoRoot(path string) bool {
 	manifestDir := filepath.Join(path, "Manifest")
 	recompilerDir := filepath.Join(path, "recompiler")
 	setupScript := filepath.Join(path, "setup.sh")
+	setupBat := filepath.Join(path, "Setup.bat")
+	setupPs1 := filepath.Join(path, "scripts", "Setup.ps1")
 
 	hasManifest := fileExists(manifestDir)
 	hasRecompiler := fileExists(recompilerDir)
-	hasSetup := fileExists(setupScript)
+	hasSetup := fileExists(setupScript) || fileExists(setupBat) || fileExists(setupPs1)
 
 	return hasManifest && hasRecompiler && hasSetup
 }

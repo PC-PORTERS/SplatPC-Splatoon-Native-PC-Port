@@ -3,9 +3,9 @@ package engine
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
+
+	"splatpc-builder/prereq"
 )
 
 // UpscaleTextures runs scripts/hd_textures.py on the texture-dump directory
@@ -33,14 +33,7 @@ func UpscaleTextures(repoRoot string, gameDir string, log func(string, ...interf
 		return fmt.Errorf("no dumped textures found in %s\n\nPlay the game first (visit plaza, Octo Valley, or levels) so textures are recorded to texture-dump/, then run upscaling.", dumpDir)
 	}
 
-	pyBin := "python3"
-	if runtime.GOOS == "windows" {
-		if _, err := exec.LookPath("python3"); err != nil {
-			pyBin = "python"
-		}
-	}
-
-	cmd := exec.Command(pyBin, scriptPath, dumpDir, packDir)
+	cmd := prereq.GetPythonCommand(nil, scriptPath, dumpDir, packDir)
 	if log != nil {
 		log("Running Real-ESRGAN HD texture upscaler: %s -> %s (%d textures)...", dumpDir, packDir, ddsCount)
 	}

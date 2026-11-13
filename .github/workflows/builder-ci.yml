@@ -127,9 +127,9 @@ jobs:
       - name: Upload Linux Builder Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: splatpc-builder-linux-ci
+          name: splatpc-builder-linux
           path: SplatPC-Builder-x86_64.AppImage
-          retention-days: 1
+          retention-days: 14
 
   build-and-test-windows:
     name: Build & Test Windows Builder
@@ -180,6 +180,6 @@ jobs:
       - name: Upload Windows Builder Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: splatpc-builder-windows-ci
+          name: splatpc-builder-windows
           path: SplatPC-Builder.exe
-          retention-days: 1
+          retention-days: 14
