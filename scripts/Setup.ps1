@@ -6,14 +6,16 @@
 # from the dump you select. Run it through Setup.bat (double-click).
 #
 # Re-running is safe: finished steps are skipped, your save and shader cache are
-# kept. Use -Clean to rebuild everything from scratch.
+# kept. Use -Clean to rebuild everything from scratch, and -SkipShaderWarmup (or
+# RBREW_SKIP_SHADER_WARMUP=1) to leave out the unattended game start at the end.
 
 param(
     [string]$GameDump,      # folder with code\, content\, meta\ from your Wii U dump
     [string]$Mlc,           # optional local system-resource source; never prompts
     [string]$Output,        # where the playable game folder is created
     [switch]$Clean,         # delete previous build outputs first
-    [switch]$NonInteractive # unattended execution without interactive prompts
+    [switch]$NonInteractive, # unattended execution without interactive prompts
+    [switch]$SkipShaderWarmup # do not start the game once at the end to prepare its shaders
 )
 
 $ErrorActionPreference = 'Stop'
@@ -72,7 +74,7 @@ function Time-Stage([string]$Name, [scriptblock]$Block) {
 function Step([string]$Text) {
     $script:StepNumber++
     Write-Host ''
-    Write-Host ("[{0}/8] {1}" -f $script:StepNumber, $Text) -ForegroundColor Cyan
+    Write-Host ("[{0}/9] {1}" -f $script:StepNumber, $Text) -ForegroundColor Cyan
 }
 function Info([string]$Text) { Write-Host "      $Text" }
 function Good([string]$Text) { Write-Host "      $Text" -ForegroundColor Green }
@@ -802,6 +804,18 @@ Copy-Tree (Join-Path $GameDump 'meta') (Join-Path $Output 'meta')
 Good 'Wii U folders ready. No existing game or Mii saves were imported.'
 Good 'A new installation starts fresh; progress already in this output folder is kept on updates.'
 $script:StageTimings['8. Game Folder Packaging'] = [math]::Round($script:StepSw.Elapsed.TotalSeconds, 2)
+
+# ---------------------------------------------------------------------------
+Step 'Preparing the shaders (the game starts once by itself, 1-3 minutes)'
+$script:StepSw = [System.Diagnostics.Stopwatch]::StartNew()
+if ($SkipShaderWarmup -or $env:RBREW_SKIP_SHADER_WARMUP -eq '1') {
+    Info 'Skipped on request. The game prepares its shaders during the first start instead.'
+} else {
+    # Its own failures are warnings; nothing here may stop a finished setup.
+    try { & (Join-Path $PSScriptRoot 'ShaderWarmup.ps1') -GameFolder $Output -WorkFolder $Work }
+    catch { Warn "Shader warm-up skipped: $($_.Exception.Message)" }
+}
+$script:StageTimings['9. Shader Warm-up'] = [math]::Round($script:StepSw.Elapsed.TotalSeconds, 2)
 
 # ---------------------------------------------------------------------------
 Write-Host ''

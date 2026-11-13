@@ -82,6 +82,8 @@ server.json
 # can live here without showing up in git status. Add new tools below.
 /scripts/*
 !/scripts/Setup.ps1
+!/scripts/ShaderWarmup.ps1
+!/scripts/shader-warmup-input.txt
 !/scripts/Install-Update.ps1
 !/scripts/hd_textures.py
 !/scripts/install-hooks.sh
