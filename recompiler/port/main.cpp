@@ -616,7 +616,7 @@ int main(int argc, char** argv) {
     Gambit_game_register(&cpu_reg);
     branch_tables_install(&cpu_reg); // link branch-table case blocks (see hooks/branch_tables.cpp)
     broadcast_guard_install();       // 0285C3D0 broadcast loop guard
-    rbrew_mouse_camera::install();   // 02661878 mouse yaw past the gyro filter
+    rbrew_mouse_camera::install();   // 02661878 / 02662044 mouse yaw and pitch past the gyro filters
     player_anim_register();
     gx2env::register_hooks(); // game camera hooks (hooks/gx2_camera_hooks.h)
     erreula_register(&cpu_reg);

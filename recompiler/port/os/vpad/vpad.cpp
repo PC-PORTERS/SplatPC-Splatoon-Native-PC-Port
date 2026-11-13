@@ -335,9 +335,10 @@ void vpad_update_motion(uint8_t* mem, uint32_t buf, float rx, float ry, float dt
     float yaw_rate = stick_yaw ? -rx * std::fabs(rx) * kYawRate : 0.0f;
     float pitch_rate = use_gyro && !stick_pitch_with_gyro ? 0.0f : -ry * std::fabs(ry) * kPitchRate;
     const float traced_mouse_yaw = s_mouse_yaw, traced_mouse_pitch = s_mouse_pitch;
-    // The camera takes the mouse yaw as an angle when it can (hooks/mouse_camera.cpp): no pad
-    // rotation to simulate and none of the game's gyro filtering. Otherwise the pad turns.
+    // The camera takes the mouse yaw and pitch as angles when it can (hooks/mouse_camera.cpp): no
+    // pad rotation to simulate and none of the game's gyro filtering. Otherwise the pad turns.
     if (rbrew_mouse_camera::yaw_queue().offer(s_mouse_yaw)) s_mouse_yaw = 0.0f;
+    if (rbrew_mouse_camera::pitch_queue().offer(s_mouse_pitch)) s_mouse_pitch = 0.0f;
     if (dt > 0 && (s_mouse_yaw != 0.0f || s_mouse_pitch != 0.0f)) {
         yaw_rate += s_mouse_yaw / dt;
         pitch_rate += s_mouse_pitch / dt;
@@ -438,6 +439,7 @@ static void VPADSetGyroDirection(CPUState* cpu) {
     }
     s_motion.yaw = 0;
     s_motion.pitch = rest_pitch();
+    rbrew_mouse_camera::pitch_aim().reset();
 }
 
 // Edge state for VPADStatus trigger/release (the console reports presses and
