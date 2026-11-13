@@ -112,6 +112,8 @@ bool wait_serial(uint64_t serial, uint64_t timeout_ns = UINT64_MAX);
 void defer(std::function<void()> f);
 // Current command buffer (begun on first use).
 VkCommandBuffer cmd();
+// Excludes the image-initialization prologue, whose commands cannot replay inline.
+bool is_current_command_buffer(VkCommandBuffer command_buffer);
 bool has_recorded_commands();
 // Publish a draw's recording packets together. Direct operations and a full
 // ring still publish/drain immediately, preserving command ordering.
