@@ -736,9 +736,16 @@ template <class F> auto post_compile(F&& fn, bool background = false) {
     task();
     return job;
 }
+std::atomic<uint64_t> s_compile_wait_us{0}; // render thread stopped on a compile (statistics)
 template <class T> T await_compile(const gx2vk::CompileQueue::Job<T>& job) {
     if (job.ready()) return job.result.get();
-    return s_compile_queue ? s_compile_queue->get(job) : job.result.get();
+    const auto start = std::chrono::steady_clock::now();
+    T result = s_compile_queue ? s_compile_queue->get(job) : job.result.get();
+    s_compile_wait_us.fetch_add(
+        uint64_t(
+            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count()),
+        std::memory_order_relaxed);
+    return result;
 }
 template <class T> T await_compile(gx2vk::ResolvedCompileJob<T>& job) {
     return job.get([](const auto& pending) { return await_compile(pending); });
@@ -5546,6 +5553,10 @@ bool issue_draw(uint8_t* mem, uint32_t prim, uint32_t count, uint32_t first_vert
 void (*s_xfb_hook)(bool, VkCommandBuffer) = nullptr;
 bool s_xfb_pipeline = false;
 } // namespace
+
+double gx2_render_vk_shader_wait_ms() {
+    return double(s_compile_wait_us.load(std::memory_order_relaxed)) / 1000.0;
+}
 
 // Per-frame shadow tally; the counters live in the anonymous namespace above.
 void gx2r::shadow_log_frame_end() {

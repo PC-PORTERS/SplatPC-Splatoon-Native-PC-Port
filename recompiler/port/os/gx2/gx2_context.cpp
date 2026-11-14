@@ -1363,8 +1363,16 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
     const uint16_t draws_this_frame = uint16_t(g_gx2_gpu_draws.exchange(0, std::memory_order_relaxed));
     SplatoonDiagnostics::SampleThreadCpu("game");
 
-    SplatoonDiagnostics::RecordFrame(uint32_t(s_swap_count.load()), frame_delta_ms, guest_work_ms, present_wait_ms,
-                                     vsync_wait_ms, cpu_duration_ms, draws_this_frame, 0, 0, uint8_t(g_screen_mode));
+    // Shader work since the previous frame (read racily: statistics).
+    static uint64_t s_last_shader_compiles = 0;
+    static double s_last_shader_wait_ms = 0.0;
+    const uint64_t shader_compiles = gx2_render_vk_shader_compiles();
+    const double shader_wait_ms = gx2_render_vk_shader_wait_ms();
+    const uint64_t frame_shader_compiles = shader_compiles - std::exchange(s_last_shader_compiles, shader_compiles);
+    const double frame_shader_wait_ms = shader_wait_ms - std::exchange(s_last_shader_wait_ms, shader_wait_ms);
+    SplatoonDiagnostics::RecordFrame(
+        uint32_t(s_swap_count.load()), frame_delta_ms, guest_work_ms, present_wait_ms, vsync_wait_ms, cpu_duration_ms,
+        draws_this_frame, uint16_t(std::min<uint64_t>(frame_shader_compiles, UINT16_MAX)), 0, uint8_t(g_screen_mode));
 
     static FILE* benchmark_csv = [] {
         const char* path = std::getenv("RBREW_BENCHMARK_CSV");
@@ -1372,8 +1380,8 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
         if (file) {
             std::setvbuf(file, nullptr, _IOFBF, 65536);
             std::fprintf(
-                file,
-                "Frame,Scene,FrameTime_ms,GuestWork_ms,VSyncWait_ms,PresentWait_ms,Capture,Profile,Draws,Submits\n");
+                file, "Frame,Scene,FrameTime_ms,GuestWork_ms,VSyncWait_ms,PresentWait_ms,Capture,Profile,Draws,Submits,"
+                      "ShaderCompiles,ShaderWait_ms\n");
         }
         return file;
     }();
@@ -1394,11 +1402,12 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
         const uint64_t submissions = gx2_render_vk_submissions();
         const uint64_t frame_submissions = submissions - std::exchange(s_last_submissions, submissions);
         std::fprintf(
-            benchmark_csv, "%u,%d,%.6f,%.6f,%.6f,%.6f,%u,%u,%u,%llu\n", benchmark_frame,
+            benchmark_csv, "%u,%d,%.6f,%.6f,%.6f,%.6f,%u,%u,%u,%llu,%llu,%.3f\n", benchmark_frame,
             rbrew_control_defaults::active_scene_type(MEM), frame_delta_ms, guest_work_ms, vsync_wait_ms,
             present_wait_ms, rbrew_benchmark::captured_frame.load(std::memory_order_relaxed) == benchmark_frame,
             unsigned(rbrew_benchmark::profiling.load(std::memory_order_relaxed)),
-            rbrew_benchmark::frame_draws.load(std::memory_order_relaxed), (unsigned long long)frame_submissions);
+            rbrew_benchmark::frame_draws.load(std::memory_order_relaxed), (unsigned long long)frame_submissions,
+            (unsigned long long)frame_shader_compiles, frame_shader_wait_ms);
         if (benchmark_frame % 60 == 0) std::fflush(benchmark_csv);
     }
     static const bool frame_profile = std::getenv("RBREW_FRAME_PROFILE") != nullptr;
