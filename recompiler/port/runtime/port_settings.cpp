@@ -106,6 +106,9 @@ void publish(const Values& v) {
     g_shader_quality.store(v.shader_quality, std::memory_order_relaxed);
     g_mouse_direct.store(v.mouse_direct, std::memory_order_relaxed);
     g_gsync.store(v.gsync, std::memory_order_relaxed);
+    g_gamepad_window.store(v.gamepad_window, std::memory_order_relaxed);
+    g_phone_gamepad.store(v.phone_gamepad, std::memory_order_relaxed);
+    g_phone_port.store(v.phone_port, std::memory_order_relaxed);
     g_gyro.store(v.gyro, std::memory_order_relaxed);
     g_gyro_invert_pitch.store(v.gyro_invert_pitch, std::memory_order_relaxed);
     g_gyro_scale.store(v.gyro_sensitivity / 100.0f, std::memory_order_relaxed);
@@ -211,7 +214,82 @@ bool load_look(Values& v, int slot) {
     return true;
 }
 namespace {
+// Lines of the existing file whose key this menu does not own (online_server=,
+// pseudo=, ...): they are written back so saving the menu never drops them.
+std::string foreign_lines() {
+    std::string kept;
+    std::ifstream in(file_path());
+    for (std::string line; in && std::getline(in, line);) {
+        if (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
+        const size_t eq = line.find('=');
+        if (line.empty() || line[0] == '#' || eq == std::string::npos) continue;
+        const std::string key = line.substr(0, eq);
+        static const char* const kOwned[] = {"resolution",
+                                             "plaza_60fps",
+                                             "frame_rate",
+                                             "gsync",
+                                             "fullscreen",
+                                             "borderless",
+                                             "gamepad_window",
+                                             "phone_gamepad",
+                                             "phone_port",
+                                             "fps_overlay",
+                                             "confirm_quit",
+                                             "simple_overlay",
+                                             "gyro",
+                                             "gyro_sensitivity",
+                                             "gyro_invert_pitch",
+                                             "mouse_sensitivity",
+                                             "volume",
+                                             "shader_quality",
+                                             "weather",
+                                             "time_of_day",
+                                             "day_cycle",
+                                             "day_length",
+                                             "clouds",
+                                             "sun_rays",
+                                             "bloom",
+                                             "antialiasing",
+                                             "motion_blur",
+                                             "camera_fov",
+                                             "focus_blur",
+                                             "vignette",
+                                             "white_balance",
+                                             "sway_strength",
+                                             "cloud_speed",
+                                             "wind_direction",
+                                             "mouse_direct",
+                                             "camera_distance",
+                                             "camera_height",
+                                             "realistic_look",
+                                             "cloud_amount",
+                                             "big_cloud",
+                                             "cumulus_amount",
+                                             "real_time",
+                                             "fog",
+                                             "saturation",
+                                             "contrast",
+                                             "exposure",
+                                             "gamma",
+                                             "shadow_lift",
+                                             "highlight_softness",
+                                             "sharpness",
+                                             "clarity",
+                                             "film_look",
+                                             "camera_motion",
+                                             "cinema_mode",
+                                             "bindings"};
+        bool own = key.rfind("look_", 0) == 0;
+        for (const char* name : kOwned) own = own || key == name;
+        for (int i = 0; i < kActionCount && !own; ++i)
+            own = key == std::string("key_") + kActionKeys[i] || key == std::string("pad_") + kActionKeys[i];
+        if (!own) kept += line + '\n';
+    }
+    return kept;
+}
+
 void write(const Values& v) {
+    const std::string foreign = foreign_lines();
     std::ofstream out(file_path(), std::ios::trunc);
     if (!out) return;
     out << "# Splatoon PC port settings (ESC menu)\n"
@@ -220,6 +298,10 @@ void write(const Values& v) {
         << "frame_rate=" << v.frame_rate << "\n"
         << "gsync=" << v.gsync << "\n"
         << "fullscreen=" << v.fullscreen << "\n"
+        << "borderless=" << v.borderless << "\n"
+        << "gamepad_window=" << v.gamepad_window << "\n"
+        << "phone_gamepad=" << v.phone_gamepad << "\n"
+        << "phone_port=" << v.phone_port << "\n"
         << "fps_overlay=" << v.fps_overlay << "\n"
         << "simple_overlay=" << v.simple_overlay << "\n"
         << "confirm_quit=" << v.confirm_quit << "\n"
@@ -271,6 +353,7 @@ void write(const Values& v) {
     for (int i = 0; i < kActionCount; ++i)
         out << "key_" << kActionKeys[i] << "=" << v.keys[i] << "\n"
             << "pad_" << kActionKeys[i] << "=" << v.pad[i] << "\n";
+    out << foreign;
 }
 } // namespace
 
@@ -299,6 +382,14 @@ void load() {
             v.gsync = number != 0;
         else if (key == "fullscreen")
             v.fullscreen = number != 0;
+        else if (key == "borderless")
+            v.borderless = number != 0;
+        else if (key == "gamepad_window")
+            v.gamepad_window = number != 0;
+        else if (key == "phone_gamepad")
+            v.phone_gamepad = number != 0;
+        else if (key == "phone_port")
+            v.phone_port = (number >= 1024 && number <= 65535) ? number : 8771;
         else if (key == "fps_overlay")
             v.fps_overlay = number != 0;
         else if (key == "simple_overlay")

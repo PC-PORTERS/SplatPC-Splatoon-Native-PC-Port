@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"runtime"
+	"strings"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
@@ -18,9 +19,11 @@ type StepSettingsView struct {
 
 	container *fyne.Container
 
-	pseudoEntry      *widget.Entry
-	langSelect       *widget.Select
-	resSelect        *widget.Select
+	pseudoEntry       *widget.Entry
+	langSelect        *widget.Select
+	onlineCheck       *widget.Check
+	onlineServerEntry *widget.Entry
+	resSelect         *widget.Select
 	fpsSelect        *widget.Select
 	plaza60Check     *widget.Check
 	shaderSelect     *widget.Select
@@ -109,7 +112,39 @@ func (v *StepSettingsView) initUI() {
 		),
 	)
 
-	// 2. Display & Graphics
+	// 2. Online Multiplayer (Community Server)
+	v.onlineCheck = widget.NewCheck("Enable Online Multiplayer (Community Matchmaking Server)", func(b bool) {
+		cfg.EnableOnline = b
+		if b {
+			v.onlineServerEntry.Enable()
+		} else {
+			v.onlineServerEntry.Disable()
+		}
+	})
+	v.onlineCheck.SetChecked(cfg.EnableOnline)
+
+	v.onlineServerEntry = widget.NewEntry()
+	v.onlineServerEntry.SetText(cfg.OnlineServer)
+	v.onlineServerEntry.SetPlaceHolder(settings.FallbackOnlineServer)
+	v.onlineServerEntry.OnChanged = func(s string) {
+		cfg.OnlineServer = strings.TrimSpace(s)
+	}
+	if !cfg.EnableOnline {
+		v.onlineServerEntry.Disable()
+	}
+
+	onlineHelp := widget.NewLabelWithStyle("Automatic authentication linked to your PC (online_identity.ini). In-game friends overlay: Press F4.", fyne.TextAlignLeading, fyne.TextStyle{Italic: true})
+
+	onlineCard := widget.NewCard("🌐 Online Multiplayer (Community Server)", "",
+		container.NewVBox(
+			v.onlineCheck,
+			widget.NewLabelWithStyle("Server Address (Host:Port):", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+			v.onlineServerEntry,
+			onlineHelp,
+		),
+	)
+
+	// 3. Display & Graphics
 	v.resSelect = widget.NewSelect([]string{"720p", "1080p", "1440p", "native"}, func(s string) {
 		cfg.Resolution = s
 	})
@@ -297,6 +332,8 @@ func (v *StepSettingsView) initUI() {
 			container.NewVBox(
 				accountCard,
 				widget.NewSeparator(),
+				onlineCard,
+				widget.NewSeparator(),
 				graphicsCard,
 				widget.NewSeparator(),
 				controlsCard,
@@ -310,6 +347,13 @@ func (v *StepSettingsView) initUI() {
 func (v *StepSettingsView) SyncUIFromConfig() {
 	cfg := v.wizard.config
 	v.pseudoEntry.SetText(cfg.PlayerName)
+	v.onlineCheck.SetChecked(cfg.EnableOnline)
+	v.onlineServerEntry.SetText(cfg.OnlineServer)
+	if cfg.EnableOnline {
+		v.onlineServerEntry.Enable()
+	} else {
+		v.onlineServerEntry.Disable()
+	}
 
 	for i, l := range settings.SupportedLanguages {
 		if l.ID == cfg.LanguageID {

@@ -620,6 +620,8 @@ void coreinit_save_remove(CPUState* cpu) {
         return;
     }
     std::filesystem::remove(path, error);
+    // The removal is real since amiibo support: keep a trace of what the game deleted from save/.
+    RBREW_LOG_INFO("fs", "SAVERemove %s: %s\n", path.string().c_str(), error ? error.message().c_str() : "removed");
     RET = error ? uint32_t(FS_STATUS_ACCESS_ERROR) : uint32_t(FS_STATUS_OK);
 }
 

@@ -339,8 +339,48 @@ void gx2_native_gpu_flush() {
     s_flushes.fetch_add(1, std::memory_order_relaxed);
 }
 
+// RBREW_DRAWDONE_LAG=1 (experiment): GX2DrawDone, called by Gambit at every frame end, queues the
+// finish and waits only for the PREVIOUS frame's one, so the game builds frame N+1 while the render
+// thread still replays frame N. Unsafe while the replay reads guest memory the game rewrites.
+// 1: lag every frame; 2: frames near a stream-out export keep the full wait.
+static int drawdone_lag() {
+    static const int mode = [] {
+        const char* v = std::getenv("RBREW_DRAWDONE_LAG");
+        return v && (v[0] == '1' || v[0] == '2') ? v[0] - '0' : 0;
+    }();
+    return mode;
+}
+static std::atomic<uint32_t> s_lag_posted{0}, s_lag_done{0};
+
 // GX2DrawDone: wait for all submitted GPU work .
 bool gx2_native_gpu_finish() {
+    // A scene that exports stream-out data reads it right after GX2DrawDone: such frames keep the
+    // full wait, and so do the next 600 after the last one seen.
+    extern std::atomic<uint64_t> g_gx2_streamout_finishes;
+    static uint64_t streamouts_seen = 0;
+    static uint32_t sync_frames = 0;
+    if (const uint64_t now = g_gx2_streamout_finishes.load(std::memory_order_relaxed); now != streamouts_seen) {
+        streamouts_seen = now;
+        sync_frames = 600;
+    }
+    if (sync_frames) --sync_frames;
+    if (drawdone_lag() && gx2_native_async_active() && !(drawdone_lag() == 2 && sync_frames)) {
+        struct Finish final : Gx2AsyncWork {
+            void run() override {
+                gx2_render_vk_finish();
+                s_lag_done.fetch_add(1, std::memory_order_release);
+                s_lag_done.notify_all();
+            }
+        };
+        const uint32_t previous = s_lag_posted.load(std::memory_order_relaxed);
+        await(
+            s_lag_done, [previous](uint32_t done) { return reached(done, previous); },
+            rbrew_host_spin_budget(std::chrono::microseconds(4000)));
+        s_lag_posted.store(previous + 1, std::memory_order_relaxed);
+        gx2_native_post(new Finish);
+        s_finishes.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
     bool completed = false;
     gx2_native_run(true, [&] {
         completed = gx2_render_vk_finish();

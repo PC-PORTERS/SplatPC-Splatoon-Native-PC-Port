@@ -2108,9 +2108,11 @@ hash = 0xBEFA713AAEC41D35
 
 [hooks]
 # Guest function entries wrapped so the port can attach opt-in host hooks.
-hash = 0xCF6D189A67249B01
+hash = 0x3DB5DEF808232705
 0x0242A8F8 = hook  # plaza frame-rate sync
 0x0285C3D0 = hook  # message broadcast loop guard (GamePad touch freeze)
+0x02661878 = hook  # gyro yaw filter of the player camera (mouse yaw added after it)
+0x02662044 = hook  # gyro pitch easing rate of the player camera (mouse pitch added around it)
 
 [patches]
 # 0xADDR = instruction, applied before recompilation.

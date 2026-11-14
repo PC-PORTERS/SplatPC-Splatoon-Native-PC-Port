@@ -102,6 +102,9 @@ void math() {
     }
     require(!gx2env::scene_graphics(1, true, false).post_only && !gx2env::scene_graphics(3, false).environment,
             "scene effect switches ignored");
+    for (int type : {-1, 0, 1, 2, 3, 4, 5, 6, 16})
+        require(gx2env::online_keeps_graphics(type) == (type == 2 || type == 3 || type == 5 || type == 6),
+                "online graphics allowed outside the plaza and solo scenes");
     {
         const std::array<float, 3> orange{1, .15f, .01f}, moon{.55f, .66f, 1};
         const auto night = gx2env::backlight_color(orange, moon, true, 1, 0);

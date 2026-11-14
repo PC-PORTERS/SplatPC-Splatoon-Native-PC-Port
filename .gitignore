@@ -49,6 +49,7 @@ save/
 /recompiler/port/os/snd_core/snd_core_addrs.h
 /recompiler/port/os/stubs/stubs_addrs.h
 /recompiler/port/os/vpad/vpad_addrs.h
+# Only written when generate_revision_header.py is run by hand (runtime/game_revision.h is tracked).
 /recompiler/port/runtime/game_revision.h
 /recompiler/port/runtime/game_branch_tables.h
 
@@ -64,7 +65,12 @@ __pycache__/
 /frame_dumps*/
 /gameplay_dumps/
 /validation_results/
-/tools/
+/tools/*
+!/tools/nexlab/
+!/tools/tests/
+!/tools/boss/
+online_identity.ini
+server.json
 /*.png
 /*.log
 /link_cmd.txt
@@ -76,6 +82,9 @@ __pycache__/
 # can live here without showing up in git status. Add new tools below.
 /scripts/*
 !/scripts/Setup.ps1
+!/scripts/ShaderWarmup.ps1
+!/scripts/shader-warmup-input.txt
+!/scripts/Install-Update.ps1
 !/scripts/hd_textures.py
 !/scripts/install-hooks.sh
 !/scripts/git-hooks/
@@ -86,4 +95,22 @@ __pycache__/
 !/scripts/bundle_builder_assets.py
 !/scripts/tests/
 !/scripts/tests/**
+
+# Online launchers and config
+!/scripts/Splatoon-Login.ps1
+!/scripts/Launch-Online.ps1
+!/scripts/server.public.txt
+!/scripts/allowed_signers
+!/scripts/Update-Check.ps1
+!/scripts/Update-Apply.ps1
+!/scripts/allowed_signers
+!/scripts/server.public.txt
+!/scripts/friends_relay.py
+!/scripts/splatoon_login.py
+!/scripts/integrity.py
+!/scripts/integrity-manifest.txt
+
+*.lnk
+!/scripts/Launch-Duo.ps1
+!/scripts/Launch-Duo-Public.ps1
 scripts/tests/**/__pycache__/

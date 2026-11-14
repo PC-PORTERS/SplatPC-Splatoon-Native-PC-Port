@@ -27,6 +27,12 @@ inline SceneGraphics scene_graphics(int type, bool anywhere = true, bool levels 
     if (type <= 0 || type == 16) return {};
     return {type == 2 || (anywhere && (every || type == 3 || type == 5 || type == 6)), false};
 }
+// Online, the graphics overhaul stays in the plaza and the solo scenes (Octo
+// Valley, tutorial): every other scene, matches included, keeps the original
+// look so that all players see the same game.
+inline bool online_keeps_graphics(int type) {
+    return type == 2 || type == 3 || type == 5 || type == 6;
+}
 inline std::array<float, 3> backlight_color(const std::array<float, 3>& original, const std::array<float, 3>& light,
                                             bool moonlit, float moon, float rim) {
     std::array<float, 3> out{};
@@ -49,6 +55,9 @@ inline float night_lamp_intensity(float original, bool enabled, float night, flo
 }
 // Game thread, once per GX2SwapScanBuffers.
 void frame(uint8_t* mem, uint64_t swap_count);
+// Online mode (online_server= set, fixed for the session): no free camera or spawn
+// hacks next to other players, and the Wii U camera (gx2_camera_hooks.cpp, menu).
+bool online_mode();
 
 // Sky state for the renderer (any thread).
 struct SkyState {

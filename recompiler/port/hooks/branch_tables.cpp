@@ -4,6 +4,15 @@
 // instructions. RebrewU translated only the first slot, so any other case dispatched to an
 // unregistered address; the dispatcher returned silently and the function left without popping its
 // frame or restoring r30: stack and registers were wrong afterwards (freezes and crashes).
+// The case blocks are generated with `rebrewu --hints-file profiles/agmp-v288.tables` (their entries
+// are listed there) and registered by gambit_tables_register(); this file points each table slot at
+// the block it branches to. Address metadata only. Before the first generation that includes the
+// hints, gambit_tables_register falls back to a no-op and the slots stay unregistered, as before.
+// The same tables are also listed in the `[branch_tables]` section of Manifest/Gambit_v288.manifest;
+// the values below are kept here so this file does not depend on the generated header.
+#include "../runtime/rebrewu_runtime.h"
+#include "rebrewu/logger.hpp"
+#include "../os/vpad/vpad_addrs.h"
 // The case blocks are generated from the manifest `[entries]` section (`force` entries) and registered
 // by gambit_tables_register(); this file points each table slot at the block it branches to, from the
 // manifest `[branch_tables]` section (generated header game_branch_tables.h).
@@ -28,6 +37,48 @@ extern "C" void gambit_tables_register_none(CPUState*) {}
 extern "C" __attribute__((weak)) void gambit_tables_register(CPUState*) {}
 #endif
 
+namespace {
+struct BranchTable {
+    uint32_t base;
+    unsigned count;
+    std::vector<uint32_t> targets;
+};
+const BranchTable kTables[] = {
+    {0x02B32480u, 22, {0x02B324D8u, 0x02B32508u, 0x02B32538u, 0x02B32568u, 0x02B32538u, 0x02B32688u,
+                       0x02B32688u, 0x02B32688u, 0x02B32688u, 0x02B32688u, 0x02B32688u, 0x02B32598u,
+                       0x02B325C8u, 0x02B32598u, 0x02B325C8u, 0x02B32598u, 0x02B325C8u, 0x02B325F8u,
+                       0x02B32628u, 0x02B325F8u, 0x02B32628u, 0x02B32658u}}, // jump table of 02B32454
+    {0x02230378u,
+     106,
+     {0x022308B0u, 0x022308B0u, 0x0223078Cu, 0x022308B0u, 0x022308B0u, 0x0223078Cu, 0x022308B0u, 0x022308B0u,
+      0x022308B0u, 0x0223078Cu, 0x0223078Cu, 0x022308B0u, 0x0223078Cu, 0x022308B0u, 0x0223078Cu, 0x0223078Cu,
+      0x0223078Cu, 0x0223078Cu, 0x02230B54u, 0x02230B54u, 0x022308B0u, 0x022308B0u, 0x022308B0u, 0x022308B0u,
+      0x02230B54u, 0x02230B54u, 0x02230B54u, 0x02230B54u, 0x022308B0u, 0x022308B0u, 0x022305A0u, 0x02230600u,
+      0x022305A0u, 0x022305A0u, 0x02230600u, 0x02230600u, 0x022305A0u, 0x02230B54u, 0x02230660u, 0x02230660u,
+      0x02230660u, 0x0223072Cu, 0x0223072Cu, 0x0223072Cu, 0x0223072Cu, 0x0223072Cu, 0x0223072Cu, 0x02230B54u,
+      0x022308B0u, 0x022308B0u, 0x022308B0u, 0x022308B0u, 0x022308B0u, 0x022306C0u, 0x022306C0u, 0x022306C0u,
+      0x02230B54u, 0x02230B54u, 0x02230B54u, 0x02230B54u, 0x02230B54u, 0x022306C0u, 0x0223072Cu, 0x0223072Cu,
+      0x0223072Cu, 0x0223078Cu, 0x0223078Cu, 0x0223078Cu, 0x02230DE0u, 0x02230DE0u, 0x0223072Cu, 0x02230DE0u,
+      0x02230DE0u, 0x02230DE0u, 0x02230DE0u, 0x02230DE0u, 0x02230B54u, 0x02230B54u, 0x02230DE0u, 0x02230DE0u,
+      0x022307F8u, 0x022307F8u, 0x02230858u, 0x022307F8u, 0x02230DE0u, 0x02230DE0u, 0x022308B0u, 0x022308B0u,
+      0x02230A8Cu, 0x02230AE8u, 0x02230AE8u, 0x02230B48u, 0x02230DE0u, 0x02230DE0u, 0x02230DE0u, 0x02230DE0u,
+      0x02230DE0u, 0x02230D98u, 0x02230914u, 0x02230914u, 0x02230B54u, 0x02230970u, 0x02230DE0u, 0x02230970u,
+      0x02230A30u, 0x022309D0u}}, // jump table of 022302D8
+    {0x0228BDF4u, 32, {0x0228BF28u, 0x0228BF14u, 0x0228BF28u, 0x0228BF28u, 0x0228BF14u, 0x0228BF14u, 0x0228BF28u,
+                       0x0228BF30u, 0x0228BF14u, 0x0228BF14u, 0x0228BF14u, 0x0228BF28u, 0x0228BF14u, 0x0228BF28u,
+                       0x0228BF28u, 0x0228BF14u, 0x0228BF14u, 0x0228BF28u, 0x0228BF30u, 0x0228BEFCu, 0x0228BEFCu,
+                       0x0228BEFCu, 0x0228BF28u, 0x0228BEFCu, 0x0228BEFCu, 0x0228BEFCu, 0x0228BF30u, 0x0228BEFCu,
+                       0x0228BEFCu, 0x0228BEFCu, 0x0228BF30u, 0x0228BF14u}}, // jump table of 0228BD98
+};
+} // namespace
+
+#if RBREW_GAME_REVISION == 288
+// Empty tables leave the multiplayer case blocks unregistered and the game freezes at the first shot online.
+static_assert(kRbrewBranchTableCount > 0,
+              "game_branch_tables.h has no table: it was generated for another game revision. Reconfigure this build "
+              "tree with the revision 288 manifest (-DRBREW_MANIFEST or -DRBREW_RPX)");
+#endif
+
 void branch_tables_install(CPUState* cpu) {
 #if RBREW_GAME_REVISION == 288
     gambit_tables_register(cpu);
@@ -45,7 +96,11 @@ void branch_tables_install(CPUState* cpu) {
             }
         }
     }
-    RBREW_LOG_INFO("branch-tables", "%u table slots linked to their case blocks\n", linked);
+    if (linked == 0)
+        RBREW_LOG_ERROR("branch-tables", "no table slot linked: the multiplayer case blocks are missing, expect a "
+                                         "freeze at the first shot online\n");
+    else
+        RBREW_LOG_INFO("branch-tables", "%u table slots linked to their case blocks\n", linked);
 #else
     (void)cpu;
 #endif

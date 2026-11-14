@@ -1,0 +1,6 @@
+# Public server used by PLAY. A local scripts\server.txt (never committed) overrides this file.
+server=173.249.46.125:60000
+nncs1=173.249.46.125
+nncs2=13.140.129.165
+# Sign-up address (HTTPS): the launcher registers the player there at the first PLAY.
+register=https://splatoonline.duckdns.org/register

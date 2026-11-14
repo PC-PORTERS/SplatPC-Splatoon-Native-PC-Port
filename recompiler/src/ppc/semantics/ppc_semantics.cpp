@@ -1187,10 +1187,8 @@ bool lower_to_ir(const Instruction& insn, IRBuilder& builder, IRFunction& func) 
     // Espresso writes single-precision scalar results (and lfs loads) to both
     // paired-single slots; double-precision ops and fmr leave ps1 alone.
     switch (insn.mnemonic) {
-    case Mnemonic::LFS:
-    case Mnemonic::LFSX:
-    case Mnemonic::LFSU:
-    case Mnemonic::LFSUX:
+    // Single-precision arithmetic rounds its result to float. Left in double, a value compared
+    // before it is stored differs from the console's (a path's length against its last point).
     case Mnemonic::FADDS:
     case Mnemonic::FSUBS:
     case Mnemonic::FMULS:
@@ -1200,8 +1198,14 @@ bool lower_to_ir(const Instruction& insn, IRBuilder& builder, IRFunction& func) 
     case Mnemonic::FNMADDS:
     case Mnemonic::FNMSUBS:
     case Mnemonic::FRES:
-    case Mnemonic::FRSP:
-    case Mnemonic::FSQRTS: builder.emit_void(Opcode::PairedFill, {imm(insn.rD)}, insn.addr); break;
+    case Mnemonic::FSQRTS:
+        builder.emit(Opcode::FRound, VReg::fpr(insn.rD), {reg(VReg::fpr(insn.rD))}, insn.addr);
+        [[fallthrough]];
+    case Mnemonic::LFS:
+    case Mnemonic::LFSX:
+    case Mnemonic::LFSU:
+    case Mnemonic::LFSUX:
+    case Mnemonic::FRSP: builder.emit_void(Opcode::PairedFill, {imm(insn.rD)}, insn.addr); break;
     default: break;
     }
     return true;

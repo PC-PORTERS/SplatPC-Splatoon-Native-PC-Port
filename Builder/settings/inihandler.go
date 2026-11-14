@@ -96,6 +96,13 @@ func LoadSettingsIni(filePath string, cfg *Configuration) error {
 			}
 		case "hd_textures", "upscale_textures":
 			cfg.UpscaleTextures = (val != "0")
+		case "online_server":
+			cfg.OnlineServer = val
+			cfg.EnableOnline = (val != "")
+		case "pseudo":
+			if val != "" {
+				cfg.PlayerName = val
+			}
 		}
 	}
 	return nil
@@ -107,8 +114,15 @@ func LoadSettingsIni(filePath string, cfg *Configuration) error {
 func WriteSettingsIni(cfg Configuration, outFolder string) error {
 	filePath := filepath.Join(outFolder, "settings.ini")
 
+	onlineServerVal := ""
+	if cfg.EnableOnline {
+		onlineServerVal = strings.TrimSpace(cfg.OnlineServer)
+	}
+
 	managedValues := map[string]string{
 		"player_name":       cfg.PlayerName,
+		"pseudo":            cfg.PlayerName,
+		"online_server":     onlineServerVal,
 		"resolution":        cfg.Resolution,
 		"plaza_60fps":       strconv.Itoa(boolToInt(cfg.Plaza60FPS)),
 		"frame_rate":        strconv.Itoa(cfg.FrameRate),
@@ -179,6 +193,8 @@ func WriteSettingsIni(cfg Configuration, outFolder string) error {
 	content := fmt.Sprintf(`# Splatoon PC port settings (ESC menu)
 # Configured via SplatPC Builder
 player_name=%s
+pseudo=%s
+online_server=%s
 resolution=%s
 plaza_60fps=%d
 frame_rate=%d
@@ -232,6 +248,8 @@ cinema_mode=0
 bindings=2
 `,
 		cfg.PlayerName,
+		cfg.PlayerName,
+		onlineServerVal,
 		cfg.Resolution,
 		boolToInt(cfg.Plaza60FPS),
 		cfg.FrameRate,
@@ -264,14 +282,41 @@ func WriteLauncherScript(cfg Configuration, outFolder string) error {
 		texDumpLineLinux = "export RBREW_TEXTURE_DUMP=\"$HERE/texture-dump\"\n"
 	}
 
+	onlineLineWin := ""
+	onlineLineLinux := ""
+	if cfg.EnableOnline && strings.TrimSpace(cfg.OnlineServer) != "" {
+		server := strings.TrimSpace(cfg.OnlineServer)
+		onlineLineWin = fmt.Sprintf("set \"RBREW_ONLINE_SERVER=%s\"\nset \"RBREW_PSEUDO=%s\"\n", batEscape(server), batEscape(cfg.PlayerName)) +
+			// Same online launch as Play-Online.bat when the game sits in the repository's Game folder:
+			// sign-up, version check, pseudo claim and the friends relay, then the game. Elsewhere the
+			// game starts directly with the server above. --offline skips it.
+			`if /i not "%~1"=="--offline" if exist "%~dp0..\scripts\Splatoon-Login.ps1" (
+  start "" /d "%~dp0" powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "%~dp0..\scripts\Splatoon-Login.ps1"
+  exit /b 0
+)
+if /i "%~1"=="--offline" shift
+`
+		onlineLineLinux = fmt.Sprintf("export RBREW_ONLINE_SERVER=\"%s\"\nexport RBREW_PSEUDO=\"%s\"\n", shellEscape(server), shellEscape(cfg.PlayerName)) +
+			// Same online launch as Play-Online.sh when the game sits in the repository's Game folder:
+			// sign-up, version check from /health, pseudo claim, NNCS addresses and the friends relay
+			// (the server comes from scripts/server.txt or server.public.txt). Elsewhere, or without
+			// Python 3, the game starts directly with the server above. --offline skips it.
+			`LOGIN="$HERE/../scripts/splatoon_login.py"
+if [ "${1:-}" != "--offline" ] && [ -f "$LOGIN" ] && command -v python3 >/dev/null 2>&1; then
+    exec python3 "$LOGIN" --game "$HERE" "$@"
+fi
+[ "${1:-}" = "--offline" ] && shift
+`
+	}
+
 	if runtime.GOOS == "windows" {
 		scriptPath := filepath.Join(outFolder, "Launch_Splatoon.bat")
 		content := fmt.Sprintf(`@echo off
 set "RBREW_PLAYER_NAME=%s"
 set "RBREW_CONSOLE_LANGUAGE=%d"
 set "RBREW_CONSOLE_REGION=%s"
-%sstart "" "%%~dp0Splatoon.exe" %%*
-`, cfg.PlayerName, cfg.LanguageID, cfg.ConsoleRegion, texDumpLineWin)
+%s%sstart "" "%%~dp0Splatoon.exe" %%*
+`, batEscape(cfg.PlayerName), cfg.LanguageID, batEscape(cfg.ConsoleRegion), onlineLineWin, texDumpLineWin)
 		return os.WriteFile(scriptPath, []byte(content), 0755)
 	}
 
@@ -279,12 +324,25 @@ set "RBREW_CONSOLE_REGION=%s"
 	scriptPath := filepath.Join(outFolder, "Splatoon.sh")
 	content := fmt.Sprintf(`#!/usr/bin/env bash
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# The Linux port reads settings.ini (and online_identity.ini next to it) from its working directory.
+cd "$HERE"
 export RBREW_PLAYER_NAME="%s"
 export RBREW_CONSOLE_LANGUAGE="%d"
 export RBREW_CONSOLE_REGION="%s"
-%sexec "$HERE/Splatoon" "$@"
-`, cfg.PlayerName, cfg.LanguageID, cfg.ConsoleRegion, texDumpLineLinux)
+%s%sexec "$HERE/Splatoon" "$@"
+`, shellEscape(cfg.PlayerName), cfg.LanguageID, shellEscape(cfg.ConsoleRegion), texDumpLineLinux, onlineLineLinux)
 	return os.WriteFile(scriptPath, []byte(content), 0755)
+}
+
+// batEscape makes a value safe inside set "NAME=value" of a .bat file: it drops what could end the
+// quotes, expand a variable or start a new line (a pseudo like `x" & calc & "` must stay text).
+func batEscape(value string) string {
+	return strings.NewReplacer(`"`, "", "%", "", "!", "", "^", "", "\r", "", "\n", "").Replace(value)
+}
+
+// shellEscape makes a value safe inside a double-quoted bash string.
+func shellEscape(value string) string {
+	return strings.NewReplacer(`\`, `\\`, `"`, `\"`, "$", `\$`, "`", "\\`").Replace(value)
 }
 
 func boolToInt(b bool) int {

@@ -18,6 +18,8 @@ permissions:
 jobs:
   build-linux:
     name: Build Linux AppImage
+    # Online releases (tags online-*) ship no standalone Builder: it cannot prove its files to the server yet.
+    if: ${{ !startsWith(github.event.release.tag_name || github.event.inputs.tag || github.ref_name, 'online-') }}
     runs-on: ubuntu-24.04
 
     steps:
@@ -127,6 +129,8 @@ jobs:
 
   build-windows:
     name: Build Windows Standalone EXE
+    # Online releases (tags online-*) ship no standalone Builder: it cannot prove its files to the server yet.
+    if: ${{ !startsWith(github.event.release.tag_name || github.event.inputs.tag || github.ref_name, 'online-') }}
     runs-on: windows-2022
 
     steps:
@@ -170,6 +174,8 @@ jobs:
 
   publish:
     name: Publish Builder Binaries to Release
+    # Online releases (tags online-*) ship no standalone Builder: it cannot prove its files to the server yet.
+    if: ${{ !startsWith(github.event.release.tag_name || github.event.inputs.tag || github.ref_name, 'online-') }}
     needs: [build-linux, build-windows]
     runs-on: ubuntu-latest
 

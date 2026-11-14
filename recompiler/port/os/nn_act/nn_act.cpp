@@ -1,5 +1,6 @@
 #include "nn_act.h"
 #include "../stubs/stubs_addrs.h"
+#include "../../runtime/online_identity.h"
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -18,7 +19,13 @@
 
 namespace {
 std::atomic<uint32_t> g_initialize_count{0};
-constexpr std::u16string_view kMiiName = u"default";
+// Mii name: the player's pseudo (settings.ini pseudo=, F2) or "default".
+std::u16string get_active_mii_name();
+std::u16string mii_name() {
+    const std::string pseudo = rbrew_online::pseudo();
+    if (pseudo.empty()) return get_active_mii_name(); // no online pseudo: player_name / RBREW_PLAYER_NAME
+    return rbrew_online::mii_name(pseudo, u"default");
+}
 constexpr char kCountry[] = "NN"; // Cemu: country index 0 has no table entry
 
 std::u16string get_active_mii_name() {
@@ -47,7 +54,7 @@ std::u16string get_active_mii_name() {
         }
         if (!name.empty()) return name;
     }
-    return std::u16string(kMiiName);
+    return u"default";
 }
 
 void require_guest(const CPUState* cpu, uint32_t address, uint64_t length, const char* what) {
@@ -67,8 +74,7 @@ bool slot_occupied(uint32_t raw) {
 
 void write_mii(CPUState* cpu, uint32_t address) {
     require_guest(cpu, address, 0x60, "FFLStoreData output");
-    const auto name = get_active_mii_name();
-    const auto mii = rbrew_act_default_mii(name);
+    const auto mii = rbrew_act_default_mii(mii_name());
     for (uint32_t i = 0; i < mii.size(); ++i) rbrew_write8(cpu->mem, address + i, mii[i]);
 }
 
@@ -87,19 +93,40 @@ void GetSlotNo(CPUState* cpu) {
 void IsSlotOccupied(CPUState* cpu) {
     cpu->r[3] = slot_occupied(cpu->r[3]) ? 1 : 0;
 }
+// Online mode (runtime/online_identity.h): a network account whose principal
+// id is the local identity's. Offline: Cemu's default offline account.
 void IsNetworkAccount(CPUState* cpu) {
-    cpu->r[3] = 0;
+    cpu->r[3] = rbrew_online::config().online ? 1 : 0;
 }
 // Cemu returns 1; with 0 Splatoon attempts nn_fp.RegisterAccount.
 void HasNfsAccount(CPUState* cpu) {
     cpu->r[3] = 1;
 }
 void GetPrincipalId(CPUState* cpu) {
-    cpu->r[3] = 0;
+    cpu->r[3] = rbrew_online::config().online ? rbrew_online::identity().pid : 0;
 }
 void GetSimpleAddressId(CPUState* cpu) {
     cpu->r[3] = 0;
 }
+
+// Revision 288 requests a UUID even for the default offline account. The API
+// writes sixteen bytes and returns an ACT result, rather than an output pointer.
+// This fixed local identity is authored by the port; no console ID is imported.
+void GetUuidEx(CPUState* cpu) {
+    const bool common = uint8_t(cpu->r[4]) == 0xFF;
+    // Cemu IOSU_ARC_UUID confirms slot 0xFF selects the common UUID.
+    if (!common && !slot_occupied(cpu->r[4])) {
+        cpu->r[3] = RBREW_ACT_RESULT_ACCOUNT_DOES_NOT_EXIST;
+        return;
+    }
+    const uint32_t out = cpu->r[3];
+    require_guest(cpu, out, 16, "UUID output");
+    static constexpr uint8_t uuid[16] = {0x53, 0x50, 0x4C, 0x41, 0x54, 0x4F, 0x40, 0x4E,
+                                         0x80, 0x43, 0x50, 0x4F, 0x52, 0x54, 0x30, 0x31};
+    for (uint32_t i = 0; i < 16; ++i) rbrew_write8(cpu->mem, out + i, common && i == 15 ? 0 : uuid[i]);
+    cpu->r[3] = 0;
+}
+
 void GetMii(CPUState* cpu) {
     write_mii(cpu, cpu->r[3]);
     cpu->r[3] = 0;
@@ -127,7 +154,7 @@ void GetParentalControlSlotNoEx(CPUState* cpu) {
 }
 void GetMiiName(CPUState* cpu) {
     const uint32_t out = cpu->r[3];
-    const auto name = get_active_mii_name();
+    const std::u16string name = mii_name();
     require_guest(cpu, out, (name.size() + 1) * 2, "Mii name output");
     for (size_t i = 0; i < name.size(); ++i) rbrew_write16(cpu->mem, out + uint32_t(i * 2), name[i]);
     rbrew_write16(cpu->mem, out + uint32_t(name.size() * 2), 0);
@@ -139,10 +166,14 @@ void GetCountry(CPUState* cpu) {
     for (uint32_t i = 0; i < sizeof(kCountry); ++i) rbrew_write8(cpu->mem, out + i, uint8_t(kCountry[i]));
     cpu->r[3] = 0;
 }
-// Offline account: empty NNID string.
+// Offline account: empty NNID string. Online: "rb" + principal id in hex
+// (an NNID-shaped id of 10 characters; the pseudo stays the display name).
 void GetAccountId(CPUState* cpu) {
-    require_guest(cpu, cpu->r[3], 1, "account id output");
-    rbrew_write8(cpu->mem, cpu->r[3], 0);
+    char id[17] = {};
+    if (rbrew_online::config().online) std::snprintf(id, sizeof id, "rb%08x", rbrew_online::identity().pid);
+    const size_t len = std::strlen(id);
+    require_guest(cpu, cpu->r[3], len + 1, "account id output");
+    for (size_t i = 0; i <= len; ++i) rbrew_write8(cpu->mem, cpu->r[3] + uint32_t(i), uint8_t(id[i]));
     cpu->r[3] = 0;
 }
 // AcquireNexServiceToken(ACTNexAuthenticationResult*, gameServerId). The
@@ -151,13 +182,34 @@ void GetAccountId(CPUState* cpu) {
 // loading screen waited ~30 s for that login's timeout alarm. The offline
 // account has no NNID, so fail like a console without a network account.
 // RBREW_NEX_TOKEN=stub restores the old behaviour.
+// Online mode: the token names the configured server (Gambit 02BFC660 reads
+// token +0, password +0x204, host +0x248, port +0x258). Our server checks the
+// token text "rbrew1:<pid>:<game server id>" and knows the password from the
+// identity file (lab: same PC).
 void AcquireNexServiceToken(CPUState* cpu) {
     static const bool stub = [] {
         const char* v = std::getenv("RBREW_NEX_TOKEN");
         return v && std::string_view(v) == "stub";
     }();
     if (stub) return;
-    cpu->r[3] = RBREW_ACT_RESULT_NEX_UNAVAILABLE;
+    const auto online = rbrew_online::config();
+    if (!online.online) {
+        cpu->r[3] = RBREW_ACT_RESULT_NEX_UNAVAILABLE;
+        return;
+    }
+    const uint32_t out = cpu->r[3], game_server = cpu->r[4];
+    require_guest(cpu, out, rbrew_online::kNexTokenSize, "NEX token output");
+    const auto& id = rbrew_online::identity();
+    char token[48];
+    std::snprintf(token, sizeof token, "rbrew1:%08x:%08x", id.pid, game_server);
+    uint8_t buffer[rbrew_online::kNexTokenSize];
+    rbrew_online::fill_nex_token(buffer, token, id.password, online.host, online.port);
+    for (uint32_t i = 0; i < rbrew_online::kNexTokenSize; ++i) rbrew_write8(cpu->mem, out + i, buffer[i]);
+    char note[96];
+    std::snprintf(note, sizeof note, "game_server=%08x pid=%08x -> %s:%u", game_server, id.pid, online.host.c_str(),
+                  online.port);
+    rbrew_net_note("nex token", note);
+    cpu->r[3] = 0;
 }
 } // namespace
 
@@ -208,6 +260,9 @@ void rbrew_act_reset_for_tests() {
 
 #define ACT_REG(fn, mangled) rbrew_register_func(cpu, ADDR_##mangled, fn)
 void nn_act_register(CPUState* cpu) {
+#ifdef ADDR_GetUuidEx__Q2_2nn3actFP7ACTUuidUc
+    rbrew_register_func(cpu, ADDR_GetUuidEx__Q2_2nn3actFP7ACTUuidUc, GetUuidEx);
+#endif
     ACT_REG(Initialize, Initialize__Q2_2nn3actFv);
     ACT_REG(Finalize, Finalize__Q2_2nn3actFv);
     ACT_REG(GetSlotNo, GetSlotNo__Q2_2nn3actFv);

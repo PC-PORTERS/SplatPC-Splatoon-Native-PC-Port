@@ -16,6 +16,7 @@
 // per call site, and the game goes on (one message not delivered to everyone).
 // RBREW_BROADCAST_GUARD=0 runs the original code instead.
 #include "../runtime/rebrewu_runtime.h"
+#include "rebrewu/logger.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -136,7 +137,7 @@ done:
 
 void broadcast_guard_install() {
     if (const char* v = std::getenv("RBREW_BROADCAST_GUARD"); v && std::strcmp(v, "0") == 0) return;
-    if (!rbrew_set_guest_hook(kBroadcast, broadcast)) RBREW_LOG_WARN("broadcast", "could not register the hook\n");
+    if (!rbrew_set_guest_hook(kBroadcast, broadcast)) RBREW_LOG_ERROR("broadcast", "could not register the hook\n");
 }
 #else
 void broadcast_guard_install() {}

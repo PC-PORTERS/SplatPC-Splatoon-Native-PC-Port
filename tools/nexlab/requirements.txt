@@ -1,0 +1,14 @@
+# Python packages for the Splatoon PC NEX server (tools/nexlab).
+# Python 3.12. Install: py -3.12 -m pip install -r tools\nexlab\requirements.txt
+# (on Linux: python3.12 -m pip install -r tools/nexlab/requirements.txt)
+#
+# nintendoclients brings PRUDP V1, RMC, Kerberos and the NEX protocols; the rest are its
+# dependencies, pinned to the versions this server was tested with on 2026-10-28.
+nintendoclients==5.0.0
+anynet==1.2.2
+anyio==4.15.1
+multidict==7.2.1
+netifaces==0.11.0
+pyopenssl==26.4.0
+cryptography==50.0.2
+pycryptodome==4.2.0
