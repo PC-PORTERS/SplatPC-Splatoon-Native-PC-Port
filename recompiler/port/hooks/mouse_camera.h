@@ -1,4 +1,4 @@
-// mouse_camera.h - mouse yaw and pitch handed straight to the game camera (hooks/mouse_camera.cpp).
+// mouse_camera.h - mouse yaw and pitch handed straight to the game camera (hooks/gx2_camera_hooks.cpp).
 #pragma once
 #include <algorithm>
 #include <mutex>

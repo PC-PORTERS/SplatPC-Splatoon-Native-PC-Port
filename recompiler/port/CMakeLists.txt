@@ -204,7 +204,6 @@ add_library(gambit_runtime STATIC
     hooks/player_anim.cpp
     hooks/branch_tables.cpp
     hooks/broadcast_guard.cpp
-    hooks/mouse_camera.cpp
     loader/gambit_loader.cpp
     loader/native_console_profile.cpp
     runtime/splatoon_diagnostics.cpp
