@@ -12,6 +12,9 @@ param(
 # save copy and settings, windowed. Game\ and Game\save are only read. The server stops when
 # both games are closed. Logs: build\diagnostics\duo-<date>-*.
 $ErrorActionPreference = 'Stop'
+# Identity variables left in the terminal must not reach the games: they win over each player's
+# settings.ini (pseudo=Joueur<A|B>) and would start a relay this launcher does not ask for.
+Remove-Item Env:RBREW_PSEUDO, Env:RBREW_SOCIAL_URL, Env:RBREW_INTEGRITY_ROOT -ErrorAction SilentlyContinue
 $Root = Split-Path -Parent $PSScriptRoot
 $Game = Join-Path $Root 'Game'
 # Setup.ps1 installs Game\Splatoon.exe; older installs have Splatoon-v288.exe: the newer one wins.

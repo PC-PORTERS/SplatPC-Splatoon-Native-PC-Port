@@ -11,6 +11,9 @@ param(
 # share this PC's router, so this checks the server's matchmaking, not a connection between two
 # different networks. Logs: build\diagnostics\duop-<date>-*.
 $ErrorActionPreference = 'Stop'
+# Identity variables left in the terminal must not reach the games: they win over each player's
+# settings.ini (pseudo=Joueur<A|B>). -Friends sets the other two itself, below.
+Remove-Item Env:RBREW_PSEUDO, Env:RBREW_SOCIAL_URL, Env:RBREW_INTEGRITY_ROOT -ErrorAction SilentlyContinue
 $Root = Split-Path -Parent $PSScriptRoot
 $Game = Join-Path $Root 'Game'
 # Setup.ps1 installs Game\Splatoon.exe; older installs have Splatoon-v288.exe: the newer one wins.

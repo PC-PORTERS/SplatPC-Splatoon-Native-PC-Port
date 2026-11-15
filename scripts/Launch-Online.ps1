@@ -7,6 +7,9 @@ param([int]$Port = 60000, [switch]$Diag, [string]$NexServer = '', [string]$Nncs1
 # RBREW_ONLINE_SERVER pointing at it, and stops the server it started when the game exits.
 # settings.ini is not modified: the plain shortcut keeps launching offline.
 $ErrorActionPreference='Stop'
+# Identity variables left in the terminal must not reach this launch (they win over settings.ini);
+# RBREW_SOCIAL_URL is always set below.
+Remove-Item Env:RBREW_PSEUDO, Env:RBREW_INTEGRITY_ROOT -ErrorAction SilentlyContinue
 $Root=Split-Path -Parent $PSScriptRoot
 $Game=Join-Path $Root 'Game'
 # Setup.ps1 installs Game\Splatoon.exe; older installs have Splatoon-v288.exe: the newer one wins.
