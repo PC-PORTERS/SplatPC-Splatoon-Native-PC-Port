@@ -229,6 +229,118 @@ func TestHDTexturingOption(t *testing.T) {
 	}
 }
 
+func TestOnlineSettings(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "test_online_settings_*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	cfg := DefaultConfiguration("/tmp")
+	cfg.PlayerName = "OnlineSquid"
+	cfg.EnableOnline = true
+	cfg.OnlineServer = "127.0.0.1:60000"
+
+	// 1. Fresh write with online enabled
+	if err := WriteSettingsIni(cfg, tempDir); err != nil {
+		t.Fatalf("WriteSettingsIni failed: %v", err)
+	}
+
+	iniPath := filepath.Join(tempDir, "settings.ini")
+	data, err := os.ReadFile(iniPath)
+	if err != nil {
+		t.Fatalf("Failed to read settings.ini: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "online_server=127.0.0.1:60000") {
+		t.Errorf("Expected online_server=127.0.0.1:60000 in settings.ini, got:\n%s", content)
+	}
+	if !strings.Contains(content, "pseudo=OnlineSquid") {
+		t.Errorf("Expected pseudo=OnlineSquid in settings.ini, got:\n%s", content)
+	}
+
+	// 2. Load settings back into a blank config
+	var loadedCfg Configuration
+	if err := LoadSettingsIni(iniPath, &loadedCfg); err != nil {
+		t.Fatalf("LoadSettingsIni failed: %v", err)
+	}
+	if !loadedCfg.EnableOnline {
+		t.Errorf("Expected EnableOnline to be true")
+	}
+	if loadedCfg.OnlineServer != "127.0.0.1:60000" {
+		t.Errorf("Expected OnlineServer 127.0.0.1:60000, got %s", loadedCfg.OnlineServer)
+	}
+	if loadedCfg.PlayerName != "OnlineSquid" {
+		t.Errorf("Expected PlayerName OnlineSquid, got %s", loadedCfg.PlayerName)
+	}
+
+	// 3. Launcher script generation with online enabled
+	if err := WriteLauncherScript(cfg, tempDir); err != nil {
+		t.Fatalf("WriteLauncherScript failed: %v", err)
+	}
+	launcherName := "Splatoon.sh"
+	if runtime.GOOS == "windows" {
+		launcherName = "Launch_Splatoon.bat"
+	}
+	launcherData, err := os.ReadFile(filepath.Join(tempDir, launcherName))
+	if err != nil {
+		t.Fatalf("Failed to read launcher: %v", err)
+	}
+	launcherContent := string(launcherData)
+	if !strings.Contains(launcherContent, "RBREW_ONLINE_SERVER") {
+		t.Errorf("Expected RBREW_ONLINE_SERVER in launcher script when online enabled")
+	}
+	if !strings.Contains(launcherContent, "RBREW_PSEUDO") {
+		t.Errorf("Expected RBREW_PSEUDO in launcher script when online enabled")
+	}
+
+	// 4. Launcher script generation with online disabled
+	cfg.EnableOnline = false
+	if err := WriteLauncherScript(cfg, tempDir); err != nil {
+		t.Fatalf("WriteLauncherScript (offline) failed: %v", err)
+	}
+	launcherDataOff, err := os.ReadFile(filepath.Join(tempDir, launcherName))
+	if err != nil {
+		t.Fatalf("Failed to read offline launcher: %v", err)
+	}
+	launcherContentOff := string(launcherDataOff)
+	if strings.Contains(launcherContentOff, "RBREW_ONLINE_SERVER") {
+		t.Errorf("Did not expect RBREW_ONLINE_SERVER in launcher script when online disabled")
+	}
+}
+
+func TestLinuxLauncherOnline(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Splatoon.sh is only written on Linux")
+	}
+	tempDir := t.TempDir()
+	cfg := DefaultConfiguration("/tmp")
+	cfg.PlayerName = "Sq\"$(id)`x`"
+	cfg.EnableOnline = true
+	cfg.OnlineServer = "127.0.0.1:60000"
+	if err := WriteLauncherScript(cfg, tempDir); err != nil {
+		t.Fatalf("WriteLauncherScript failed: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(tempDir, "Splatoon.sh"))
+	if err != nil {
+		t.Fatalf("Failed to read launcher: %v", err)
+	}
+	content := string(data)
+	for _, want := range []string{`cd "$HERE"`, "scripts/splatoon_login.py", `--game "$HERE"`, "RBREW_PSEUDO=\"Sq\\\"\\$(id)\\`x\\`\""} {
+		if !strings.Contains(content, want) {
+			t.Errorf("Expected %q in launcher:\n%s", want, content)
+		}
+	}
+	cfg.EnableOnline = false
+	if err := WriteLauncherScript(cfg, tempDir); err != nil {
+		t.Fatalf("WriteLauncherScript (offline) failed: %v", err)
+	}
+	data, _ = os.ReadFile(filepath.Join(tempDir, "Splatoon.sh"))
+	if strings.Contains(string(data), "splatoon_login.py") {
+		t.Errorf("Did not expect the online launcher when online is disabled")
+	}
+}
+
 func TestLoadThenWriteKeepsPlayerSettings(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "test_settings_load_*")
 	if err != nil {

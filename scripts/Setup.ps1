@@ -6,14 +6,16 @@
 # from the dump you select. Run it through Setup.bat (double-click).
 #
 # Re-running is safe: finished steps are skipped, your save and shader cache are
-# kept. Use -Clean to rebuild everything from scratch.
+# kept. Use -Clean to rebuild everything from scratch, and -SkipShaderWarmup (or
+# RBREW_SKIP_SHADER_WARMUP=1) to leave out the unattended game start at the end.
 
 param(
     [string]$GameDump,      # folder with code\, content\, meta\ from your Wii U dump
     [string]$Mlc,           # optional local system-resource source; never prompts
     [string]$Output,        # where the playable game folder is created
     [switch]$Clean,         # delete previous build outputs first
-    [switch]$NonInteractive # unattended execution without interactive prompts
+    [switch]$NonInteractive, # unattended execution without interactive prompts
+    [switch]$SkipShaderWarmup # do not start the game once at the end to prepare its shaders
 )
 
 $ErrorActionPreference = 'Stop'
@@ -36,6 +38,12 @@ $MinimumFunctionCount = 96300
 $SdlUrl = 'https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-2.32.10.zip'
 $GlslangUrl = 'https://github.com/KhronosGroup/glslang/archive/refs/tags/16.4.0.tar.gz'
 $VcpkgUrl = 'https://github.com/microsoft/vcpkg.git'
+$VcpkgCommit = 'd186940b2f0c4e8e5b4ff804af57d2a26fbfa091'   # 2026-10-29, the version used by the tested installation
+# Checksums of the downloads (checked after every download, also for a file left by an earlier run). The zip is
+# a release asset (hash of the file); the glslang tarball is a GitHub-generated archive, so its hash is taken on the
+# UNCOMPRESSED tar (a change of GitHub's compression does not change it).
+$SdlSha256 = '12B2DC2EB8F2836100A7916B5D394A0C82F1F7E32693F95F98305403AF242F08'
+$GlslangTarSha256 = '157A6B0A50C1D91474D6C0007C62F01B3DCBBC7BA0A2A1B2C8AB22554288851C'
 $VcpkgPackages = @('zlib', 'curl', 'volk', 'vulkan-headers')
 
 # Cemu's shared fonts are Noto Sans replacements under SIL OFL 1.1,
@@ -66,7 +74,7 @@ function Time-Stage([string]$Name, [scriptblock]$Block) {
 function Step([string]$Text) {
     $script:StepNumber++
     Write-Host ''
-    Write-Host ("[{0}/8] {1}" -f $script:StepNumber, $Text) -ForegroundColor Cyan
+    Write-Host ("[{0}/9] {1}" -f $script:StepNumber, $Text) -ForegroundColor Cyan
 }
 function Info([string]$Text) { Write-Host "      $Text" }
 function Good([string]$Text) { Write-Host "      $Text" -ForegroundColor Green }
@@ -154,11 +162,28 @@ function Complete-GeneratedModule([string]$Directory) {
     $registered = @(Select-String -LiteralPath (Join-Path $Directory 'Gambit_register.cpp') -Pattern '^\s+rbrew_register_func\(').Count
     return $registered -ge $MinimumFunctionCount
 }
-function Download([string]$Url, [string]$Destination) {
+function Get-DownloadHash([string]$Path, [string]$Kind) {
+    if ($Kind -ne 'tar.gz') { return File-Sha256 $Path }
+    $stream = [IO.File]::OpenRead($Path)
+    try {
+        $gzip = New-Object IO.Compression.GZipStream($stream, [IO.Compression.CompressionMode]::Decompress)
+        $hash = [Security.Cryptography.SHA256]::Create().ComputeHash($gzip)
+        return ([BitConverter]::ToString($hash) -replace '-', '').ToUpperInvariant()
+    } finally { $stream.Dispose() }
+}
+function Download([string]$Url, [string]$Destination, [string]$Sha256 = '', [string]$Kind = 'file') {
+    if ($Sha256 -and (Test-Path -LiteralPath $Destination) -and ((Get-DownloadHash $Destination $Kind) -ne $Sha256)) {
+        Warn "$(Split-Path -Leaf $Destination) does not match its expected checksum: downloading it again."
+        Remove-Item -LiteralPath $Destination -Force
+    }
     if (Test-Path -LiteralPath $Destination) { return }
     Info "Downloading $(Split-Path -Leaf $Destination) ..."
     $partial = "$Destination.part"
     (New-Object Net.WebClient).DownloadFile($Url, $partial)
+    if ($Sha256 -and ((Get-DownloadHash $partial $Kind) -ne $Sha256)) {
+        Remove-Item -LiteralPath $partial -Force
+        Fail "$(Split-Path -Leaf $Destination) does not match the checksum this setup expects (expected $Sha256). It is not the file this setup was tested with: nothing was installed."
+    }
     Move-Item -LiteralPath $partial -Destination $Destination -Force
 }
 function Copy-Tree([string]$From, [string]$To) {
@@ -598,7 +623,12 @@ if ($vcpkgRoot -match '[\[\]]|[^\x00-\x7F]' -or $ProjectRoot -match '[^\x00-\x7F
 $vcpkg = Join-Path $vcpkgRoot 'vcpkg.exe'
 if (-not (Test-Path -LiteralPath $vcpkg)) {
     if (-not (Test-Path -LiteralPath (Join-Path $vcpkgRoot '.git'))) {
-        & git clone --depth 1 $VcpkgUrl $vcpkgRoot; Check-Exit 'Downloading vcpkg'
+        # Pinned to the vcpkg commit this setup was tested with: a moving branch could change the libraries it builds.
+        New-Item -ItemType Directory -Force $vcpkgRoot | Out-Null
+        & git -C $vcpkgRoot init --quiet; Check-Exit 'Preparing vcpkg'
+        & git -C $vcpkgRoot fetch --quiet --depth 1 $VcpkgUrl $VcpkgCommit; Check-Exit 'Downloading vcpkg'
+        & git -C $vcpkgRoot -c advice.detachedHead=false checkout --quiet FETCH_HEAD; Check-Exit 'Checking out vcpkg'
+        if ((& git -C $vcpkgRoot rev-parse HEAD).Trim() -ne $VcpkgCommit) { Fail 'vcpkg is not the expected version: nothing was installed.' }
     }
     # vcpkg's bootstrap downloads vcpkg.exe with its own small tool; a failed
     # name lookup ("The server name or address could not be resolved") or a
@@ -654,8 +684,8 @@ $glslangMarker = Join-Path $deps 'glslang-vulkan\lib\cmake\glslang\GlslangVulkan
 if (-not ((Test-Path -LiteralPath $sdlMarker) -and (Test-Path -LiteralPath $glslangMarker))) {
     $sdlZip = Join-Path $Downloads 'SDL2-2.32.10.zip'
     $glslangArchive = Join-Path $Downloads 'glslang-16.4.0.tar.gz'
-    Download $SdlUrl $sdlZip
-    Download $GlslangUrl $glslangArchive
+    Download $SdlUrl $sdlZip $SdlSha256
+    Download $GlslangUrl $glslangArchive $GlslangTarSha256 'tar.gz'
     $sdlSource = Join-Path $Downloads 'SDL2-2.32.10'
     if (-not (Test-Path -LiteralPath $sdlSource)) {
         Info 'Extracting SDL2 source archive (fast zip)...'
@@ -774,6 +804,18 @@ Copy-Tree (Join-Path $GameDump 'meta') (Join-Path $Output 'meta')
 Good 'Wii U folders ready. No existing game or Mii saves were imported.'
 Good 'A new installation starts fresh; progress already in this output folder is kept on updates.'
 $script:StageTimings['8. Game Folder Packaging'] = [math]::Round($script:StepSw.Elapsed.TotalSeconds, 2)
+
+# ---------------------------------------------------------------------------
+Step 'Preparing the shaders (the game starts once by itself, 1-3 minutes)'
+$script:StepSw = [System.Diagnostics.Stopwatch]::StartNew()
+if ($SkipShaderWarmup -or $env:RBREW_SKIP_SHADER_WARMUP -eq '1') {
+    Info 'Skipped on request. The game prepares its shaders during the first start instead.'
+} else {
+    # Its own failures are warnings; nothing here may stop a finished setup.
+    try { & (Join-Path $PSScriptRoot 'ShaderWarmup.ps1') -GameFolder $Output -WorkFolder $Work }
+    catch { Warn "Shader warm-up skipped: $($_.Exception.Message)" }
+}
+$script:StageTimings['9. Shader Warm-up'] = [math]::Round($script:StepSw.Elapsed.TotalSeconds, 2)
 
 # ---------------------------------------------------------------------------
 Write-Host ''

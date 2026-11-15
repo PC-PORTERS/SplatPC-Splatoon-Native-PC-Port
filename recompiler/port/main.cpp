@@ -13,8 +13,13 @@
 #include "runtime/rebrewu_runtime.h"
 #include "runtime/host_process.h"
 #include "runtime/discord_rpc.h"
+#if defined(_WIN32)
+#include "online/online_boot.h"
+#endif
 #include "runtime/splatoon_diagnostics.h"
 #include "runtime/port_settings.h"
+#include "runtime/online_settings.h"
+#include "runtime/online_identity.h"
 #include "os/erreula/erreula.h"
 #include "os/coreinit/coreinit_overlay.h"
 #include "os/coreinit/coreinit_system_settings.h"
@@ -30,7 +35,13 @@
 
 struct OverlayHostMapping {
     uint8_t* arena;
+    bool committed{};
 };
+
+// RBREW_GUEST_GUARD=1: only the guest regions are accessible, any other guest address faults.
+// Off by default: the first shot of an online match faulted on stray addresses with it on, on a build
+// whose branch tables were empty; not retried since. The fully committed aperture absorbs such accesses.
+static bool g_guest_guard = false;
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -38,19 +49,51 @@ static void platform_sleep_us(unsigned us) {
     Sleep(us / 1000);
 }
 static uint8_t* alloc_arena(size_t sz) {
-    // One flat aperture over the whole 32-bit guest address space, committed
-    // at startup (pages stay demand-zero until touched). Write watch lets the
-    // renderer skip guest pages the CPU did not write since it last copied
-    // them (gx2_write_watch.h).
-    return static_cast<uint8_t*>(VirtualAlloc(nullptr, sz, MEM_RESERVE | MEM_COMMIT | MEM_WRITE_WATCH, PAGE_READWRITE));
+    // Write watch lets the renderer skip guest pages the CPU did not write
+    // since it last copied them (gx2_write_watch.h).
+    if (!g_guest_guard)
+        return static_cast<uint8_t*>(VirtualAlloc(nullptr, sz, MEM_RESERVE | MEM_COMMIT | MEM_WRITE_WATCH, PAGE_READWRITE));
+    auto p = static_cast<uint8_t*>(VirtualAlloc(nullptr, sz, MEM_RESERVE | MEM_WRITE_WATCH, PAGE_NOACCESS));
+    if (p && (!VirtualAlloc(p, RBREW_APPLICATION_ARENA_END, MEM_COMMIT, PAGE_READWRITE) ||
+              !VirtualAlloc(p + RBREW_FG_FREE_BASE, RBREW_FG_FREE_SIZE, MEM_COMMIT, PAGE_READWRITE) ||
+              !VirtualAlloc(p + RBREW_MEM1_BASE, RBREW_MEM1_SIZE, MEM_COMMIT, PAGE_READWRITE) ||
+              !VirtualAlloc(p + RBREW_SHARED_DATA_BASE, RBREW_SHARED_DATA_SIZE, MEM_COMMIT, PAGE_READWRITE))) {
+        VirtualFree(p, 0, MEM_RELEASE);
+        return nullptr;
+    }
+    return p;
 }
 static bool map_overlay(void* user, uint32_t base, uint32_t size, bool enable) {
     if (!user || base != RBREW_OVERLAY_BASE || size != RBREW_OVERLAY_SIZE) return false;
     auto& mapping = *static_cast<OverlayHostMapping*>(user);
-    // The aperture is already committed; only guest-visible accessibility
-    // changes (the checked path consults the overlay registry).
-    rbrew_set_overlay_access(mapping.arena, enable);
-    if (enable) RBREW_LOG_INFO("MEM", "OverlayArena mapped: base=%08X size=%08X\n", base, size);
+    if (!g_guest_guard) {
+        rbrew_set_overlay_access(mapping.arena, enable);
+        if (enable) RBREW_LOG_INFO("MEM", "OverlayArena mapped: base=%08X size=%08X\n", base, size);
+        return true;
+    }
+    auto p = mapping.arena + base;
+    if (enable) {
+        if (!mapping.committed) {
+            if (VirtualAlloc(p, size, MEM_COMMIT, PAGE_READWRITE) != p) return false;
+            mapping.committed = true;
+        } else {
+            DWORD old_protection;
+            if (!VirtualProtect(p, size, PAGE_READWRITE, &old_protection)) return false;
+        }
+        try {
+            rbrew_set_overlay_access(mapping.arena, true);
+        } catch (...) {
+            DWORD old_protection;
+            VirtualProtect(p, size, PAGE_NOACCESS, &old_protection);
+            throw;
+        }
+        RBREW_LOG_INFO("MEM", "OverlayArena mapped: base=%08X size=%08X\n", base, size);
+        return true;
+    }
+    // Cafe unmaps the aperture; its backing storage survives a later remap.
+    DWORD old_protection;
+    if (!VirtualProtect(p, size, PAGE_NOACCESS, &old_protection)) return false;
+    rbrew_set_overlay_access(mapping.arena, false);
     return true;
 }
 static void free_arena(uint8_t* p, size_t sz) {
@@ -240,6 +283,9 @@ static void start_profiler() {
     // F9 (ManualCapture) also profiles 4 s into the snapshot folder: a stuck
     // scene then shows what each thread runs, without any setup.
     SplatoonDiagnostics::SetManualProfiler([](const std::string& path) {
+        // Online: the sampler suspends every thread (network and P2P included) every 2 ms for 4 s,
+        // which a match would feel as lag. F9 still saves its snapshot.
+        if (rbrew_online::config().online) return;
         static std::atomic<bool> busy{false};
         if (busy.exchange(true)) return;
         std::thread([path] {
@@ -276,18 +322,39 @@ static void platform_sleep_us(unsigned us) {
     usleep(us);
 }
 static uint8_t* alloc_arena(size_t sz) {
-    // One flat aperture over the whole 32-bit guest address space, mapped
-    // readable/writable at startup (pages stay demand-zero until touched).
-    void* p = mmap(nullptr, sz, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (!g_guest_guard) {
+        void* all = mmap(nullptr, sz, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        return all == MAP_FAILED ? nullptr : static_cast<uint8_t*>(all);
+    }
+    void* p = mmap(nullptr, sz, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (p == MAP_FAILED) return nullptr;
+    auto* base = static_cast<uint8_t*>(p);
+    if (mprotect(p, RBREW_APPLICATION_ARENA_END, PROT_READ | PROT_WRITE) ||
+        mprotect(base + RBREW_FG_FREE_BASE, RBREW_FG_FREE_SIZE, PROT_READ | PROT_WRITE) ||
+        mprotect(base + RBREW_MEM1_BASE, RBREW_MEM1_SIZE, PROT_READ | PROT_WRITE) ||
+        mprotect(base + RBREW_SHARED_DATA_BASE, RBREW_SHARED_DATA_SIZE, PROT_READ | PROT_WRITE)) {
+        munmap(p, sz);
+        return nullptr;
+    }
     return static_cast<uint8_t*>(p);
 }
 static bool map_overlay(void* user, uint32_t base, uint32_t size, bool enable) {
     if (!user || base != RBREW_OVERLAY_BASE || size != RBREW_OVERLAY_SIZE) return false;
     auto& mapping = *static_cast<OverlayHostMapping*>(user);
-    // The aperture is already mapped; only guest-visible accessibility
-    // changes (the checked path consults the overlay registry).
-    rbrew_set_overlay_access(mapping.arena, enable);
+    if (!g_guest_guard) {
+        rbrew_set_overlay_access(mapping.arena, enable);
+        if (enable) RBREW_LOG_INFO("MEM", "OverlayArena mapped: base=%08X size=%08X\n", base, size);
+        return true;
+    }
+    auto p = mapping.arena + base;
+    if (mprotect(p, size, enable ? (PROT_READ | PROT_WRITE) : PROT_NONE)) return false;
+    mapping.committed = true;
+    try {
+        rbrew_set_overlay_access(mapping.arena, enable);
+    } catch (...) {
+        mprotect(p, size, enable ? PROT_NONE : (PROT_READ | PROT_WRITE));
+        throw;
+    }
     if (enable) RBREW_LOG_INFO("MEM", "OverlayArena mapped: base=%08X size=%08X\n", base, size);
     return true;
 }
@@ -341,6 +408,9 @@ void Gambit_game_register(CPUState* cpu); // registers all recompiled game funct
 void player_anim_register();               // idle look-around and opt-in (RBREW_ANIM_LOG) animation trace
 void branch_tables_install(CPUState* cpu); // branch_tables.cpp
 void broadcast_guard_install();            // broadcast_guard.cpp
+namespace rbrew_mouse_camera {
+void install(); // mouse_camera.cpp
+}
 void coreinit_memory_init(uint8_t* mem);
 void coreinit_memory_register(CPUState* cpu);
 void coreinit_dimport_repatch(CPUState* cpu); // re-apply after Gambit_data_init
@@ -403,13 +473,19 @@ int main(int argc, char** argv) {
     // ESC-menu options (settings.ini); start-only values reach the environment here.
     rbrew_settings::load();
     rbrew::discord_rpc_init();
+#if defined(_WIN32)
+    rbrew_native::online_boot(); // SpotPass files and friends relay: online play without Python
+#endif
     RBREW_LOG_INFO("BOOT", "Splatoon launch runtime; RPX header entry=0x%08X\n", rebrewu_generated::Gambit_entry_point);
     RBREW_LOG_INFO("FS", "RBREW_CONTENT_DIR=%s\n",
                    getenv("RBREW_CONTENT_DIR") ? getenv("RBREW_CONTENT_DIR") : "./content");
 
     // 1. Allocate the shared native layout, including application heap memory.
-    // The aperture spans the whole 32-bit guest address space so any guest
-    // effective address is a plain offset into it.
+    // The whole 32-bit guest space plus a guard is reserved. With RBREW_GUEST_GUARD=1 nothing outside
+    // the committed regions is accessible, so a bad guest pointer (network data) only faults.
+    const char* guard_env = getenv("RBREW_GUEST_GUARD");
+    g_guest_guard = guard_env && guard_env[0] == '1';
+    RBREW_LOG_INFO("MEM", "Guest address guard: %s\n", g_guest_guard ? "on" : "off");
     const size_t arena_sz = size_t(RBREW_GUEST_APERTURE_SIZE);
     uint8_t* arena = alloc_arena(arena_sz);
     if (!arena) {
@@ -491,8 +567,9 @@ int main(int argc, char** argv) {
         // These match the selected local reference profile, independently of
         // title region. Neither the provider nor guest code depends on Cemu.
         RbrewUcSystemProfile uc_profile{1, 0};
-        if (const char* value = getenv("RBREW_CONSOLE_LANGUAGE"); value && *value)
-            uc_profile.language = rbrew_parse_native_uc_scalar(value, 11);
+        if (const std::string value = rbrew_online_cfg::resolved("RBREW_CONSOLE_LANGUAGE", "language", "1");
+            !value.empty())
+            uc_profile.language = rbrew_parse_native_uc_scalar(value.c_str(), 11);
         if (const char* value = getenv("RBREW_COUNTRY_REGISTRATION"); value && *value)
             uc_profile.country_registration = rbrew_parse_native_uc_scalar(value, 255);
         rbrew_uc_configure_profile(&cpu_reg, uc_profile);
@@ -539,6 +616,7 @@ int main(int argc, char** argv) {
     Gambit_game_register(&cpu_reg);
     branch_tables_install(&cpu_reg); // link branch-table case blocks (see hooks/branch_tables.cpp)
     broadcast_guard_install();       // 0285C3D0 broadcast loop guard
+    rbrew_mouse_camera::install();   // 02661878 / 02662044 mouse yaw and pitch past the gyro filters
     player_anim_register();
     gx2env::register_hooks(); // game camera hooks (hooks/gx2_camera_hooks.h)
     erreula_register(&cpu_reg);
@@ -716,6 +794,9 @@ int main(int argc, char** argv) {
     // Arena and dispatch are process-owned: guest workers may still reference
     // them until process termination. Do not free them underneath live workers.
     rbrew::discord_rpc_shutdown();
+#if defined(_WIN32)
+    rbrew_native::online_shutdown();
+#endif
     return result;
 }
 

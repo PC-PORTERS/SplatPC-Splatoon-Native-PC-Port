@@ -533,6 +533,15 @@ bool CppEmitter::is_inline_candidate(const ir::IRFunction& func) const {
     return instrs.back().opcode == Opcode::Return;
 }
 
+// A direct call: hooked functions go through their _entry (hook check), others use the inline copy or the
+// body directly.
+std::string CppEmitter::direct_call(uint32_t addr) const {
+    auto sym = m_ir.symbol_at(addr);
+    const std::string name = sym ? m_names.function_name(addr, *sym) : m_names.function_name(addr);
+    if (m_cfg.hooked.contains(addr)) return name + "_entry(cpu)";
+    return (m_inline_candidates.contains(addr) ? inline_name(addr) : name) + "(cpu, mem)";
+}
+
 std::string CppEmitter::inline_name(uint32_t addr) const {
     auto sym = m_ir.symbol_at(addr);
     std::string base = sym ? m_names.function_name(addr, *sym) : m_names.function_name(addr);
@@ -835,12 +844,9 @@ void CppEmitter::emit_instr(const ir::IRInstr& instr, std::ostream& out, int ind
                 EMIT("return; // unconditional addr-0 trap");
             } else if (const ir::IRFunction* target = m_ir.function_at(addr)) {
                 // Tail branch into a known guest function: direct call, no table.
-                auto sym = m_ir.symbol_at(addr);
-                std::string callee = m_inline_candidates.contains(addr)
-                                         ? inline_name(addr)
-                                         : (sym ? m_names.function_name(addr, *sym) : m_names.function_name(addr));
+                const std::string call = direct_call(addr);
                 (void)target;
-                EMIT(callee << "(cpu, mem); return;");
+                EMIT(call << "; return;");
             } else {
                 EMIT("rbrew_dispatch_mem(cpu, mem, 0x" << std::hex << std::setw(8) << std::setfill('0') << addr
                                                        << "u); return;");
@@ -958,11 +964,8 @@ void CppEmitter::emit_instr(const ir::IRInstr& instr, std::ostream& out, int ind
                 EMIT("if (!(" << cond << ")) goto " << f_tgt << "; // addr-0 trap skipped");
             } else if (const ir::IRFunction* target = m_ir.function_at(addr)) {
                 (void)target;
-                auto sym = m_ir.symbol_at(addr);
-                std::string callee = m_inline_candidates.contains(addr)
-                                         ? inline_name(addr)
-                                         : (sym ? m_names.function_name(addr, *sym) : m_names.function_name(addr));
-                EMIT("if (" << cond << ") { " << callee << "(cpu, mem); return; }");
+                const std::string call = direct_call(addr);
+                EMIT("if (" << cond << ") { " << call << "; return; }");
                 EMIT("goto " << f_tgt << ";");
             } else {
                 EMIT("if (" << cond << ") { rbrew_dispatch_mem(cpu, mem, 0x" << std::hex << std::setw(8)
@@ -975,12 +978,9 @@ void CppEmitter::emit_instr(const ir::IRInstr& instr, std::ostream& out, int ind
                 EMIT("if (" << cond << ") goto " << t_tgt << "; // else: addr-0 trap, fall-through");
             } else if (const ir::IRFunction* target = m_ir.function_at(addr)) {
                 (void)target;
-                auto sym = m_ir.symbol_at(addr);
-                std::string callee = m_inline_candidates.contains(addr)
-                                         ? inline_name(addr)
-                                         : (sym ? m_names.function_name(addr, *sym) : m_names.function_name(addr));
+                const std::string call = direct_call(addr);
                 EMIT("if (" << cond << ") goto " << t_tgt << ";");
-                EMIT(callee << "(cpu, mem); return;");
+                EMIT(call << "; return;");
             } else {
                 EMIT("if (" << cond << ") goto " << t_tgt << ";");
                 EMIT("rbrew_dispatch_mem(cpu, mem, 0x" << std::hex << std::setw(8) << std::setfill('0') << addr
@@ -1030,11 +1030,8 @@ void CppEmitter::emit_instr(const ir::IRInstr& instr, std::ostream& out, int ind
             EMIT("if (" << cond << ") " << (m_cfg.emit_ppc_image ? "rbrew_dispatch_linked_mem" : "rbrew_dispatch_mem")
                         << "(cpu, mem, 0x" << std::hex << std::setw(8) << std::setfill('0') << target << "u);");
         } else {
-            auto sym = m_ir.symbol_at(target);
-            std::string callee = m_inline_candidates.contains(target)
-                                     ? inline_name(target)
-                                     : (sym ? m_names.function_name(target, *sym) : m_names.function_name(target));
-            EMIT("if (" << cond << ") " << callee << "(cpu, mem);");
+            const std::string call = direct_call(target);
+            EMIT("if (" << cond << ") " << call << ";");
         }
         return;
     }
@@ -1050,11 +1047,8 @@ void CppEmitter::emit_instr(const ir::IRInstr& instr, std::ostream& out, int ind
                         << (m_cfg.emit_ppc_image ? "rbrew_dispatch_linked_mem" : "rbrew_dispatch_mem")
                         << "(cpu, mem, 0x" << std::hex << std::setw(8) << std::setfill('0') << target << "u);");
         } else {
-            auto sym = m_ir.symbol_at(target);
-            std::string callee = m_inline_candidates.contains(target)
-                                     ? inline_name(target)
-                                     : (sym ? m_names.function_name(target, *sym) : m_names.function_name(target));
-            EMIT("if (" << get_op(0) << ") " << callee << "(cpu, mem);");
+            const std::string call = direct_call(target);
+            EMIT("if (" << get_op(0) << ") " << call << ";");
         }
         return;
     }
@@ -1070,11 +1064,8 @@ void CppEmitter::emit_instr(const ir::IRInstr& instr, std::ostream& out, int ind
                  << "(cpu, mem, 0x" << std::hex << std::setw(8) << std::setfill('0') << target << "u);");
             return;
         }
-        auto sym = m_ir.symbol_at(target);
-        std::string callee = m_inline_candidates.contains(target)
-                                 ? inline_name(target)
-                                 : (sym ? m_names.function_name(target, *sym) : m_names.function_name(target));
-        EMIT(callee << "(cpu, mem);");
+        const std::string call = direct_call(target);
+        EMIT(call << ";");
         return;
     }
 

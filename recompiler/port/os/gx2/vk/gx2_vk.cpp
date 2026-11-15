@@ -96,6 +96,12 @@ bool env_flag(const char* name) {
 // ---------------------------------------------------------------------------
 constexpr VkDeviceSize kBlockSize = 64ull << 20;
 constexpr VkDeviceSize kDedicatedThreshold = 16ull << 20;
+constexpr VkDeviceSize kMinBlockSize = 4ull << 20;
+// Per memory type: largest pool block worth trying after one was refused (0 = kBlockSize), and the
+// bytes given back to that type since, which lets the size grow again, and the pool misses since,
+// which forget the limit altogether (a transient refusal must not last).
+std::array<VkDeviceSize, VK_MAX_MEMORY_TYPES> s_block_limit{}, s_freed_since_limit{};
+std::array<uint32_t, VK_MAX_MEMORY_TYPES> s_misses_since_limit{};
 struct Block {
     VkDeviceMemory memory = VK_NULL_HANDLE;
     uint8_t* mapped = nullptr;
@@ -1627,6 +1633,9 @@ void shutdown() {
     s_dirty = false;
     s_allocated = 0;
     s_allocated_by_type = {};
+    s_block_limit = {};
+    s_freed_since_limit = {};
+    s_misses_since_limit = {};
     s_before_end = nullptr;
     s_after_submit = nullptr;
     s_leave_rendering = nullptr;
@@ -1714,11 +1723,37 @@ Allocation allocate(const VkMemoryRequirements& requirements, MemoryUse use, boo
             }
         }
         Block block;
-        block.size = std::min(kBlockSize, s_memory.memoryHeaps[memory_type.heapIndex].size);
-        auto result = a.size <= block.size ? raw_allocate(block.size, type, mapped, nullptr, block.memory, block.mapped)
-                                           : VK_ERROR_OUT_OF_DEVICE_MEMORY;
+        // A full heap (the 256 MiB host-visible VRAM, for instance) refused every 64 MiB block: each
+        // small buffer then paid a failed vkAllocateMemory plus its own exact-size one (~700 a second
+        // on the title screen, 8-20 % of the render thread). Halve the block on failure and remember
+        // the size that failed for this type until enough of it is freed again.
+        const VkDeviceSize full_block = std::min(kBlockSize, s_memory.memoryHeaps[memory_type.heapIndex].size);
+        if (s_block_limit[type]) {
+            if (s_freed_since_limit[type] >= 2 * s_block_limit[type]) {
+                s_block_limit[type] *= 2; // memory came back: try a bigger block again
+                s_freed_since_limit[type] = 0;
+                if (s_block_limit[type] >= full_block) s_block_limit[type] = 0;
+            } else if (++s_misses_since_limit[type] >= memory_detail::kBlockRetryMisses) {
+                s_block_limit[type] = 0; // the refusal may have been transient: try a full block again
+                s_freed_since_limit[type] = 0;
+            }
+        }
+        VkDeviceSize want = s_block_limit[type] ? std::min(full_block, s_block_limit[type]) : full_block;
+        VkResult result = VK_ERROR_OUT_OF_DEVICE_MEMORY;
+        while (a.size <= want && want >= kMinBlockSize) {
+            result = raw_allocate(want, type, mapped, nullptr, block.memory, block.mapped);
+            if (result == VK_SUCCESS || !retry_memory(result)) break;
+            want /= 2;
+            s_block_limit[type] = std::max(want, kMinBlockSize / 2); // below kMinBlockSize: no new block
+            s_freed_since_limit[type] = 0;
+            s_misses_since_limit[type] = 0;
+        }
+        block.size = want;
         if (result != VK_SUCCESS) {
             if (!retry_memory(result)) return {};
+            // This heap has no room for even a small block: pool in the next suitable type
+            // (host RAM for uploads) rather than one vkAllocateMemory per small resource here.
+            if (candidate + 1 < types.count && a.size < kMinBlockSize) continue;
             // A pool block may not fit even though the resource still fits in
             // this faster heap. Try its exact size before moving to another type.
             a.size = requirements.size;
@@ -1780,6 +1815,7 @@ void free_now(Allocation& a) {
         vkFreeMemory(s_device, a.memory, nullptr);
         s_allocated -= a.size;
         s_allocated_by_type[a.pool] -= a.size;
+        s_freed_since_limit[a.pool] += a.size;
     } else if (a.pool < s_pools.size() && uint32_t(a.block) < s_pools[a.pool].blocks.size()) {
         auto& blocks = s_pools[a.pool].blocks;
         auto& block = blocks[a.block];
@@ -1793,6 +1829,7 @@ void free_now(Allocation& a) {
             vkFreeMemory(s_device, block.memory, nullptr);
             s_allocated -= block.size;
             s_allocated_by_type[s_pools[a.pool].type] -= block.size;
+            s_freed_since_limit[s_pools[a.pool].type] += block.size;
             block = {};
         }
     }

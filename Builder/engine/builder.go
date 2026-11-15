@@ -368,6 +368,9 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 
 	// Write settings.ini and launcher script
 	log("Writing custom settings (player nickname: %s)...", cfg.PlayerName)
+	if cfg.EnableOnline && strings.TrimSpace(cfg.OnlineServer) != "" {
+		log("Online multiplayer configured: server %s (pseudo: '%s')", strings.TrimSpace(cfg.OnlineServer), cfg.PlayerName)
+	}
 	if err := settings.WriteSettingsIni(cfg, cfg.OutputDir); err != nil {
 		log("Warning: Failed to write settings.ini: %v", err)
 	}

@@ -1,0 +1,13 @@
+# Pad script of the shader warm-up (scripts/ShaderWarmup.ps1): leave the title
+# screen, then look around the plaza.
+# frame buttons(hex) lx ly rx ry touched x y        C0 = ZL+ZR
+0 0 0 0 0 0 0 0 0
+1000 C0 0 0 0 0 0 0 0
+1025 0 0 0 0 0 0 0 0
+1400 C0 0 0 0 0 0 0 0
+1425 0 0 0 0 0 0 0 0
+1800 C0 0 0 0 0 0 0 0
+1825 0 0 0 0 0 0 0 0
+2200 0 0 0 0.6 0 0 0 0
+2700 0 0 0 -0.6 0 0 0 0
+3200 0 0 0 0 0 0 0 0

@@ -383,7 +383,17 @@ static void ax_aux_callbacks() {
     }
 }
 
+// GamePad (DRC 0) stereo of the last 96-frame block. With a sink (phone page) it goes only to the phone;
+// without one it is mixed into the PC output so the GamePad sound is not lost.
+static std::atomic<void (*)(const float*, uint32_t)> s_pad_sink{nullptr};
+static float s_pad_frame[96 * 2];
+void snd_core_set_pad_sink(void (*sink)(const float*, uint32_t)) {
+    s_pad_sink.store(sink);
+}
+
 static void ax_final_mix_callbacks(float* output) {
+    constexpr bool want_pad = true;
+    std::fill_n(s_pad_frame, 96 * 2, 0.0f);
     // snd_core.rpl 02005b44 / 020065xx: pointer array, u16 input channels,
     // sample count, device count, and output channels (12 bytes, big-endian).
     // TV: six channels, one device. DRC: four channels, two devices.
@@ -402,6 +412,11 @@ static void ax_final_mix_callbacks(float* output) {
                     for (unsigned c = 0; c < 2; ++c)
                         output[n * 2 + c] =
                             std::clamp(float(mix_pcm(s_device_output[0][0][c][n])) / 32768.0f, -1.0f, 1.0f);
+            else if (want_pad)
+                for (unsigned n = 0; n < 96; ++n)
+                    for (unsigned c = 0; c < 2; ++c)
+                        s_pad_frame[n * 2 + c] =
+                            std::clamp(float(mix_pcm(s_device_output[1][0][c][n])) / 32768.0f, -1.0f, 1.0f);
             continue;
         }
         const uint32_t info = s_audio_storage + 0x1000 + device * 0x2000;
@@ -426,6 +441,17 @@ static void ax_final_mix_callbacks(float* output) {
         s_callback_cpu.r[3] = info;
         s_callback_cpu.lr = 0;
         rbrew_dispatch(&s_callback_cpu, callback);
+        if (device == 1 && want_pad) {
+            // DRC 0 comes first in the buffer array: channels 0/1 are its left/right.
+            const unsigned count = (std::min)(unsigned(rbrew_read16(s_mem, info + 10)), channels);
+            for (unsigned n = 0; n < 96; ++n)
+                for (unsigned c = 0; c < 2; ++c) {
+                    const unsigned source = count == 1 ? 0 : c;
+                    const int32_t pcm =
+                        source < count ? int32_t(rbrew_read32(s_mem, samples + (source * 96 + n) * 4)) : 0;
+                    s_pad_frame[n * 2 + c] = std::clamp(float(pcm) / 32768.0f, -1.0f, 1.0f);
+                }
+        }
         if (device == 0) {
             const unsigned count = rbrew_read16(s_mem, info + 10);
             if (count > channels) throw std::runtime_error("AX final mix output channel count exceeds input channels");
@@ -438,6 +464,8 @@ static void ax_final_mix_callbacks(float* output) {
                 }
         }
     }
+    if (!s_pad_sink.load())
+        for (unsigned i = 0; i < 96 * 2; ++i) output[i] = std::clamp(output[i] + s_pad_frame[i], -1.0f, 1.0f);
 }
 
 // Shared by the host device and deterministic tests; callback boundaries do
@@ -484,6 +512,7 @@ void snd_core_render_frames(float* output, uint32_t frames) {
                 ax_aux_callbacks();
                 ax_final_mix_callbacks(s_frame_output.data());
             }
+            if (auto sink = s_pad_sink.load()) sink(s_pad_frame, 96);
             s_frame_cursor = 0;
         }
         const uint32_t count = (std::min)(uint32_t(frames), uint32_t(96 - s_frame_cursor));

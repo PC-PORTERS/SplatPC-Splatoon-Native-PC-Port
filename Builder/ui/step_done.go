@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -153,10 +154,16 @@ func (v *StepDoneView) SetSuccess(elapsed time.Duration, appImagePath string) {
 		hdStatus = "Enabled (Real-ESRGAN)"
 	}
 
+	onlineStatus := "Disabled (Offline Mode)"
+	if cfg.EnableOnline && strings.TrimSpace(cfg.OnlineServer) != "" {
+		onlineStatus = fmt.Sprintf("Enabled (Community Server: %s)", strings.TrimSpace(cfg.OnlineServer))
+	}
+
 	summaryText := fmt.Sprintf(
 		"• Destination Directory: %s\n"+
 			"• Executable Binary: %s\n"+
 			"• Player Nickname: %s\n"+
+			"• Online Multiplayer: %s\n"+
 			"• Render Resolution: %s @ %d FPS\n"+
 			"• HD Texturing: %s\n"+
 			"• Cafe Language ID: %d\n"+
@@ -164,6 +171,7 @@ func (v *StepDoneView) SetSuccess(elapsed time.Duration, appImagePath string) {
 		cfg.OutputDir,
 		filepath.Join(cfg.OutputDir, "Splatoon"),
 		cfg.PlayerName,
+		onlineStatus,
 		cfg.Resolution,
 		cfg.FrameRate,
 		hdStatus,

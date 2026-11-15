@@ -22,3 +22,12 @@ target_link_libraries(rebrewu_ir_optimizer_tests
 )
 
 add_test(NAME rebrewu_ir_optimizer COMMAND rebrewu_ir_optimizer_tests)
+
+add_executable(rebrewu_single_precision_tests test_single_precision.cpp)
+
+target_link_libraries(rebrewu_single_precision_tests
+    PRIVATE
+        rebrewu_ppc
+)
+
+add_test(NAME rebrewu_single_precision COMMAND rebrewu_single_precision_tests)

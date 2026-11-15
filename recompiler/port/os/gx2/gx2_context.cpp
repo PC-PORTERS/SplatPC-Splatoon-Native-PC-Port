@@ -7,12 +7,15 @@
 // and a native Vulkan device/swapchain; TV/GamePad toggle retains touch input.
 
 #include "../os_common.h"
+#include "../../runtime/camtrace.h"
 #include "../../runtime/screen_mode.h"
 #include "gx2_render.h"
+#include "pad_remote.h"
 #include "gx2_pm4_state.h"
 #include "gx2_perf.h"
 #include "gx2_vblank.h"
 #include "../../runtime/host_sleep.h"
+#include <condition_variable>
 #include <cstring>
 #include <mutex>
 #include <utility>
@@ -59,6 +62,10 @@ void gx2_draw_set_default_state(CPUState* cpu);
 // gx2_render_vk.cpp owns the Vulkan device; this branch needs no GPU types.
 
 static SDL_Window* s_window = nullptr;
+// Menu "Separate GamePad window": the GamePad screen in its own window (the
+// main window keeps the TV picture). Tab then moves the mouse between aiming
+// (TV) and touching the GamePad window.
+static SDL_Window* s_pad_window = nullptr;
 static bool s_tv_enabled = true;
 
 // GamePad screen resolution (hardware fixed)
@@ -70,9 +77,16 @@ static constexpr int DRC_H = 480;
 static void update_window_title() {
     if (!s_window) return;
     char title_buf[128];
-    std::snprintf(title_buf, sizeof(title_buf), "Splatoon | %s | Vulkan [F3=overlay | Tab=view | F11=window]",
-                  g_screen_mode == ScreenMode::TV ? "TV" : "Gamepad");
+    const char* mode = g_screen_mode == ScreenMode::TV ? "TV" : "Gamepad";
+    if (s_pad_window) mode = g_screen_mode == ScreenMode::TV ? "TV (mouse aims)" : "TV (mouse on GamePad window)";
+    std::snprintf(title_buf, sizeof(title_buf), "Splatoon | %s | Vulkan [F3=overlay | Tab=%s | F4=social]%s", mode,
+                  s_pad_window ? "mouse" : "view",
+                  rbrew_camtrace::active() ? "  >>> REC camera (F10 to stop) <<<" : "");
     SDL_SetWindowTitle(s_window, title_buf);
+    if (s_pad_window)
+        SDL_SetWindowTitle(s_pad_window, g_screen_mode == ScreenMode::Gamepad
+                                             ? "Splatoon | GamePad | click = touch | Tab = back to aiming"
+                                             : "Splatoon | GamePad | Tab = touch with the mouse");
 }
 
 // The settings menu needs a free cursor; the game captures it in TV mode.
@@ -85,34 +99,243 @@ static bool imgui_wants_cursor() {
     }();
     return gx2_imgui::menu_open() || (overlay_cursor && gx2_imgui::visible());
 }
+// GamePad window open: the main window keeps the mouse captured for aiming; Tab frees it so the cursor
+// can reach the GamePad window (which always touches), and a click in the main window captures it again.
+static bool s_mouse_released = false;
 static void sync_overlay_mouse_mode() {
-    if (g_screen_mode == ScreenMode::TV) SDL_SetRelativeMouseMode(imgui_wants_cursor() ? SDL_FALSE : SDL_TRUE);
+    if (g_screen_mode == ScreenMode::TV)
+        SDL_SetRelativeMouseMode((imgui_wants_cursor() || s_mouse_released) ? SDL_FALSE : SDL_TRUE);
 }
 
-// Switch between TV and Gamepad view, adjusting mouse capture accordingly
-static void toggle_screen_mode() {
+// Switch between TV and Gamepad view, adjusting mouse capture accordingly.
+// With the GamePad window open both pictures stay on screen: Tab only moves
+// the mouse between aiming (main window) and touching the GamePad window.
+// from_focus: the switch comes from a click on the other window, which already has the focus.
+static void toggle_screen_mode(bool from_focus = false) {
     if (g_screen_mode == ScreenMode::TV) {
         g_screen_mode = ScreenMode::Gamepad;
         SDL_SetRelativeMouseMode(SDL_FALSE); // free the cursor for touch sim
         g_touch_state = {false, 0, 0};
+        if (s_pad_window && !from_focus) {
+            int w = 0, h = 0;
+            SDL_GetWindowSize(s_pad_window, &w, &h);
+            SDL_RaiseWindow(s_pad_window);
+            SDL_WarpMouseInWindow(s_pad_window, w / 2, h / 2);
+        }
     } else {
         g_screen_mode = ScreenMode::TV;
+        if (s_pad_window && !from_focus) SDL_RaiseWindow(s_window);
         sync_overlay_mouse_mode(); // capture cursor for camera, unless the overlay is open
         g_touch_state = {false, 0, 0};
     }
     update_window_title();
 }
 
+static void set_gamepad_window_setting(bool on) {
+    auto settings = rbrew_settings::get();
+    if (settings.gamepad_window == on) return;
+    settings.gamepad_window = on;
+    rbrew_settings::set(settings);
+}
+
+#if defined(_WIN32)
+// The GamePad window's picture: the renderer hands the GamePad scan image (RGBA8, a frame or two
+// late) to pad_view_sink on the render thread; a thread of its own draws it with GDI, so neither
+// the game nor the render thread waits for it, and the main window keeps the only swapchain.
+namespace pad_view {
+std::mutex s_lock;
+std::condition_variable s_wake;
+std::vector<uint8_t> s_pixels;
+uint32_t s_width = 0, s_height = 0;
+bool s_fresh = false, s_stop = false;
+HWND s_hwnd = nullptr;
+std::thread s_thread;
+
+void sink(const uint8_t* rgba, uint32_t width, uint32_t height) {
+    {
+        std::lock_guard lock(s_lock);
+        s_pixels.assign(rgba, rgba + size_t(width) * height * 4);
+        s_width = width;
+        s_height = height;
+        s_fresh = true;
+    }
+    s_wake.notify_one();
+}
+void draw_loop() {
+    std::vector<uint8_t> bgra;
+    for (;;) {
+        uint32_t width, height;
+        {
+            std::unique_lock lock(s_lock);
+            s_wake.wait(lock, [] { return s_fresh || s_stop; });
+            if (s_stop) return;
+            bgra.swap(s_pixels);
+            width = s_width;
+            height = s_height;
+            s_fresh = false;
+        }
+        for (size_t i = 0; i + 3 < bgra.size(); i += 4) {
+            std::swap(bgra[i], bgra[i + 2]); // GDI wants BGRA
+            bgra[i + 3] = 255;
+        }
+        RECT client{};
+        GetClientRect(s_hwnd, &client);
+        if (bgra.size() < size_t(width) * height * 4 || !width || !height) continue;
+        if (HDC dc = GetDC(s_hwnd)) {
+            BITMAPINFO info{};
+            info.bmiHeader.biSize = sizeof(info.bmiHeader);
+            info.bmiHeader.biWidth = LONG(width);
+            info.bmiHeader.biHeight = -LONG(height); // top-down rows
+            info.bmiHeader.biPlanes = 1;
+            info.bmiHeader.biBitCount = 32;
+            info.bmiHeader.biCompression = BI_RGB;
+            SetStretchBltMode(dc, HALFTONE);
+            SetBrushOrgEx(dc, 0, 0, nullptr);
+            StretchDIBits(dc, 0, 0, client.right, client.bottom, 0, 0, LONG(width), LONG(height), bgra.data(), &info,
+                          DIB_RGB_COLORS, SRCCOPY);
+            ReleaseDC(s_hwnd, dc);
+        }
+        std::lock_guard lock(s_lock);
+        if (s_pixels.empty()) s_pixels.swap(bgra); // keep the allocation
+    }
+}
+void start(HWND hwnd) {
+    s_hwnd = hwnd;
+    s_stop = s_fresh = false;
+    s_thread = std::thread(draw_loop);
+}
+void stop() {
+    {
+        std::lock_guard lock(s_lock);
+        s_stop = true;
+    }
+    s_wake.notify_one();
+    if (s_thread.joinable()) s_thread.join();
+    s_hwnd = nullptr;
+}
+} // namespace pad_view
+#endif
+
+// The GamePad picture goes to the GamePad window and/or a phone (pad_remote.h). The renderer has one
+// sink; its GPU copy runs only while one of them needs it.
+static std::atomic<bool> s_pad_window_live{false};
+static void pad_fanout(const uint8_t* rgba, uint32_t width, uint32_t height) {
+#if defined(_WIN32)
+    if (s_pad_window_live.load(std::memory_order_relaxed)) pad_view::sink(rgba, width, height);
+#endif
+    pad_remote::sink(rgba, width, height);
+}
+static void sync_pad_consumers() {
+    static int s_phone_port = 0; // port the phone server was started on, 0 = off
+    const bool phone = rbrew_settings::g_phone_gamepad.load(std::memory_order_relaxed);
+    const int port = rbrew_settings::g_phone_port.load(std::memory_order_relaxed);
+    if (phone && s_phone_port != port) {
+        pad_remote::start(port);
+        s_phone_port = port;
+    } else if (!phone && s_phone_port) {
+        pad_remote::stop();
+        s_phone_port = 0;
+    }
+    static bool s_registered = false;
+    const bool wanted = s_pad_window_live.load(std::memory_order_relaxed) || pad_remote::wants_frames();
+    if (wanted == s_registered) return;
+    s_registered = wanted;
+    gx2_native_run(true, [wanted] { gx2_render_pad_window(wanted ? pad_fanout : nullptr); });
+}
+
+// Opens or closes the GamePad window to follow the menu setting (window thread, every frame).
+bool gx2_mouse_on_pad_window() {
+    return s_pad_window && (s_mouse_released || SDL_GetMouseFocus() == s_pad_window);
+}
+static void sync_pad_window() {
+    const bool wanted = rbrew_settings::g_gamepad_window.load(std::memory_order_relaxed);
+    if (wanted == (s_pad_window != nullptr)) return;
+#if defined(_WIN32)
+    if (wanted) {
+        SDL_Window* window = SDL_CreateWindow("Splatoon | GamePad", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+                                              DRC_W, DRC_H, SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+        SDL_SysWMinfo info{};
+        SDL_VERSION(&info.version);
+        if (!window || !SDL_GetWindowWMInfo(window, &info)) {
+            RBREW_LOG_ERROR("gx2", "GamePad window unavailable: %s\n", SDL_GetError());
+            if (window) SDL_DestroyWindow(window);
+            set_gamepad_window_setting(false); // the menu box goes back off
+            return;
+        }
+        if (const HICON icon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(101))) {
+            SendMessageW(info.info.win.window, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icon));
+            SendMessageW(info.info.win.window, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icon));
+        }
+        pad_view::start(info.info.win.window);
+        s_pad_window_live = true; // sync_pad_consumers turns the GPU copy on
+        s_pad_window = window;
+        if (g_screen_mode == ScreenMode::Gamepad)
+            toggle_screen_mode(); // the main window shows the TV again
+        else
+            SDL_RaiseWindow(s_window);
+        sync_overlay_mouse_mode();
+    } else {
+        s_pad_window_live = false;
+        pad_view::stop();
+        SDL_DestroyWindow(s_pad_window);
+        s_pad_window = nullptr;
+        if (g_screen_mode == ScreenMode::Gamepad) toggle_screen_mode();
+        s_mouse_released = false;
+        sync_overlay_mouse_mode();
+    }
+    update_window_title();
+#else
+    set_gamepad_window_setting(false); // Windows only for now
+#endif
+}
+
+// SDL window of an event, 0 for events without one (keyboard events keep theirs).
+static Uint32 event_window(const SDL_Event& ev) {
+    switch (ev.type) {
+    case SDL_WINDOWEVENT: return ev.window.windowID;
+    case SDL_MOUSEMOTION: return ev.motion.windowID;
+    case SDL_MOUSEBUTTONDOWN:
+    case SDL_MOUSEBUTTONUP: return ev.button.windowID;
+    case SDL_MOUSEWHEEL: return ev.wheel.windowID;
+    default: return 0;
+    }
+}
+
 static bool window_fullscreen() {
     return s_window && (SDL_GetWindowFlags(s_window) & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0;
+}
+static bool s_borderless = false;
+// Windowed, no border, covering the desktop: alt-tab like a normal window (no exclusive fullscreen).
+static void set_window_borderless(bool on) {
+    if (!s_window) return;
+    s_borderless = on;
+    if (window_fullscreen()) SDL_SetWindowFullscreen(s_window, 0);
+    if (on) {
+        SDL_Rect r{};
+        const int d = std::max(SDL_GetWindowDisplayIndex(s_window), 0);
+        if (SDL_GetDisplayBounds(d, &r) != 0) return;
+        SDL_SetWindowBordered(s_window, SDL_FALSE);
+        SDL_SetWindowPosition(s_window, r.x, r.y);
+        // 1 pixel taller than the screen: a window that covers the monitor exactly is promoted to
+        // fullscreen by Windows (black screen on alt-tab); this one stays a normal window.
+        SDL_SetWindowSize(s_window, r.w, r.h + 1);
+    } else {
+        SDL_SetWindowBordered(s_window, SDL_TRUE);
+        SDL_SetWindowSize(s_window, 1280, 720);
+        SDL_SetWindowPosition(s_window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+    }
+    update_window_title();
 }
 static void set_window_fullscreen(bool full) {
     if (!s_window || window_fullscreen() == full) return;
     if (!full) {
         SDL_SetWindowFullscreen(s_window, 0);
+        SDL_SetWindowBordered(s_window, SDL_TRUE);
+        s_borderless = false;
         SDL_SetWindowSize(s_window, 1280, 720);
         SDL_SetWindowPosition(s_window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
     } else {
+        s_borderless = false;
         SDL_SetWindowFullscreen(s_window, SDL_WINDOW_FULLSCREEN_DESKTOP);
     }
     update_window_title();
@@ -124,9 +347,10 @@ static void set_overlay_display(bool show) {
 }
 
 // Map a window-space mouse position to GamePad touch coordinates [0,853] x [0,479]
+// (in the GamePad window when it is open, else in the main window).
 static void map_mouse_to_touch(int mx, int my) {
     int ww, wh;
-    SDL_GetWindowSize(s_window, &ww, &wh);
+    SDL_GetWindowSize(s_pad_window ? s_pad_window : s_window, &ww, &wh);
     if (ww <= 0 || wh <= 0) return;
 
     if (mx < 0) mx = 0;
@@ -202,6 +426,9 @@ static bool gx2_platform_open_window() {
     // Vulkan presentation: no GPU attributes or context. The device and
     // swapchain are created by gx2_render_init for this window; the present
     // mode avoids a second refresh wait (see gx2_vk.cpp create_swapchain).
+    // Borderless fullscreen: do not minimize on focus loss (that caused the black flash and the
+    // delay when alt-tabbing back).
+    SDL_SetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0");
     SDL_DisplayMode desktop{};
     if (SDL_GetDesktopDisplayMode(0, &desktop) != 0 || desktop.w <= 0 || desktop.h <= 0) return false;
     s_window = SDL_CreateWindow(
@@ -248,7 +475,11 @@ static bool gx2_platform_open_window() {
         // Saved window and overlay choices (the ImGui interface reads and
         // writes rbrew_settings directly).
         const auto settings = rbrew_settings::get();
-        if (!settings.fullscreen) set_window_fullscreen(false);
+        if (!settings.fullscreen) {
+            set_window_fullscreen(false);
+            if (settings.borderless) set_window_borderless(true);
+        }
+        gx2_imgui::note_borderless(s_borderless);
         set_overlay_display(settings.fps_overlay);
         gx2_imgui::set_simple_overlay(settings.simple_overlay);
         gx2_imgui::note_fullscreen(window_fullscreen());
@@ -909,8 +1140,44 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
     if (s_window) {
         // Pump SDL events first (the ImGui menu frees the cursor itself:
         // sync_overlay_mouse_mode).
+        sync_pad_window();
+        sync_pad_consumers();
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
+            const Uint32 from = event_window(ev);
+            // With two windows SDL sends no SDL_QUIT for the main one: its close ends the game.
+            if (ev.type == SDL_WINDOWEVENT && ev.window.event == SDL_WINDOWEVENT_CLOSE &&
+                from == SDL_GetWindowID(s_window))
+                gx2_close_requested();
+            // The GamePad window: closing it turns the option off; clicks touch the GamePad screen
+            // while Tab gave the mouse to it. Its mouse and window events never reach the menu.
+            if (s_pad_window && from && from == SDL_GetWindowID(s_pad_window)) {
+                if (ev.type == SDL_WINDOWEVENT && ev.window.event == SDL_WINDOWEVENT_CLOSE)
+                    set_gamepad_window_setting(false);
+                else {
+                    if (ev.type == SDL_MOUSEBUTTONDOWN && ev.button.button == SDL_BUTTON_LEFT) {
+                        map_mouse_to_touch(ev.button.x, ev.button.y);
+                        g_touch_state.touched = true;
+                    } else if (ev.type == SDL_MOUSEBUTTONUP && ev.button.button == SDL_BUTTON_LEFT) {
+                        g_touch_state.touched = false;
+                    } else if (ev.type == SDL_MOUSEMOTION && g_touch_state.touched) {
+                        map_mouse_to_touch(ev.motion.x, ev.motion.y);
+                    }
+                }
+                continue;
+            }
+            // Leaving the main window (Win key, other monitor, Alt-Tab) frees the mouse for the GamePad
+            // window; coming back to the main window captures it again, no Tab needed.
+            if (s_pad_window && ev.type == SDL_WINDOWEVENT && from == SDL_GetWindowID(s_window) &&
+                (ev.window.event == SDL_WINDOWEVENT_FOCUS_LOST || ev.window.event == SDL_WINDOWEVENT_FOCUS_GAINED)) {
+                s_mouse_released = ev.window.event == SDL_WINDOWEVENT_FOCUS_LOST;
+                sync_overlay_mouse_mode();
+            }
+            if (s_pad_window && s_mouse_released && ev.type == SDL_MOUSEBUTTONDOWN && !imgui_wants_cursor()) {
+                s_mouse_released = false; // a click in the main window captures the mouse again
+                sync_overlay_mouse_mode();
+                continue;
+            }
             gx2_imgui::process_event(ev);            // queued for the render thread
             if (gx2_imgui::menu_event(ev)) continue; // ESC menu (vk/gx2_imgui_overlay.h)
             if (ev.type == SDL_MOUSEWHEEL && gx2env::fly_camera()) {
@@ -930,10 +1197,17 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
             case SDL_KEYDOWN:
                 if (ev.key.repeat) break;
                 if (ev.key.keysym.scancode == SDL_SCANCODE_TAB) {
-                    toggle_screen_mode();
+                    if (!s_pad_window)
+                        toggle_screen_mode();
+                    else { // with the GamePad window both views are always live: Tab frees or captures the mouse
+                        s_mouse_released = !s_mouse_released;
+                        sync_overlay_mouse_mode();
+                    }
                 } else if (ev.key.keysym.scancode == SDL_SCANCODE_F11) {
                     auto settings = rbrew_settings::get();
                     settings.fullscreen = !window_fullscreen();
+                    settings.borderless = false;
+                    gx2_imgui::note_borderless(false);
                     set_window_fullscreen(settings.fullscreen);
                     rbrew_settings::set(settings);
                 } else if (ev.key.keysym.scancode == SDL_SCANCODE_F3) {
@@ -945,6 +1219,9 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
                 } else if (ev.key.keysym.scancode == SDL_SCANCODE_F8) {
                     SplatoonDiagnostics::ToggleManualRecord();
                     controller_log("F8 pressed: Manual recording toggled\n");
+                } else if (ev.key.keysym.scancode == SDL_SCANCODE_F10) {
+                    rbrew_camtrace::toggle(); // camera trace: Diagnostics\camtrace-*.csv
+                    controller_log("F10 pressed: camera trace %s\n", rbrew_camtrace::active() ? "on" : "off");
                 } else if (ev.key.keysym.scancode == SDL_SCANCODE_F9) {
                     SplatoonDiagnostics::ManualCapture();
                     controller_log("F9 pressed: Diagnostic snapshot captured\n");
@@ -968,7 +1245,7 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
             case SDL_JOYDEVICEREMOVED: on_controller_device_removed(ev.jdevice.which); break;
 
             case SDL_MOUSEBUTTONDOWN:
-                if (g_screen_mode == ScreenMode::Gamepad && ev.button.button == SDL_BUTTON_LEFT) {
+                if (g_screen_mode == ScreenMode::Gamepad && !s_pad_window && ev.button.button == SDL_BUTTON_LEFT) {
                     map_mouse_to_touch(ev.button.x, ev.button.y);
                     g_touch_state.touched = true;
                 }
@@ -981,7 +1258,7 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
                 break;
 
             case SDL_MOUSEMOTION:
-                if (g_screen_mode == ScreenMode::Gamepad && g_touch_state.touched) {
+                if (g_screen_mode == ScreenMode::Gamepad && !s_pad_window && g_touch_state.touched) {
                     map_mouse_to_touch(ev.motion.x, ev.motion.y);
                 }
                 break;
@@ -991,7 +1268,7 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
         }
 
         // Blit game FBO to window and swap (events stay on this thread)
-        bool gamepad = (g_screen_mode == ScreenMode::Gamepad);
+        bool gamepad = (g_screen_mode == ScreenMode::Gamepad) && !s_pad_window; // main window: TV when split
         if (gx2_native_async_active()) {
             struct Present final : Gx2AsyncWork {
                 SDL_Window* window;
@@ -1101,6 +1378,16 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
         return file;
     }();
     const uint32_t benchmark_frame = s_swap_count.load();
+    static const uint32_t camtrace_at = [] {
+        const char* v = std::getenv("RBREW_CAMTRACE_AT");
+        return v ? uint32_t(std::strtoul(v, nullptr, 10)) : 0u;
+    }();
+    if (camtrace_at && benchmark_frame == camtrace_at && !rbrew_camtrace::active())
+        rbrew_camtrace::toggle(); // tests: start without F10
+    rbrew_camtrace::end_frame(benchmark_frame, rbrew_control_defaults::active_scene_type(MEM), frame_delta_ms,
+                              guest_work_ms, vsync_wait_ms, present_wait_ms,
+                              rbrew_benchmark::frame_draws.load(std::memory_order_relaxed));
+    if (rbrew_camtrace::consume_change()) update_window_title();
     if (benchmark_csv) {
         // Vulkan queue submissions since the previous frame (read racily: statistics).
         static uint64_t s_last_submissions = 0;
@@ -1131,6 +1418,13 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
     if (s_window) {
         bool fullscreen = false;
         if (gx2_imgui::consume_fullscreen_request(fullscreen)) set_window_fullscreen(fullscreen);
+        bool borderless = false;
+        if (gx2_imgui::consume_borderless_request(borderless)) {
+            if (borderless)
+                set_window_borderless(true);
+            else if (s_borderless)
+                set_window_fullscreen(false), set_window_borderless(false);
+        }
         if (gx2_imgui::consume_quit_request()) gx2_close_requested();
         if (rbrew_nfp::consume_search_started()) gx2_imgui::open_amiibo_picker();
         if (gx2_imgui::consume_menu_changed()) sync_overlay_mouse_mode();

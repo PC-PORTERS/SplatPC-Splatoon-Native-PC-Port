@@ -10,6 +10,12 @@
 #include <stdexcept>
 #include <string>
 #include "../coreinit/coreinit_fs.h"
+#include "zlib_bridge.h"
+#include "../../runtime/online_identity.h"
+
+void boss_local_register(CPUState* cpu);       // boss_local.cpp
+void acp_network_time_register(CPUState* cpu); // acp_network_time.cpp
+void fp_lab_register(CPUState* cpu);           // fp_lab.cpp
 constexpr uint32_t SAVE_OK = 0;
 
 static void SAVEInit(CPUState* cpu) {
@@ -403,10 +409,24 @@ static void NDMGetCurrentState(CPUState* cpu) {
     RET = 0;
 }
 
+// snd_core remote (Wii Remote speaker) output: no remotes, so no samples.
+// The blank STUBs returned r3, which the game's 3 ms WPAD-speaker alarm
+// would read as a sample count once alarms fire.
+static void AXRmtGetSamplesLeft(CPUState* cpu) {
+    RET = 0;
+}
+static void AXRmtGetSamples(CPUState* cpu) {
+    RET = 0;
+}
+static void AXRmtAdvancePtr(CPUState* cpu) {
+    RET = 0;
+}
+
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 #include "stubs_addrs.h"
+#include "../snd_core/snd_core_addrs.h"
 
 void stubs_register(CPUState* cpu) {
 #define REG(name) rbrew_register_func(cpu, ADDR_##name, name)
@@ -496,6 +516,19 @@ void stubs_register(CPUState* cpu) {
     // REG(zlib_compress); // not in this game's PLT
     // REG(zlib_uncompress); // not in this game's PLT
     // REG(zlib_crc32); // not in this game's PLT
+    // Streaming zlib (os/stubs/zlib_bridge.cpp): NEX compression, sead streams.
+    rbrew_register_func(cpu, ADDR_deflate, rbrew_zlib::deflate);
+    rbrew_register_func(cpu, ADDR_deflateBound, rbrew_zlib::deflateBound);
+    rbrew_register_func(cpu, ADDR_deflateEnd, rbrew_zlib::deflateEnd);
+    rbrew_register_func(cpu, ADDR_deflateInit2_, rbrew_zlib::deflateInit2_);
+    rbrew_register_func(cpu, ADDR_inflate, rbrew_zlib::inflate);
+    rbrew_register_func(cpu, ADDR_inflateEnd, rbrew_zlib::inflateEnd);
+    rbrew_register_func(cpu, ADDR_inflateInit2_, rbrew_zlib::inflateInit2_);
+    rbrew_register_func(cpu, ADDR_inflateInit_, rbrew_zlib::inflateInit_);
+    // snd_core remote speaker
+    rbrew_register_func(cpu, ADDR_AXRmtAdvancePtr, AXRmtAdvancePtr);
+    rbrew_register_func(cpu, ADDR_AXRmtGetSamples, AXRmtGetSamples);
+    rbrew_register_func(cpu, ADDR_AXRmtGetSamplesLeft, AXRmtGetSamplesLeft);
     // mic
     REG(MICInit);
     REG(MICOpen);
@@ -512,5 +545,14 @@ void stubs_register(CPUState* cpu) {
     // REG(NDMEnterExclusiveMode); // not in this game's PLT
     // REG(NDMExitExclusiveMode); // not in this game's PLT
     // REG(NDMGetCurrentState); // not in this game's PLT
+    // SpotPass storage from local files, online mode only (boss_local.cpp).
+    boss_local_register(cpu);
+    // Network time from the host clock, online mode only (acp_network_time.cpp).
+    acp_network_time_register(cpu);
+    // nn::fp::IsOnline: the friends service is "online" exactly when the port's online mode is.
+    rbrew_register_func(cpu, ADDR_IsOnline__Q2_2nn2fpFv,
+                        [](CPUState* cpu) { RET = rbrew_online::config().online ? 1u : 0u; });
+    // Friend list shared between the two lab games (fp_lab.cpp, RBREW_FRIENDS_DIR only).
+    fp_lab_register(cpu);
 #undef REG
 }

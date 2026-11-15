@@ -22,6 +22,9 @@ Turn it on in the settings menu with *Graphics preset* (Balanced, Realistic or C
 - **Contact shadows**, ambient occlusion, bloom, edge smoothing (FXAA + TAA), motion blur, focus blur and colour controls (saturation, contrast, warmth, vignette, saved looks)
 - Runs in the **plaza, Octo Valley and the tutorial**; story levels keep their own sky and lights and get the picture effects only
 
+Supported game versions: [VersionDb.md](VersionDb.md) (base game v16 and update 288, EUR). Details of the 288 update: [docs/update-288.md](docs/update-288.md).
+
+## Playing
 **Camera, cinema mode and PC controls**
 - Field of view, camera distance and height, and a hand-held camera wiggle
 - **Cinema mode**: no HUD and a free camera to fly anywhere for screenshots; **F12** saves a photo without menus
@@ -50,6 +53,8 @@ Turn it on in the settings menu with *Graphics preset* (Balanced, Realistic or C
 - Fewer shader stutters, faster rendering in levels
 
 ---
+
+**More docs:** [Online play and anti-cheat](docs/ONLINE.md) · [Linux](docs/LINUX.md) · [Builder](docs/BUILDER.md) · [Run your own server](docs/SERVEUR.md) · [Update 288](docs/update-288.md)
 
 ## Requirements
 

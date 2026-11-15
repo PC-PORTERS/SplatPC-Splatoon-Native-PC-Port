@@ -14,8 +14,12 @@
 
 #include "../../runtime/port_settings.h"
 #include "../../runtime/splatoon_diagnostics.h"
+#include "../../runtime/online_identity.h"
 #include "../../nn_nfp/nn_nfp.h"
 #include "../gx2_perf.h"
+#include "../../runtime/online_identity.h"
+#include <fstream>
+#include <sstream>
 
 #include <imgui.h>
 #include <imgui_impl_sdl2.h>
@@ -29,7 +33,10 @@
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
+#include <map>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -54,6 +61,9 @@ std::atomic<bool> s_block_until_released{false};
 std::atomic<bool> s_fullscreen_mirror{true};
 std::atomic<bool> s_fullscreen_requested{false};
 std::atomic<bool> s_fullscreen_value{false};
+std::atomic<bool> s_borderless_mirror{false};
+std::atomic<bool> s_borderless_requested{false};
+std::atomic<bool> s_borderless_value{false};
 std::atomic<bool> s_quit_requested{false};
 std::atomic<bool> s_quit_confirm_requested{false};
 std::atomic<bool> s_quit_confirm_open{false};
@@ -91,7 +101,11 @@ void update_shader_activity() {
     s_shader_compiling = ImGui::GetTime() - s_shader_last_change < 0.75;
 }
 
-enum class MenuPage { Main, Keyboard, Controller, Amiibo };
+enum class MenuPage { Main, Display, Keyboard, Controller, Friends, Amiibo };
+// F4 (GX2 thread) asks for the Friends page: when the menu is closed it opens on that page; when it is open the
+// render thread switches to it (or closes the menu when already there).
+std::atomic<bool> s_friends_request{false};
+std::atomic<int> s_friends_toggle{0};
 MenuPage s_menu_page = MenuPage::Main;
 gx2_graphics_menu::Page s_graphics_page = gx2_graphics_menu::Page::None; // graphics/weather/camera/cinema page
 bool s_prev_menu_open = false;
@@ -295,8 +309,10 @@ bool process_capture_event(const SDL_Event& e) {
 // Menu shortcuts that ImGui's own navigation does not cover: Back goes up a
 // page (or closes), Delete/Square clears the focused binding.
 void process_nav_event(const SDL_Event& e) {
-    const bool back = (e.type == SDL_KEYDOWN && !e.key.repeat && e.key.keysym.scancode == SDL_SCANCODE_BACKSPACE) ||
-                      (e.type == SDL_CONTROLLERBUTTONDOWN && e.cbutton.button == SDL_CONTROLLER_BUTTON_B);
+    const bool typing = ImGui::GetIO().WantTextInput; // a text box has the keyboard: Backspace edits it
+    const bool back =
+        (e.type == SDL_KEYDOWN && !e.key.repeat && !typing && e.key.keysym.scancode == SDL_SCANCODE_BACKSPACE) ||
+        (e.type == SDL_CONTROLLERBUTTONDOWN && e.cbutton.button == SDL_CONTROLLER_BUTTON_B);
     if (back) {
         if (s_quit_confirm_open.load(std::memory_order_relaxed)) {
             s_cancel_quit_confirm.store(true, std::memory_order_relaxed);
@@ -517,6 +533,12 @@ void build_debug_window() {
 
 void build_controls_page(MenuPage page) {
     const bool keyboard = page == MenuPage::Keyboard;
+    ImGui::SeparatorText(keyboard ? "Mouse" : "Gyro");
+    if (keyboard)
+        gx2_graphics_menu::build_mouse_rows();
+    else
+        gx2_graphics_menu::build_gyro_rows();
+    ImGui::SeparatorText(keyboard ? "Keys" : "Buttons");
     const auto v = rs::get();
     const int count = keyboard ? rs::kActionCount : rs::kFirstMoveAction;
     for (int action = 0; action < count; ++action) {
@@ -553,6 +575,169 @@ void build_controls_page(MenuPage page) {
     ImGui::TextDisabled("%s", keyboard ? "Enter: change    Delete: clear    Esc: close"
                                        : "Cross: change    Square: clear    Circle: back");
 }
+
+// ---- Friends page (F4) ----
+// The game's friend list is read from RBREW_FRIENDS_DIR by the fp stubs and filled by scripts/friends_relay.py from the
+// server. This page only talks to that relay through small files in the same folder: add.cmd / remove.cmd (a pseudo),
+// add.res / remove.res ("code|pseudo|text") and state.res ("friend|pid|pseudo|online" lines, "msg|text").
+namespace friends_ui {
+namespace fs = std::filesystem;
+struct Row {
+    std::string pid, name;
+    bool online = false;
+};
+struct Request {
+    std::string pid, name;
+};
+std::vector<Row> s_rows;
+std::vector<Request> s_requests;          // friend requests received, from the "request|" lines of state.res
+std::map<std::string, double> s_answered; // pid -> when it was answered here: hidden until the relay catches up
+std::string s_message, s_result;
+double s_read_at = -10.0;
+char s_input[16] = "";
+bool s_focus_input = true;
+
+fs::path dir() {
+    static const fs::path path = [] {
+        const char* value = std::getenv("RBREW_FRIENDS_DIR");
+        return value && *value ? fs::path(value) : fs::path();
+    }();
+    return path;
+}
+
+bool read_file(const fs::path& path, std::string& text) {
+    std::ifstream in(path);
+    if (!in) return false;
+    std::ostringstream all;
+    all << in.rdbuf();
+    text = all.str();
+    return true;
+}
+
+void refresh() {
+    const double now = ImGui::GetTime();
+    if (dir().empty() || now - s_read_at < 1.0) return;
+    s_read_at = now;
+    std::string text;
+    if (read_file(dir() / "state.res", text)) {
+        s_rows.clear();
+        s_requests.clear();
+        s_message.clear();
+        std::istringstream lines(text);
+        for (std::string line; std::getline(lines, line);) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line.rfind("msg|", 0) == 0) {
+                s_message = line.substr(4);
+                continue;
+            }
+            if (line.rfind("request|", 0) == 0) {
+                const auto split = line.find('|', 8);
+                if (split == std::string::npos) continue;
+                Request request{line.substr(8, split - 8), line.substr(split + 1)};
+                const auto answered = s_answered.find(request.pid);
+                if (answered != s_answered.end() && now - answered->second < 15.0) continue;
+                s_requests.push_back(std::move(request));
+                continue;
+            }
+            if (line.rfind("friend|", 0) != 0) continue;
+            const auto a = line.find('|', 7), b = a == std::string::npos ? a : line.find('|', a + 1);
+            if (b == std::string::npos) continue;
+            s_rows.push_back({line.substr(7, a - 7), line.substr(a + 1, b - a - 1), line.substr(b + 1) == "1"});
+        }
+        std::erase_if(s_answered, [&](const auto& entry) { return now - entry.second >= 15.0; });
+    }
+    for (const char* name : {"add.res", "remove.res", "accept.res", "decline.res"}) {
+        if (!read_file(dir() / name, text)) continue;
+        std::error_code ec;
+        fs::remove(dir() / name, ec);
+        const auto a = text.find('|'), b = a == std::string::npos ? a : text.find('|', a + 1);
+        if (b == std::string::npos) continue;
+        std::string detail = text.substr(b + 1);
+        while (!detail.empty() && (detail.back() == '\n' || detail.back() == '\r')) detail.pop_back();
+        s_result = text.substr(a + 1, b - a - 1) + ": " + detail;
+    }
+}
+
+void send(const char* file, const std::string& pseudo) {
+    if (dir().empty() || pseudo.empty()) return;
+    const fs::path temporary = dir() / (std::string(file) + ".tmp");
+    {
+        std::ofstream out(temporary, std::ios::trunc);
+        out << pseudo << "\n";
+    }
+    std::error_code ec;
+    fs::rename(temporary, dir() / file, ec);
+}
+
+void build_page() {
+    if (dir().empty()) {
+        ImGui::TextWrapped("Friends need online play: start the game with PLAY (not 'Play offline').");
+        if (ImGui::Button("Back")) s_menu_page = MenuPage::Main;
+        return;
+    }
+    refresh();
+    ImGui::TextDisabled("Your pseudo: %s", rbrew_online::pseudo().c_str());
+    ImGui::TextWrapped(
+        "Type a friend's pseudo and press Enter: they get a request and must accept it. You then see each other "
+        "in the game's friend list and can join each other's rooms.");
+    ImGui::Separator();
+    if (s_focus_input) {
+        ImGui::SetKeyboardFocusHere();
+        s_focus_input = false;
+    }
+    const bool entered =
+        ImGui::InputText("##friend_pseudo", s_input, sizeof s_input, ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::SameLine();
+    const bool clicked = ImGui::Button("Add");
+    if ((entered || clicked) && s_input[0]) {
+        send("add.cmd", s_input);
+        s_result = "searching...";
+        s_input[0] = 0;
+        s_focus_input = true;
+    }
+    if (!s_result.empty()) ImGui::TextWrapped("%s", s_result.c_str());
+    if (!s_message.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.55f, 0.35f, 1.0f));
+        ImGui::TextWrapped("Server: %s", s_message.c_str());
+        ImGui::PopStyleColor();
+    }
+    if (!s_requests.empty()) {
+        ImGui::Separator();
+        ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "Friend requests (%zu)", s_requests.size());
+        for (size_t i = 0; i < s_requests.size(); ++i) {
+            const Request request = s_requests[i];
+            ImGui::PushID(("request_" + request.pid).c_str());
+            ImGui::TextUnformatted(request.name.c_str());
+            ImGui::SameLine(ImGui::GetWindowWidth() - 190.0f);
+            const bool accepted = ImGui::SmallButton("Accept##request_accept");
+            ImGui::SameLine();
+            const bool declined = ImGui::SmallButton("Decline##request_decline");
+            ImGui::PopID();
+            if (accepted || declined) {
+                send(accepted ? "accept.cmd" : "decline.cmd", request.pid);
+                s_answered[request.pid] = ImGui::GetTime();
+                s_result = request.name + (accepted ? ": accepting..." : ": declining...");
+                s_requests.erase(s_requests.begin() + long(i));
+                break;
+            }
+        }
+    }
+    ImGui::Separator();
+    if (s_rows.empty()) ImGui::TextDisabled("No friends yet.");
+    for (size_t i = 0; i < s_rows.size(); ++i) {
+        ImGui::PushID(int(i));
+        ImGui::TextColored(s_rows[i].online ? ImVec4(0.4f, 1.0f, 0.5f, 1.0f) : ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "%s %s",
+                           s_rows[i].online ? "(online)" : "(offline or has not added you)", s_rows[i].name.c_str());
+        ImGui::SameLine(ImGui::GetWindowWidth() - 90.0f);
+        if (ImGui::SmallButton("Remove")) send("remove.cmd", s_rows[i].name);
+        ImGui::PopID();
+    }
+    ImGui::Separator();
+    if (ImGui::Button("Back")) s_menu_page = MenuPage::Main;
+    ImGui::SameLine();
+    ImGui::TextDisabled("F4 / Esc: close");
+}
+} // namespace friends_ui
 
 // The emulated GamePad touchpoint: a file browser for amiibo dumps (.bin).
 // The chosen dump is placed on the touchpoint and the game reads it through
@@ -642,6 +827,80 @@ void build_amiibo_page() {
     if (ImGui::Button("Back", ImVec2(width, 0))) set_menu_open(false);
 }
 
+// ---- Friends page (F4) ----
+// The game's friend list is read from RBREW_FRIENDS_DIR by the fp stubs and filled by scripts/friends_relay.py from the
+// server. This page only talks to that relay through small files in the same folder: add.cmd / remove.cmd (a pseudo),
+// add.res / remove.res ("code|pseudo|text") and state.res ("friend|pid|pseudo|online" lines, "msg|text").
+
+const char* menu_title(MenuPage page) {
+    switch (page) {
+    case MenuPage::Display: return "Display";
+    case MenuPage::Keyboard: return "Mouse & keyboard";
+    case MenuPage::Controller: return "Controller";
+    case MenuPage::Friends: return "Friends";
+    case MenuPage::Amiibo: return "amiibo";
+    default: return "Settings";
+    }
+}
+
+// Display page: the window, the frame rate and the FPS counters.
+void build_display_page() {
+    auto v = rs::get();
+    bool dirty = false;
+    ImGui::SeparatorText("Window");
+    bool fullscreen = s_fullscreen_mirror.load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("Fullscreen", &fullscreen)) {
+        s_fullscreen_value.store(fullscreen, std::memory_order_relaxed);
+        s_fullscreen_requested.store(true, std::memory_order_relaxed);
+        v.fullscreen = fullscreen;
+        if (fullscreen && v.borderless) {
+            v.borderless = false;
+            s_borderless_mirror.store(false, std::memory_order_relaxed);
+        }
+        dirty = true;
+    }
+    bool borderless = s_borderless_mirror.load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("Borderless window", &borderless)) {
+        s_borderless_value.store(borderless, std::memory_order_relaxed);
+        s_borderless_requested.store(true, std::memory_order_relaxed);
+        s_borderless_mirror.store(borderless, std::memory_order_relaxed);
+        v.borderless = borderless;
+        if (borderless) {
+            v.fullscreen = false;
+            s_fullscreen_mirror.store(false, std::memory_order_relaxed);
+        }
+        dirty = true;
+    }
+    int resolution = v.resolution;
+    if (ImGui::Combo("Render resolution", &resolution, kResolutionLabels, rs::kResolutionCount)) {
+        v.resolution = resolution;
+        dirty = true;
+    }
+    if (v.resolution != rs::active_resolution()) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(after restart)");
+    }
+    ImGui::SeparatorText("Frame rate");
+    dirty |= gx2_graphics_menu::build_frame_rows(v);
+    dirty |= ImGui::Checkbox("Plaza 60 FPS", &v.plaza_60fps);
+    ImGui::SeparatorText("FPS counter");
+    bool overlay = visible();
+    if (ImGui::Checkbox("Performance overlay (F3)", &overlay)) {
+        set_visible(overlay);
+        v.fps_overlay = overlay;
+        dirty = true;
+    }
+    bool simple = simple_overlay();
+    if (ImGui::Checkbox("Simple FPS overlay", &simple)) {
+        set_simple_overlay(simple);
+        v.simple_overlay = simple;
+        dirty = true;
+    }
+    if (dirty) rs::set(v);
+    ImGui::Spacing();
+    if (ImGui::Button("Back")) s_menu_page = MenuPage::Main;
+}
+
 void build_settings_window() {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     const ImVec2 center(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
@@ -651,10 +910,7 @@ void build_settings_window() {
     bool open = true;
     // One window ID for every page (the title shows the page).
     const char* title = s_graphics_page != gx2_graphics_menu::Page::None ? gx2_graphics_menu::title(s_graphics_page)
-                        : s_menu_page == MenuPage::Main                  ? "Settings"
-                        : s_menu_page == MenuPage::Keyboard              ? "Keyboard & mouse controls"
-                        : s_menu_page == MenuPage::Amiibo                ? "amiibo"
-                                                                         : "Controller controls";
+                                                                         : menu_title(s_menu_page);
     const std::string window = std::string(title) + "###settings";
     if (!ImGui::Begin(window.c_str(), &open)) {
         ImGui::End();
@@ -666,8 +922,20 @@ void build_settings_window() {
         if (!open) set_menu_open(false);
         return;
     }
+    if (s_menu_page == MenuPage::Friends) {
+        friends_ui::build_page();
+        ImGui::End();
+        if (!open) set_menu_open(false);
+        return;
+    }
     if (s_menu_page == MenuPage::Amiibo) {
         build_amiibo_page();
+        ImGui::End();
+        if (!open) set_menu_open(false);
+        return;
+    }
+    if (s_menu_page == MenuPage::Display) {
+        build_display_page();
         ImGui::End();
         if (!open) set_menu_open(false);
         return;
@@ -681,49 +949,43 @@ void build_settings_window() {
     auto v = rs::get();
     bool dirty = false;
     if (ImGui::Button("Resume")) set_menu_open(false);
+    if (rbrew_online::config().online) {
+        ImGui::SameLine();
+        if (ImGui::Button("Friends (F4)")) {
+            s_menu_page = MenuPage::Friends;
+            friends_ui::s_focus_input = true;
+        }
+    }
     if (rbrew_nfp::searching()) {
         ImGui::SameLine();
         if (ImGui::Button("Scan amiibo")) s_menu_page = MenuPage::Amiibo;
     }
-    if (const auto page = gx2_graphics_menu::build_main_rows(v, dirty); page != gx2_graphics_menu::Page::None)
-        s_graphics_page = page;
-    int resolution = v.resolution;
-    if (ImGui::Combo("Render resolution", &resolution, kResolutionLabels, rs::kResolutionCount)) {
-        v.resolution = resolution;
-        dirty = true;
-    }
-    if (v.resolution != rs::active_resolution()) {
-        ImGui::SameLine();
-        ImGui::TextDisabled("(after restart)");
-    }
-    dirty |= ImGui::Checkbox("Plaza 60 FPS", &v.plaza_60fps);
-    bool fullscreen = s_fullscreen_mirror.load(std::memory_order_relaxed);
-    if (ImGui::Checkbox("Fullscreen", &fullscreen)) {
-        s_fullscreen_value.store(fullscreen, std::memory_order_relaxed);
-        s_fullscreen_requested.store(true, std::memory_order_relaxed);
-        v.fullscreen = fullscreen;
-        dirty = true;
-    }
-    bool overlay = visible();
-    if (ImGui::Checkbox("Performance overlay (F3)", &overlay)) {
-        set_visible(overlay);
-        v.fps_overlay = overlay;
-        dirty = true;
-    }
-    bool simple = simple_overlay();
-    if (ImGui::Checkbox("Simple FPS overlay", &simple)) {
-        set_simple_overlay(simple);
-        v.simple_overlay = simple;
-        dirty = true;
-    }
-    dirty |= ImGui::Checkbox("Controller gyro", &v.gyro);
-    dirty |= ImGui::SliderInt("Gyro sensitivity", &v.gyro_sensitivity, 25, 300, "%d %%");
-    dirty |= ImGui::Checkbox("Invert gyro up/down", &v.gyro_invert_pitch);
-    dirty |= ImGui::SliderInt("Mouse sensitivity", &v.mouse_sensitivity, 25, 400, "%d %%");
+    // One button per page, two per row.
+    ImGui::SeparatorText("Settings");
+    const float tile_width = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
+    int tiles = 0;
+    const auto tile = [&](const char* label) {
+        if (tiles++ % 2) ImGui::SameLine();
+        return ImGui::Button(label, ImVec2(tile_width, 0));
+    };
+    const auto menu_tile = [&](MenuPage page) {
+        if (tile(menu_title(page))) s_menu_page = page;
+    };
+    const auto graphics_tile = [&](gx2_graphics_menu::Page page) {
+        if (gx2_graphics_menu::available(page) && tile(gx2_graphics_menu::title(page))) s_graphics_page = page;
+    };
+    menu_tile(MenuPage::Display);
+    graphics_tile(gx2_graphics_menu::Page::Graphics);
+    menu_tile(MenuPage::Keyboard);
+    menu_tile(MenuPage::Controller);
+    graphics_tile(gx2_graphics_menu::Page::GamePad);
+    graphics_tile(gx2_graphics_menu::Page::Camera);
+    graphics_tile(gx2_graphics_menu::Page::Weather);
+    graphics_tile(gx2_graphics_menu::Page::Cinema);
+    ImGui::SeparatorText("General");
     dirty |= ImGui::SliderInt("Volume", &v.volume, 0, 100, "%d %%");
     dirty |= ImGui::Checkbox("Confirm before quitting", &v.confirm_quit);
-    if (ImGui::Button("Keyboard & mouse controls")) s_menu_page = MenuPage::Keyboard;
-    if (ImGui::Button("Controller controls")) s_menu_page = MenuPage::Controller;
+    ImGui::Spacing();
     if (ImGui::Button("Quit game")) {
         open_quit_confirmation();
     }
@@ -805,6 +1067,17 @@ bool menu_event(const SDL_Event& event) {
         if (!s_capture_active.load(std::memory_order_relaxed)) set_menu_open(!menu_open());
         return true; // in capture mode the render thread cancels it from the queued copy
     }
+    if (event.type == SDL_KEYDOWN && !event.key.repeat && event.key.keysym.scancode == SDL_SCANCODE_F4) {
+        if (!s_capture_active.load(std::memory_order_relaxed)) {
+            if (menu_open())
+                s_friends_toggle.fetch_add(1, std::memory_order_relaxed);
+            else {
+                s_friends_request.store(true, std::memory_order_relaxed);
+                set_menu_open(true);
+            }
+        }
+        return true;
+    }
     if (event.type == SDL_KEYDOWN && !event.key.repeat && event.key.keysym.scancode == SDL_SCANCODE_ESCAPE) {
         if (s_quit_confirm_open.load(std::memory_order_relaxed)) {
             s_cancel_quit_confirm.store(true, std::memory_order_relaxed);
@@ -878,6 +1151,16 @@ bool consume_fullscreen_request(bool& fullscreen) {
 
 bool consume_quit_request() {
     return s_quit_requested.exchange(false, std::memory_order_relaxed);
+}
+
+bool consume_borderless_request(bool& borderless) {
+    if (!s_borderless_requested.exchange(false, std::memory_order_relaxed)) return false;
+    borderless = s_borderless_value.load(std::memory_order_relaxed);
+    return true;
+}
+
+void note_borderless(bool borderless) {
+    s_borderless_mirror.store(borderless, std::memory_order_relaxed);
 }
 
 void note_fullscreen(bool fullscreen) {
@@ -958,9 +1241,21 @@ ImDrawData* begin_frame(VkExtent2D extent) {
                           show_menu ? "menu opened" : "menu closed");
     s_prev_menu_open = show_menu;
     if (fresh_menu) {
-        s_menu_page = MenuPage::Main;
+        const bool friends_page = s_friends_request.exchange(false, std::memory_order_relaxed);
+        s_menu_page = friends_page ? MenuPage::Friends : MenuPage::Main;
+        if (friends_page) friends_ui::s_focus_input = true;
         s_graphics_page = gx2_graphics_menu::Page::None;
         s_capture = false;
+    }
+    if (s_friends_toggle.exchange(0, std::memory_order_relaxed) > 0 && show_menu && !fresh_menu) {
+        if (s_menu_page == MenuPage::Friends)
+            set_menu_open(false);
+        else {
+            s_menu_page = MenuPage::Friends;
+            s_graphics_page = gx2_graphics_menu::Page::None;
+            s_capture = false;
+            friends_ui::s_focus_input = true;
+        }
     }
     if (show_menu && s_amiibo_requested.exchange(false, std::memory_order_relaxed)) {
         diag::RecordEvent(diag::EventCategory::Input, diag::EventSeverity::Info, 11, "amiibo picker shown");

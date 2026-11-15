@@ -89,10 +89,20 @@ ${RBREW_SELECT_STDERR}")
         if(RBREW_MANIFEST_COUNT EQUAL 1)
             list(GET RBREW_MANIFESTS 0 RBREW_MANIFEST_PATH)
         elseif(RBREW_MANIFEST_COUNT GREATER 1)
+            # A tests-only build must not rewrite headers another tree already generated
+            # (the default revision's manifest would replace a revision 288 map with the empty one).
+            set(RBREW_HEADERS_PRESENT ON)
+            foreach(relative IN LISTS RBREW_PLT_OUTPUTS)
+                if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${relative}")
+                    set(RBREW_HEADERS_PRESENT OFF)
+                endif()
+            endforeach()
             # Without an image, fall back to the manifest of the selected revision
             # (16 by default), so builds that need no dump (CI, tests) still configure.
             set(RBREW_REVISION_MANIFEST "${RBREW_MANIFEST_DIR}/Gambit_v${RBREW_GAME_REVISION}.manifest")
-            if(EXISTS "${RBREW_REVISION_MANIFEST}")
+            if(DEFINED RBREW_BUILD_GAME AND NOT RBREW_BUILD_GAME AND RBREW_HEADERS_PRESENT)
+                message(STATUS "Tests-only build: keeping the existing generated headers")
+            elseif(EXISTS "${RBREW_REVISION_MANIFEST}")
                 set(RBREW_MANIFEST_PATH "${RBREW_REVISION_MANIFEST}")
             else()
                 message(FATAL_ERROR
@@ -161,6 +171,10 @@ if(RBREW_PLT_GENERATED)
         BYPRODUCTS ${RBREW_PLT_FILES}
         COMMAND "${Python3_EXECUTABLE}" "${RBREW_PLT_RESOLVER}" emit
                 --manifest "${RBREW_MANIFEST_PATH}" --out "${CMAKE_CURRENT_SOURCE_DIR}"
+        # Another tree (base game, test build) may have rewritten the shared revision headers since the
+        # configure step; game_branch_tables.h drives the multiplayer case blocks, so re-emit it too.
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../tools/generate_revision_header.py"
+                --manifest "${RBREW_MANIFEST_PATH}" --out-dir "${CMAKE_CURRENT_SOURCE_DIR}/runtime"
         COMMENT "PLT addresses from ${RBREW_MANIFEST_PATH}"
         VERBATIM)
 endif()
@@ -185,6 +199,8 @@ add_library(gambit_runtime STATIC
     os/sysapp/sysapp_title.cpp
     os/coreinit/coreinit_fs.cpp
     os/gx2/gx2_context.cpp
+    os/gx2/pad_remote.cpp
+    third_party/qrcodegen/qrcodegen.cpp
     os/gx2/gx2_draw.cpp
     os/gx2/gx2_surface_layout.cpp
     os/gx2/r700_to_glsl.cpp
@@ -199,11 +215,16 @@ add_library(gambit_runtime STATIC
     os/vpad/vpad.cpp
     os/padscore/padscore.cpp
     os/stubs/stubs.cpp
+    os/stubs/zlib_bridge.cpp
+    os/stubs/boss_local.cpp
+    os/stubs/acp_network_time.cpp
+    os/stubs/fp_lab.cpp
     os/nsysnet/nsysnet.cpp
     hooks/gx2_camera_hooks.cpp
     hooks/player_anim.cpp
     hooks/branch_tables.cpp
     hooks/broadcast_guard.cpp
+    hooks/mouse_camera.cpp
     loader/gambit_loader.cpp
     loader/native_console_profile.cpp
     runtime/splatoon_diagnostics.cpp
@@ -255,7 +276,7 @@ target_link_libraries(gambit_runtime PUBLIC
 target_link_libraries(gambit_runtime PRIVATE imgui)
 
 if(WIN32)
-    target_link_libraries(gambit_runtime PUBLIC ws2_32 winmm)
+    target_link_libraries(gambit_runtime PUBLIC ws2_32 winmm bcrypt iphlpapi windowscodecs ole32)
     if(HAVE_MINIAUDIO)
         target_link_libraries(gambit_runtime PUBLIC ole32 ksuser)
     endif()
@@ -274,6 +295,43 @@ endif()
 
 set(GAMBIT_GENERATED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../Gambit" CACHE PATH
     "Directory containing RebrewU-generated Gambit C++")
+# Online mode without Python on Windows: SpotPass files and the friends relay, built into the game
+# (online/online_boot.h). Its own library, so nlohmann/json reaches these files only.
+if(WIN32)
+    set(RBREW_NLOHMANN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party")
+    if(NOT EXISTS "${RBREW_NLOHMANN_DIR}/nlohmann/json.hpp")
+        # Same header and hash as the recompiler (recompiler/CMakeLists.txt).
+        file(DOWNLOAD https://github.com/nlohmann/json/releases/download/v3.11.3/json.hpp
+             "${RBREW_NLOHMANN_DIR}/nlohmann/json.hpp"
+             EXPECTED_HASH SHA256=9bea4c8066ef4a1c206b2be5a36302f8926f7fdc6087af5d20b417d0cf103ea6)
+    endif()
+    add_library(gambit_online STATIC
+        online/boss_schedule.cpp
+        online/byaml.cpp
+        online/friends_relay.cpp
+        online/hashing.cpp
+        online/integrity_proof.cpp
+        online/online_boot.cpp
+        online/py_random.cpp
+        online/social_http.cpp
+    )
+    target_include_directories(gambit_online PRIVATE ${RBREW_NLOHMANN_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+    target_link_libraries(gambit_online PUBLIC winhttp bcrypt)
+    if(MSVC)
+        target_compile_options(gambit_online PRIVATE /utf-8)
+    endif()
+    if(NOT RBREW_DIAGNOSTIC_RUNTIME)
+        target_compile_definitions(gambit_online PRIVATE RBREW_DISABLE_LOGGING)
+    endif()
+    # Unit tests, and the commands the Python cross-checks run (tools/tests/test_online_native.py).
+    add_executable(gambit_online_tests ../tests/test_online_native.cpp)
+    target_include_directories(gambit_online_tests PRIVATE ${RBREW_NLOHMANN_DIR} ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(gambit_online_tests PRIVATE gambit_online)
+    if(MSVC)
+        target_compile_options(gambit_online_tests PRIVATE /utf-8)
+    endif()
+endif()
+
 set(RBREW_GAME_DEFAULT OFF)
 if(EXISTS "${GAMBIT_GENERATED_DIR}/Gambit_data.cpp")
     set(RBREW_GAME_DEFAULT ON)
@@ -334,6 +392,9 @@ target_include_directories(Gambit PRIVATE
 )
 
 target_link_libraries(Gambit PRIVATE gambit_generated gambit_runtime)
+if(TARGET gambit_online)
+    target_link_libraries(Gambit PRIVATE gambit_online)
+endif()
 set_target_properties(Gambit PROPERTIES OUTPUT_NAME Splatoon)
 endif()
 if(WIN32)
@@ -349,7 +410,7 @@ if(WIN32)
     endif()
     add_library(splport_host SHARED EXCLUDE_FROM_ALL main.cpp runtime/splport_host.def)
     target_compile_definitions(splport_host PRIVATE RBREW_DISTRIBUTABLE_RUNTIME RBREW_DISABLE_LOGGING)
-    target_link_libraries(splport_host PRIVATE gambit_runtime)
+    target_link_libraries(splport_host PRIVATE gambit_runtime gambit_online)
     if(MSVC)
         target_compile_options(splport_host PRIVATE /utf-8)
     endif()
@@ -467,6 +528,12 @@ if(RBREW_BUILD_TESTS)
     target_link_libraries(gambit_quit_confirm_tests PRIVATE gambit_runtime)
     target_include_directories(gambit_quit_confirm_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME native_quit_confirm COMMAND gambit_quit_confirm_tests)
+    add_executable(gambit_mouse_camera_tests ../tests/test_mouse_camera.cpp)
+    target_include_directories(gambit_mouse_camera_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME native_mouse_camera COMMAND gambit_mouse_camera_tests)
+    if(TARGET gambit_online_tests)
+        add_test(NAME native_online COMMAND gambit_online_tests)
+    endif()
     # Local developer tests/tools below are optional (not in the public tree).
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../tests/test_frame_pacing.cpp")
         add_executable(gambit_frame_pacing_tests ../tests/test_frame_pacing.cpp)
@@ -606,6 +673,16 @@ if(RBREW_BUILD_TESTS)
             set_tests_properties(compatibility_${case} PROPERTIES TIMEOUT 30)
         endforeach()
     endif()
+endif()
+
+# Online mode: network confinement policy and local identity (header-only, no guest code).
+if(RBREW_BUILD_TESTS)
+    add_executable(gambit_net_policy_tests ../tests/test_net_policy.cpp)
+    target_include_directories(gambit_net_policy_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME net_policy COMMAND gambit_net_policy_tests)
+    add_executable(gambit_online_identity_tests ../tests/test_online_identity.cpp)
+    target_include_directories(gambit_online_identity_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+    add_test(NAME online_identity COMMAND gambit_online_identity_tests)
 endif()
 
 # The developer test sources are not part of the public tree.

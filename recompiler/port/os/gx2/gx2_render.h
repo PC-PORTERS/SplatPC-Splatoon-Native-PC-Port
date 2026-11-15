@@ -101,6 +101,12 @@ void gx2_render_request_photo();
 // Blit the current scan FBO to the default framebuffer and swap.
 // Called from GX2SwapScanBuffers.
 void gx2_render_present(void* sdl_window, bool gamepad_mode);
+// GamePad window (menu "Separate GamePad window"): each present also copies the GamePad picture
+// to host memory; once the GPU has written it (a frame or two later) `sink` gets the RGBA8 pixels,
+// on the render thread. A second Vulkan swapchain made NVIDIA block every present until the GPU
+// was done (~5 ms a frame). null stops it. Render thread.
+using Gx2PadSink = void (*)(const uint8_t* rgba, uint32_t width, uint32_t height);
+void gx2_render_pad_window(Gx2PadSink sink);
 
 // Called from GX2InitFetchShaderEx: records the attrib stream array associated
 // with the fetch shader so it can be used at draw time.

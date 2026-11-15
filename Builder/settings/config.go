@@ -40,6 +40,8 @@ type Configuration struct {
 	PlayerName       string // default "default"
 	LanguageID       int    // default 1 (English)
 	ConsoleRegion    string // "EUR", "USA", "JPN"
+	EnableOnline     bool   // default true (community multiplayer)
+	OnlineServer     string // e.g. "173.249.46.125:60000"
 	Resolution       string // "720p", "1080p", "1440p", "native"
 	FrameRate        int    // 30, 60, 120, 180
 	Plaza60FPS       bool
@@ -68,9 +70,34 @@ type Configuration struct {
 	CleanBuild   bool
 }
 
+const FallbackOnlineServer = "173.249.46.125:60000"
+
+func DefaultOnlineServer(repoRoot string) string {
+	candidates := []string{
+		filepath.Join(repoRoot, "scripts", "server.txt"),
+		filepath.Join(repoRoot, "scripts", "server.public.txt"),
+	}
+	for _, path := range candidates {
+		if data, err := os.ReadFile(path); err == nil {
+			for _, line := range strings.Split(string(data), "\n") {
+				line = strings.TrimSpace(line)
+				if strings.HasPrefix(line, "server=") {
+					val := strings.TrimPrefix(line, "server=")
+					val = strings.TrimSpace(val)
+					if val != "" {
+						return val
+					}
+				}
+			}
+		}
+	}
+	return FallbackOnlineServer
+}
+
 func DefaultConfiguration(repoRoot string) Configuration {
 	outDir := filepath.Join(repoRoot, "Game")
 	gpu := prereq.DetectGPU()
+	server := DefaultOnlineServer(repoRoot)
 
 	return Configuration{
 		BaseDumpPath:     "",
@@ -78,6 +105,8 @@ func DefaultConfiguration(repoRoot string) Configuration {
 		PlayerName:       "default",
 		LanguageID:       1, // Default to English
 		ConsoleRegion:    "EUR",
+		EnableOnline:     true,
+		OnlineServer:     server,
 		Resolution:       "1080p",
 		FrameRate:        60,
 		Plaza60FPS:       true,
