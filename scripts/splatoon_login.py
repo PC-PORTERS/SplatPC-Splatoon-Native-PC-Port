@@ -361,8 +361,8 @@ def nexserver_running():
 
 def game_environment(cfg, paths, online, diag, run, port=60000):
     env = dict(os.environ)
-    for key in ("RBREW_PSEUDO", "RBREW_SOCIAL_URL", "RBREW_INTEGRITY_ROOT"):
-        env.pop(key, None)      # left in the terminal, they would win over settings.ini
+    for key in ("RBREW_PSEUDO", "RBREW_INTEGRITY_ROOT"):
+        env.pop(key, None)      # left in the terminal, they would win over settings.ini; RBREW_SOCIAL_URL stays (never set here)
     env["RBREW_STUB_REPORT"] = os.path.join(paths.logs, f"online-{run}-stubs.txt")
     if os.name == "nt":
         env["SDL_DIRECTINPUT_ENABLED"] = "0"
