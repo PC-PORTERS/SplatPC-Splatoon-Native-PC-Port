@@ -44,6 +44,14 @@ class UpdateCombinatorTests(unittest.TestCase):
         self.assertTrue(set(names).issubset(allowed))
         self.assertFalse((SCRIPTS / 'Install-Update.ps1').exists())
 
+    def test_update_bat_only_fast_forwards_then_runs_setup(self):
+        lines = text(ROOT / 'update.bat').lower().splitlines()
+        body = '\n'.join(line for line in lines if not line.startswith('rem '))
+        self.assertIn('--ff-only', body)
+        self.assertIn('setup.bat', body)
+        for word in ('reset', 'clean', 'stash', 'checkout', 'rebase', '--force', 'game\\save', 'online_identity'):
+            self.assertNotIn(word, body, word)
+
     def test_setup_scripts_use_the_merged_rom_directly(self):
         for name in ('Setup.bat', 'setup.sh', 'scripts/Setup.ps1'):
             body = text(ROOT / name)
