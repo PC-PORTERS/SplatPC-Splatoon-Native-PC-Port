@@ -78,6 +78,13 @@ func RunChecks() CheckReport {
 			if isVersionOlder(v, "3.20") {
 				cmakeItem.Found = false
 				cmakeItem.ErrorMsg = fmt.Sprintf("CMake %s is too old (>= 3.20 required)", v)
+			} else if runtime.GOOS == "windows" {
+				if vs, ok := FindVisualStudio(); ok {
+					if msg := cmakeSupportsVisualStudio(v, vs); msg != "" {
+						cmakeItem.Found = false
+						cmakeItem.ErrorMsg = msg
+					}
+				}
 			}
 		}
 	} else {
@@ -92,26 +99,17 @@ func RunChecks() CheckReport {
 		Category: "Tool",
 		Required: true,
 	}
-	pyBin := "python3"
-	if runtime.GOOS == "windows" {
-		if _, err := exec.LookPath("python3"); err != nil {
-			pyBin = "python"
-		}
-	}
-	if path, err := exec.LookPath(pyBin); err == nil {
-		pyItem.Path = path
-		if out, err := exec.Command(pyBin, "--version").Output(); err == nil {
-			v := parseVersion(string(out))
-			pyItem.Version = v
-			if isVersionOlder(v, "3.12") {
-				pyItem.Found = false
-				pyItem.ErrorMsg = fmt.Sprintf("Python %s is too old (>= 3.12 required for tar filters)", v)
-			} else {
-				pyItem.Found = true
-			}
+	if python, versionLine, ok := FindPython(); ok {
+		pyItem.Path = strings.Join(python, " ")
+		v := parseVersion(versionLine)
+		pyItem.Version = v
+		if isVersionOlder(v, "3.12") {
+			pyItem.ErrorMsg = fmt.Sprintf("Python %s is too old (>= 3.12 required for tar filters)", v)
+		} else {
+			pyItem.Found = true
 		}
 	} else {
-		pyItem.ErrorMsg = "Python 3 is not installed or not in PATH"
+		pyItem.ErrorMsg = "Python 3 is not installed or not in PATH (python3, python and py -3 were tried)"
 	}
 	report.Items = append(report.Items, pyItem)
 
@@ -247,10 +245,26 @@ func checkCompilers(item *CheckItem) {
 			return
 		}
 	}
+	if runtime.GOOS == "windows" {
+		if vs, ok := FindVisualStudio(); ok {
+			item.Found = true
+			item.Path = vs.Path
+			item.Version = "MSVC (" + vs.DisplayName + " " + vs.Version + ")"
+			return
+		}
+		item.ErrorMsg = "Visual Studio 2022 (or its Build Tools) with the 'Desktop development with C++' workload is not installed"
+		return
+	}
 	item.ErrorMsg = "No C++ compiler found (install g++, clang, or MSVC)"
 }
 
 func checkVulkan(item *CheckItem) {
+	if runtime.GOOS == "windows" {
+		// The Builder downloads and builds Vulkan-Headers itself on Windows.
+		item.Found = true
+		item.Version = "built by the Builder"
+		return
+	}
 	if os.Getenv("VULKAN_SDK") != "" {
 		item.Found = true
 		item.Path = os.Getenv("VULKAN_SDK")
@@ -331,7 +345,7 @@ func generateInstallCommand(distro string, items []CheckItem) string {
 	case "fedora":
 		return "sudo dnf install -y cmake gcc-c++ ninja-build python3 curl vulkan-headers zlib-devel libcurl-devel libX11-devel"
 	case "windows":
-		return "winget install Kitware.CMake Ninja-build.Ninja Python.Python.3.12 LLVM.LLVM LunarG.VulkanSDK"
+		return "winget install Kitware.CMake Python.Python.3.12 && winget install Microsoft.VisualStudio.2022.BuildTools --override \"--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended\""
 	default:
 		return "Please install cmake, g++/clang++, ninja, python3 (>=3.12), vulkan-headers, zlib, libcurl"
 	}

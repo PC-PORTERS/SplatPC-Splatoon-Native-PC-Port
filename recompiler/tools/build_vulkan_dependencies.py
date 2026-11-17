@@ -65,17 +65,21 @@ def prepare(args):
     stamp.write_text(json.dumps(dict(profile=1, compiler_sha512=GLSLANG_SHA512)), encoding='utf-8')
     return sdl, compiler
 
+PROFILE_FILES = {
+    'sdl2-vulkan': (('SDL2Config.cmake',), 'SDL2VulkanOnly.cmake', 'cmake'),
+    'glslang-vulkan': (('glslang-config.cmake', 'glslangConfig.cmake'), 'GlslangVulkanOnly.cmake', 'lib/cmake/glslang'),
+}
+
 def profile_marker(name, prefix):
     """Marker proving the audited profile was built, next to the package config
-    file so one directory can serve as the find_package(<name>_DIR) hint."""
-    if name != 'sdl2-vulkan':
-        return prefix / 'lib/cmake/glslang/GlslangVulkanOnly.cmake'
-    # Windows installs SDL2Config.cmake to <prefix>/cmake, other platforms to
-    # <prefix>/lib/cmake/SDL2. Place the marker beside whichever exists.
-    for directory in (prefix / 'cmake', prefix / 'lib/cmake/SDL2'):
-        if (directory / 'SDL2Config.cmake').exists():
-            return directory / 'SDL2VulkanOnly.cmake'
-    return prefix / 'cmake/SDL2VulkanOnly.cmake'
+    file so one directory can serve as the find_package(<name>_DIR) hint.
+    The config directory depends on the platform (cmake, lib/cmake/<name>,
+    lib64/cmake/<name>, lib/<triplet>/cmake/<name>): look where it was installed."""
+    configs, marker, default_directory = PROFILE_FILES[name]
+    for config in configs:
+        for found in sorted(prefix.rglob(config)):
+            return found.with_name(marker)
+    return prefix / default_directory / marker
 
 def build_profile(source, name, options, common, args, parallel_jobs):
     build, prefix = args.build_root.resolve() / (name + '-build'), args.prefix.resolve() / name
@@ -84,7 +88,9 @@ def build_profile(source, name, options, common, args, parallel_jobs):
     subprocess.run([args.cmake, '-S', str(source), '-B', str(build), *common, *options,
         '-DCMAKE_INSTALL_PREFIX=' + str(prefix)], check=True)
     subprocess.run([args.cmake, '--build', str(build), '--config', 'Release', '--target', 'install', '--parallel', str(parallel_jobs)], check=True)
-    profile_marker(name, prefix).write_text('# Audited Vulkan dependency profile 1.\n', encoding='utf-8')
+    marker = profile_marker(name, prefix)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text('# Audited Vulkan dependency profile 1.\n', encoding='utf-8')
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)

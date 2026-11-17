@@ -31,6 +31,7 @@
 #include "../gx2/vk/gx2_imgui_overlay.h"
 #include "../gx2/gx2_env_light.h"
 #include "../../runtime/port_settings.h"
+#include "../../hooks/mouse_camera.h"
 #include <atomic>
 #include <cstdlib>
 #include <chrono>
@@ -244,6 +245,10 @@ void vpad_update_motion(uint8_t* mem, uint32_t buf, float rx, float ry, float dt
     const bool use_gyro = phys_gyro && physical_gyro_enabled();
     float yaw_rate = stick_yaw ? -rx * std::fabs(rx) * kYawRate : 0.0f;
     float pitch_rate = use_gyro && !stick_pitch_with_gyro ? 0.0f : -ry * std::fabs(ry) * kPitchRate;
+    // The camera takes the mouse yaw and pitch as angles when it can (hooks/gx2_camera_hooks.cpp): no
+    // pad rotation to simulate and none of the game's gyro filtering. Otherwise the pad turns.
+    if (rbrew_mouse_camera::yaw_queue().offer(s_mouse_yaw)) s_mouse_yaw = 0.0f;
+    if (rbrew_mouse_camera::pitch_queue().offer(s_mouse_pitch)) s_mouse_pitch = 0.0f;
     if (dt > 0 && (s_mouse_yaw != 0.0f || s_mouse_pitch != 0.0f)) {
         yaw_rate += s_mouse_yaw / dt;
         pitch_rate += s_mouse_pitch / dt;
@@ -308,6 +313,7 @@ static void VPADSetGyroDirection(CPUState* cpu) {
         for (int component = 0; component < 3; ++component)
             s_motion.base.m[component][axis] = float(rbrew_read_f32(MEM, dir + 12 * axis + 4 * component));
     s_motion.yaw = s_motion.pitch = 0;
+    rbrew_mouse_camera::pitch_aim().reset();
 }
 
 // Edge state for VPADStatus trigger/release (the console reports presses and
