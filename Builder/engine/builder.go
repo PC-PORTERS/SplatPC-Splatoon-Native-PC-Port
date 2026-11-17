@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io/fs"
@@ -9,10 +8,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
+	"slices"
 	"strings"
 	"time"
 
+	"splatpc-builder/prereq"
 	"splatpc-builder/roms"
 	"splatpc-builder/settings"
 )
@@ -38,10 +38,26 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 		totalSteps = 9
 	}
 
-	log := func(format string, args ...interface{}) {
-		msg := fmt.Sprintf(format, args...)
-		if cb.OnLog != nil {
-			cb.OnLog(msg)
+	buildDir := filepath.Join(repoRoot, "build")
+	downloadsDir := filepath.Join(buildDir, "downloads")
+	depsDir := filepath.Join(buildDir, "deps")
+	manifestDir := filepath.Join(repoRoot, "Manifest")
+	recompilerDir := filepath.Join(repoRoot, "recompiler")
+
+	var cleanErr error
+	if cfg.CleanBuild {
+		cleanErr = cleanBuildDir(buildDir)
+	}
+
+	logPath := filepath.Join(buildDir, "build.log")
+	buildLog := openBuildLog(logPath, cb.OnLog)
+	defer buildLog.close()
+	log := buildLog.printf
+
+	if cfg.CleanBuild {
+		log("Removed the previous build (--clean); downloaded archives were kept.")
+		if cleanErr != nil {
+			log("Warning: the previous build could not be fully removed: %v", cleanErr)
 		}
 	}
 
@@ -58,32 +74,31 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 	}
 
 	failDone := func(err error) {
+		log("ERROR: %v", err)
 		if cb.OnDone != nil {
-			cb.OnDone(false, err, time.Since(startTime), "")
+			cb.OnDone(false, fmt.Errorf("%w\n\nFull log: %s", err, logPath), time.Since(startTime), "")
 		}
-	}
-
-	buildDir := filepath.Join(repoRoot, "build")
-	downloadsDir := filepath.Join(buildDir, "downloads")
-	depsDir := filepath.Join(buildDir, "deps")
-	manifestDir := filepath.Join(repoRoot, "Manifest")
-	recompilerDir := filepath.Join(repoRoot, "recompiler")
-
-	if cfg.CleanBuild {
-		log("Removing previous build folder (--clean)...")
-		_ = os.RemoveAll(buildDir)
 	}
 
 	_ = os.MkdirAll(downloadsDir, 0755)
 	_ = os.MkdirAll(depsDir, 0755)
 
-	generator := "Unix Makefiles"
-	if _, err := exec.LookPath("ninja"); err == nil {
-		generator = "Ninja"
+	cmake := newCMakeProject(cfg.ParallelJobs)
+	log("CMake generator: %s, configuration: %s", cmake.generator, buildConfig)
+	deps := dependencyBuilder{
+		ctx:        ctx,
+		cmake:      cmake,
+		buildDir:   buildDir,
+		downloads:  downloadsDir,
+		prefixRoot: depsDir,
+		log:        log,
 	}
-	if runtime.GOOS == "windows" {
-		generator = "Visual Studio 17 2022"
+	python, pythonVersion, ok := prereq.FindPython()
+	if !ok {
+		failDone(fmt.Errorf("Python 3 was not found (python3, python and py -3 were tried)"))
+		return
 	}
+	log("Python: %s (%s)", strings.Join(python, " "), pythonVersion)
 
 	// STEP 1: Process and combine ROMs
 	progress(1, "Preparing ROMs", "Validating and merging game dump files", 0.05)
@@ -113,7 +128,7 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 
 	// Select manifest using plt_resolver.py
 	log("Selecting manifest for Gambit.rpx...")
-	cmdSelect := exec.CommandContext(ctx, "python3", filepath.Join(recompilerDir, "tools", "plt_resolver.py"),
+	cmdSelect := python.Command(ctx, filepath.Join(recompilerDir, "tools", "plt_resolver.py"),
 		"select", "--rpx", rpxPath, "--manifest-dir", manifestDir)
 	selectOut, err := cmdSelect.Output()
 	if err != nil {
@@ -173,7 +188,7 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 	sdlSource := filepath.Join(downloadsDir, "SDL2-2.32.10")
 	if _, err := os.Stat(sdlSource); err != nil {
 		log("Extracting SDL2...")
-		cmdExtract := exec.CommandContext(ctx, "python3", "-c", "import zipfile, sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])", sdlZip, downloadsDir)
+		cmdExtract := python.Command(ctx, "-c", "import zipfile, sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])", sdlZip, downloadsDir)
 		if err := runCmdWithLog(cmdExtract, log); err != nil {
 			failDone(fmt.Errorf("extracting SDL2: %w", err))
 			return
@@ -181,12 +196,12 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 	}
 
 	cmakePath, _ := exec.LookPath("cmake")
-	cmdBuildDeps := exec.CommandContext(ctx, "python3", filepath.Join(recompilerDir, "tools", "build_vulkan_dependencies.py"),
+	cmdBuildDeps := python.Command(ctx, filepath.Join(recompilerDir, "tools", "build_vulkan_dependencies.py"),
 		"--sdl-source", sdlSource,
 		"--glslang-archive", glslangTar,
 		"--build-root", filepath.Join(buildDir, "deps-build"),
 		"--prefix", depsDir,
-		"--generator", generator,
+		"--generator", cmake.generator,
 		"--cmake", cmakePath,
 		"--cache-dir", filepath.Join(buildDir, "cache", "deps"),
 	)
@@ -195,85 +210,49 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 		return
 	}
 
-	// STEP 4: Volk meta-loader
-	progress(4, "Vulkan Meta-Loader (volk)", "Setting up Volk meta-loader", 0.35)
-	log("=== Step 4/8: Volk Meta-loader ===")
-	volkConfig, err := findVolkConfig(buildDir)
+	// STEP 4: Native libraries. Windows has no system Vulkan-Headers, zlib or
+	// curl, so the Builder provides them there.
+	progress(4, "Native Libraries", "Setting up volk and the libraries the game links", 0.35)
+	log("=== Step 4/8: Native Libraries ===")
+	var libs bundledLibraries
+	if runtime.GOOS == "windows" {
+		if libs, err = installVulkanHeaders(deps); err != nil {
+			failDone(err)
+			return
+		}
+	}
+	volkDir, volkPrefix, err := locateVolk(deps, volkDependency(libs.vulkanHeaders))
 	if err != nil {
-		volkTar := filepath.Join(downloadsDir, "volk-1.4.363.tar.gz")
-		if _, err := os.Stat(volkTar); err != nil {
-			log("Downloading volk...")
-			if err := downloadFile("https://github.com/zeux/volk/archive/refs/tags/vulkan-sdk-1.4.363.0.tar.gz", volkTar); err != nil {
-				failDone(err)
-				return
-			}
-		}
-		volkSource := filepath.Join(buildDir, "volk-source")
-		if _, err := os.Stat(filepath.Join(volkSource, "CMakeLists.txt")); err != nil {
-			_ = os.RemoveAll(volkSource)
-			_ = os.MkdirAll(volkSource, 0755)
-			cmdTar := exec.CommandContext(ctx, "tar", "-xzf", volkTar, "-C", volkSource, "--strip-components=1")
-			if err := runCmdWithLog(cmdTar, log); err != nil {
-				failDone(err)
-				return
-			}
-		}
-		volkBuild := filepath.Join(buildDir, "volk-build")
-		cmdVolkCfg := exec.CommandContext(ctx, "cmake", "-S", volkSource, "-B", volkBuild, "-G", generator,
-			"-DCMAKE_BUILD_TYPE=Release",
-			"-DVOLK_INSTALL=ON",
-			fmt.Sprintf("-DCMAKE_INSTALL_PREFIX=%s", filepath.Join(depsDir, "volk")),
-		)
-		if err := runCmdWithLog(cmdVolkCfg, log); err != nil {
+		failDone(err)
+		return
+	}
+	log("Volk ready: %s (prefix: %s)", volkDir, volkPrefix)
+	if runtime.GOOS == "windows" {
+		if err := installZlibAndCurl(deps, &libs); err != nil {
 			failDone(err)
 			return
 		}
-		cmdVolkBuild := exec.CommandContext(ctx, "cmake", "--build", volkBuild, "--target", "install", "--parallel", strconv.Itoa(cfg.ParallelJobs))
-		if err := runCmdWithLog(cmdVolkBuild, log); err != nil {
-			failDone(err)
-			return
-		}
-		volkConfig, err = findVolkConfig(buildDir)
-		if err != nil {
-			failDone(fmt.Errorf("volk installation succeeded but volkConfig.cmake was not found: %w", err))
-			return
-		}
 	}
-	volkDir := filepath.Dir(volkConfig)
-	volkPrefix := filepath.Join(depsDir, "volk")
-	if !strings.HasPrefix(volkConfig, filepath.Join(buildDir, "deps", "volk")) {
-		p := filepath.Dir(volkDir)
-		if filepath.Base(p) == "cmake" {
-			p = filepath.Dir(p)
-		}
-		volkPrefix = filepath.Dir(p)
-	}
-	log("Volk ready: %s (dir: %s, prefix: %s)", volkConfig, volkDir, volkPrefix)
 
 	// STEP 5: Build RebrewU recompiler
 	progress(5, "RebrewU Recompiler", "Building the RebrewU recompiler executable", 0.45)
 	log("=== Step 5/8: RebrewU Recompiler ===")
 	rebrewuBuild := filepath.Join(buildDir, "rebrewu")
-	cmdRebrewuCfg := exec.CommandContext(ctx, "cmake", "-S", recompilerDir, "-B", rebrewuBuild, "-G", generator,
-		"-DCMAKE_BUILD_TYPE=Release",
-		"-DREBREWU_BUILD_TESTS=OFF",
-	)
+	rebrewuDefines := append([]string{"-DREBREWU_BUILD_TESTS=OFF"}, libs.zlibDefines...)
+	cmdRebrewuCfg := exec.CommandContext(ctx, "cmake", cmake.configureArgs(recompilerDir, rebrewuBuild, rebrewuDefines...)...)
 	if err := runCmdWithLog(cmdRebrewuCfg, log); err != nil {
-		failDone(err)
+		failDone(fmt.Errorf("CMake configuration of RebrewU failed: %w", err))
 		return
 	}
-	cmdRebrewuBuild := exec.CommandContext(ctx, "cmake", "--build", rebrewuBuild, "--target", "rebrewu", "--parallel", strconv.Itoa(cfg.ParallelJobs))
+	cmdRebrewuBuild := exec.CommandContext(ctx, "cmake", cmake.buildArgs(rebrewuBuild, "rebrewu")...)
 	if err := runCmdWithLog(cmdRebrewuBuild, log); err != nil {
-		failDone(err)
+		failDone(fmt.Errorf("compiling RebrewU: %w", err))
 		return
 	}
 
-	rebrewuExe := filepath.Join(rebrewuBuild, "bin", "rebrewu")
-	if runtime.GOOS == "windows" {
-		rebrewuExe += ".exe"
-	}
-	if _, err := os.Stat(rebrewuExe); err != nil {
-		failDone(fmt.Errorf("rebrewu executable not found: %s", rebrewuExe))
+	rebrewuExe, err := builtExecutable(filepath.Join(rebrewuBuild, "bin"), "rebrewu")
+	if err != nil {
+		failDone(err)
 		return
 	}
 
@@ -307,11 +286,8 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 		glslangDir = filepath.Join(depsDir, "glslang-vulkan", "lib", "cmake", "glslang")
 	}
 
-	cmdGameCfg := exec.CommandContext(ctx, "cmake",
-		"-S", filepath.Join(recompilerDir, "port"),
-		"-B", gameBuild,
-		"-G", generator,
-		"-DCMAKE_BUILD_TYPE=Release",
+	prefixPath := strings.Join(append([]string{volkPrefix}, libs.prefixes...), ";")
+	gameDefines := append([]string{
 		"-DRBREW_GRAPHICS_BACKEND=Vulkan",
 		fmt.Sprintf("-DRBREW_GAME_REVISION=%s", gameRevision),
 		fmt.Sprintf("-DRBREW_RPX=%s", rpxPath),
@@ -319,19 +295,20 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 		fmt.Sprintf("-DSDL2_DIR=%s", sdl2Dir),
 		fmt.Sprintf("-Dglslang_DIR=%s", glslangDir),
 		fmt.Sprintf("-Dvolk_DIR=%s", volkDir),
-		fmt.Sprintf("-DCMAKE_PREFIX_PATH=%s", volkPrefix),
+		fmt.Sprintf("-DCMAKE_PREFIX_PATH=%s", prefixPath),
 		"-DRBREW_BUILD_GAME=ON",
 		"-DRBREW_ENABLE_COVERAGE=OFF",
 		"-DRBREW_ENABLE_PPC_FALLBACK=OFF",
 		"-DRBREW_DIAGNOSTIC_RUNTIME=OFF",
 		"-DRBREW_TEXTURE_DIAGNOSTICS=OFF",
-	)
+	}, libs.gameDefines...)
+	cmdGameCfg := exec.CommandContext(ctx, "cmake", cmake.configureArgs(filepath.Join(recompilerDir, "port"), gameBuild, gameDefines...)...)
 	if err := runCmdWithLog(cmdGameCfg, log); err != nil {
 		failDone(fmt.Errorf("CMake configuration of the game failed: %w", err))
 		return
 	}
 
-	cmdGameBuild := exec.CommandContext(ctx, "cmake", "--build", gameBuild, "--target", "Gambit", "--parallel", strconv.Itoa(cfg.ParallelJobs))
+	cmdGameBuild := exec.CommandContext(ctx, "cmake", cmake.buildArgs(gameBuild, "Gambit")...)
 	if err := runCmdWithLog(cmdGameBuild, log); err != nil {
 		failDone(fmt.Errorf("compiling Splatoon executable: %w", err))
 		return
@@ -342,13 +319,12 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 	log("=== Step 8/8: Game Packaging ===")
 	_ = os.MkdirAll(cfg.OutputDir, 0755)
 
-	exeSource := filepath.Join(gameBuild, "Splatoon")
-	exeDest := filepath.Join(cfg.OutputDir, "Splatoon")
-	if runtime.GOOS == "windows" {
-		exeSource = filepath.Join(gameBuild, "Release", "Splatoon.exe")
-		exeDest = filepath.Join(cfg.OutputDir, "Splatoon.exe")
+	exeSource, err := builtExecutable(gameBuild, "Splatoon")
+	if err != nil {
+		failDone(err)
+		return
 	}
-
+	exeDest := filepath.Join(cfg.OutputDir, exeName("Splatoon"))
 	if err := copySingleFile(exeSource, exeDest); err != nil {
 		failDone(fmt.Errorf("copying executable: %w", err))
 		return
@@ -393,51 +369,26 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 	cb.OnDone(true, nil, elapsed, appImagePath)
 }
 
-func runCmdWithLog(cmd *exec.Cmd, log func(string, ...interface{})) error {
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return err
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return err
-	}
-
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-
-	scannerOut := bufio.NewScanner(stdout)
-	scannerErr := bufio.NewScanner(stderr)
-
-	go func() {
-		for scannerOut.Scan() {
-			log("%s", scannerOut.Text())
-		}
-	}()
-
-	go func() {
-		for scannerErr.Scan() {
-			log("%s", scannerErr.Text())
-		}
-	}()
-
-	return cmd.Wait()
-}
-
 // findConfigDir returns the directory under root holding one of the CMake
 // package config files, whatever the lib, lib64 or multiarch install layout.
 func findConfigDir(root string, configNames ...string) (string, bool) {
+	path, ok := findFile(root, configNames...)
+	if !ok {
+		return "", false
+	}
+	return filepath.Dir(path), true
+}
+
+// findFile returns the first file under root named one of names.
+func findFile(root string, names ...string) (string, bool) {
 	var found string
 	_ = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil || entry.IsDir() {
 			return nil
 		}
-		for _, name := range configNames {
-			if entry.Name() == name {
-				found = filepath.Dir(path)
-				return filepath.SkipAll
-			}
+		if slices.Contains(names, entry.Name()) {
+			found = path
+			return filepath.SkipAll
 		}
 		return nil
 	})

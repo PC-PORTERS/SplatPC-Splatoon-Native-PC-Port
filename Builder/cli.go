@@ -120,7 +120,11 @@ func runPlay(repoRoot string, standalone bool) int {
 // selectManifest asks plt_resolver.py which manifest describes the dump's
 // code/Gambit.rpx, the same call the build makes in its first step.
 func selectManifest(repoRoot, gamePath string) ([]byte, error) {
-	cmd := exec.Command("python3", filepath.Join(repoRoot, "recompiler", "tools", "plt_resolver.py"),
+	python, _, ok := prereq.FindPython()
+	if !ok {
+		return nil, exec.ErrNotFound
+	}
+	cmd := python.Command(context.Background(), filepath.Join(repoRoot, "recompiler", "tools", "plt_resolver.py"),
 		"select", "--rpx", filepath.Join(gamePath, "code", "Gambit.rpx"),
 		"--manifest-dir", filepath.Join(repoRoot, "Manifest"))
 	return cmd.CombinedOutput()
