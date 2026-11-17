@@ -267,11 +267,11 @@ func (v *StepSettingsView) initUI() {
 		),
 	)
 
-	v.prevBtn = widget.NewButtonWithIcon("← ROMs", theme.NavigateBackIcon(), func() {
+	v.prevBtn = widget.NewButtonWithIcon("ROMs", theme.NavigateBackIcon(), func() {
 		v.wizard.GoToStep(StepRoms)
 	})
 
-	v.nextBtn = widget.NewButtonWithIcon("Build Options →", theme.NavigateNextIcon(), func() {
+	v.nextBtn = widget.NewButtonWithIcon("Build Options", theme.NavigateNextIcon(), func() {
 		v.wizard.GoToStep(StepBuildConfig)
 	})
 	v.nextBtn.Importance = widget.HighImportance

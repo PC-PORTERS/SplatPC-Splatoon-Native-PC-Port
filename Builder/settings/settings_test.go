@@ -8,6 +8,24 @@ import (
 	"testing"
 )
 
+func TestRegionMaskGivesTheGameANumber(t *testing.T) {
+	cases := map[string]string{
+		"EUR":   "0x4",
+		"usa":   "0x2",
+		" JPN ": "0x1",
+		"0x4":   "0x4",
+		"0X2":   "0x2",
+		"4":     "4",
+		"":      "",
+		"Mars":  "",
+	}
+	for region, want := range cases {
+		if got := RegionMask(region); got != want {
+			t.Errorf("RegionMask(%q) = %q, expected %q", region, got, want)
+		}
+	}
+}
+
 func TestDefaultConfiguration(t *testing.T) {
 	cfg := DefaultConfiguration("/tmp/splatpc")
 	if cfg.PlayerName != "default" {

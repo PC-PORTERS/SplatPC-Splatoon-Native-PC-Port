@@ -324,7 +324,7 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 		failDone(err)
 		return
 	}
-	exeDest := filepath.Join(cfg.OutputDir, exeName("Splatoon"))
+	exeDest := GameExecutable(cfg.OutputDir)
 	if err := copySingleFile(exeSource, exeDest); err != nil {
 		failDone(fmt.Errorf("copying executable: %w", err))
 		return

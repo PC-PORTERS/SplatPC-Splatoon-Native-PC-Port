@@ -64,6 +64,11 @@ func NewWizard(a fyne.App, w fyne.Window, repoRoot string, isStandalone bool) *W
 		overlays: make([]roms.RomLayer, 0),
 	}
 
+	build, installed := findInstalledBuild(a.Preferences(), wiz.config.OutputDir)
+	if installed {
+		wiz.config.OutputDir = build.dir
+	}
+
 	// Auto-import existing settings.ini if present in output folder or repo
 	initialIniCandidates := []string{
 		filepath.Join(wiz.config.OutputDir, "settings.ini"),
@@ -82,14 +87,36 @@ func NewWizard(a fyne.App, w fyne.Window, repoRoot string, isStandalone bool) *W
 	wiz.initUI()
 
 	// Initial check: if prerequisites are missing, show Step -1; otherwise, go to Step 1 directly.
-	report := prereq.RunChecks()
-	if !report.AllRequiredMet {
-		wiz.GoToStep(StepPrereq)
-	} else {
-		wiz.GoToStep(StepRoms)
+	firstStep := StepRoms
+	if !prereq.RunChecks().AllRequiredMet {
+		firstStep = StepPrereq
+	}
+	if !installed {
+		wiz.GoToStep(firstStep)
+		return wiz
 	}
 
+	// A game is already built: show it, and ask once the window is up
+	// whether to keep it or start a new build.
+	wiz.doneView.SetInstalled(build)
+	wiz.GoToStep(StepDone)
+	a.Lifecycle().SetOnStarted(func() {
+		wiz.askRebuild(build, firstStep)
+	})
 	return wiz
+}
+
+func (w *Wizard) askRebuild(build installedBuild, firstStep StepID) {
+	message := wrappedLabel(fmt.Sprintf("A build of Splatoon was found in:\n%s\n\nBuilt: %s\n\n"+
+		"Rebuild it (for example after an update or to change the build settings), or keep it and play?",
+		build.dir, build.describe()))
+	confirm := dialog.NewCustomConfirm("Splatoon is already installed", "Rebuild", "Keep this build", message, func(rebuild bool) {
+		if rebuild {
+			w.GoToStep(firstStep)
+		}
+	}, w.window)
+	confirm.Resize(fyne.NewSize(520, 0))
+	confirm.Show()
 }
 
 func (w *Wizard) initViews() {
@@ -199,6 +226,7 @@ func (w *Wizard) StartBuild() {
 				fyne.Do(func() {
 					w.buildingView.StopTimer()
 					if success {
+						rememberBuild(w.app.Preferences(), w.config.OutputDir, time.Now(), elapsed)
 						w.doneView.SetSuccess(elapsed, appImagePath)
 						w.GoToStep(StepDone)
 					} else {

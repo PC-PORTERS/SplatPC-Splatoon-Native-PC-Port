@@ -256,6 +256,24 @@ bindings=2
 	return os.WriteFile(filePath, []byte(content), 0644)
 }
 
+// regionMasks are the Cafe region bits the game reads from RBREW_CONSOLE_REGION
+var regionMasks = map[string]string{"JPN": "0x1", "USA": "0x2", "EUR": "0x4"}
+
+// RegionMask turns a region name into the number the game expects. The game
+// quits at startup on a name like "EUR" an empty value lets it use the
+// region of the games own meta.xml
+func RegionMask(region string) string {
+	region = strings.ToLower(strings.TrimSpace(region))
+	if mask, ok := regionMasks[strings.ToUpper(region)]; ok {
+		return mask
+	}
+	// A number is passed as is: decimal or hex with 0x like the game reads it
+	if _, err := strconv.ParseUint(region, 0, 32); err == nil {
+		return region
+	}
+	return ""
+}
+
 func WriteLauncherScript(cfg Configuration, outFolder string) error {
 	texDumpLineWin := ""
 	texDumpLineLinux := ""
@@ -271,7 +289,7 @@ set "RBREW_PLAYER_NAME=%s"
 set "RBREW_CONSOLE_LANGUAGE=%d"
 set "RBREW_CONSOLE_REGION=%s"
 %sstart "" "%%~dp0Splatoon.exe" %%*
-`, cfg.PlayerName, cfg.LanguageID, cfg.ConsoleRegion, texDumpLineWin)
+`, cfg.PlayerName, cfg.LanguageID, RegionMask(cfg.ConsoleRegion), texDumpLineWin)
 		return os.WriteFile(scriptPath, []byte(content), 0755)
 	}
 
@@ -283,7 +301,7 @@ export RBREW_PLAYER_NAME="%s"
 export RBREW_CONSOLE_LANGUAGE="%d"
 export RBREW_CONSOLE_REGION="%s"
 %sexec "$HERE/Splatoon" "$@"
-`, cfg.PlayerName, cfg.LanguageID, cfg.ConsoleRegion, texDumpLineLinux)
+`, cfg.PlayerName, cfg.LanguageID, RegionMask(cfg.ConsoleRegion), texDumpLineLinux)
 	return os.WriteFile(scriptPath, []byte(content), 0755)
 }
 

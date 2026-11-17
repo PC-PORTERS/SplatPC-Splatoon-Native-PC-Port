@@ -44,7 +44,7 @@ func (v *StepPrereqView) initUI() {
 		v.Refresh()
 	})
 
-	v.nextBtn = widget.NewButtonWithIcon("Proceed to ROM Definition →", theme.NavigateNextIcon(), func() {
+	v.nextBtn = widget.NewButtonWithIcon("Proceed to ROM Definition", theme.NavigateNextIcon(), func() {
 		v.wizard.GoToStep(StepRoms)
 	})
 	v.nextBtn.Importance = widget.HighImportance
@@ -137,7 +137,7 @@ func (v *StepPrereqView) Refresh() {
 
 	if v.report.AllRequiredMet {
 		v.nextBtn.Enable()
-		v.nextBtn.SetText("All tools ready - Proceed to ROMs →")
+		v.nextBtn.SetText("All tools ready - Proceed to ROMs")
 	} else {
 		v.nextBtn.Disable()
 		v.nextBtn.SetText("Required tools are missing")
