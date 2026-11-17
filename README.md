@@ -116,7 +116,7 @@ Keyboard and mouse (default layout, rebindable in the menu):
 | Mouse | Aim / camera |
 | Left click | Shoot (ZR) |
 | Right click | Squid form (ZL) |
-| Space | Jump (B) |
+| Space | Jump (X) |
 | Q | Sub weapon |
 | E | Special |
 | F | Map (+) |
