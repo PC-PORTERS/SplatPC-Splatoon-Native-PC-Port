@@ -11,12 +11,55 @@ if(NOT RBREW_GAME_REVISION MATCHES "^[0-9]+$")
 endif()
 add_compile_definitions(RBREW_GAME_REVISION=${RBREW_GAME_REVISION})
 
-include(${CMAKE_CURRENT_SOURCE_DIR}/gx2_windowing.cmake)
-if(DEFINED RBREW_GRAPHICS_BACKEND AND NOT RBREW_GRAPHICS_BACKEND STREQUAL "Vulkan")
+# Windowing & input: require the audited static SDL2 Vulkan-only profile.
+find_package(SDL2 CONFIG REQUIRED)
+if(NOT TARGET SDL2::SDL2-static OR NOT EXISTS "${SDL2_DIR}/SDL2VulkanOnly.cmake")
+    message(FATAL_ERROR "Build the Vulkan dependency profile with tools/build_vulkan_dependencies.py and set SDL2_DIR to its cmake directory")
+endif()
+set(SDL2_LIBRARIES SDL2::SDL2-static)
+
+# Graphics backend: Vulkan is the only native graphics backend.
+set(RBREW_GRAPHICS_BACKEND "Vulkan" CACHE STRING "Native GX2 graphics backend")
+set_property(CACHE RBREW_GRAPHICS_BACKEND PROPERTY STRINGS Vulkan)
+if(NOT RBREW_GRAPHICS_BACKEND STREQUAL "Vulkan")
     message(FATAL_ERROR "Gambit requires the Vulkan backend. No alternate graphics backend is available.")
 endif()
-include(${CMAKE_CURRENT_SOURCE_DIR}/gx2_graphics_backend.cmake)
-include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/imgui.cmake)
+find_package(VulkanHeaders CONFIG REQUIRED)
+find_package(volk CONFIG REQUIRED)
+find_package(glslang CONFIG REQUIRED)
+if(NOT EXISTS "${glslang_DIR}/GlslangVulkanOnly.cmake")
+    message(FATAL_ERROR "Build the Vulkan dependency profile and set glslang_DIR to its lib/cmake/glslang directory")
+endif()
+option(RBREW_TEXTURE_DIAGNOSTICS "Build the opt-in one-session texture lifecycle journal" OFF)
+option(RBREW_GX2_DEBUG_INFO "Emit debug information for the GX2 renderer sources (profiling)" OFF)
+
+# Dear ImGui (docking branch), fetched at configure time.
+include(FetchContent)
+set(RBREW_IMGUI_GIT_REPOSITORY "https://github.com/ocornut/imgui.git" CACHE STRING "ImGui git repository")
+set(RBREW_IMGUI_GIT_TAG "docking" CACHE STRING "ImGui git branch/tag (docking adds window docking)")
+FetchContent_Declare(imgui
+    GIT_REPOSITORY ${RBREW_IMGUI_GIT_REPOSITORY}
+    GIT_TAG ${RBREW_IMGUI_GIT_TAG}
+    GIT_SHALLOW TRUE)
+if(POLICY CMP0169)
+    cmake_policy(SET CMP0169 OLD)
+endif()
+FetchContent_GetProperties(imgui)
+if(NOT imgui_POPULATED)
+    FetchContent_Populate(imgui)
+endif()
+add_library(imgui STATIC
+    ${imgui_SOURCE_DIR}/imgui.cpp
+    ${imgui_SOURCE_DIR}/imgui_draw.cpp
+    ${imgui_SOURCE_DIR}/imgui_tables.cpp
+    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl2.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp
+    # SDL_GL_* fallbacks: the backend references them, the Vulkan-only SDL profile has no OpenGL.
+    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/imgui_sdl2_gl_stubs.cpp)
+target_include_directories(imgui PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
+target_compile_definitions(imgui PUBLIC IMGUI_IMPL_VULKAN_USE_VOLK)
+target_link_libraries(imgui PUBLIC SDL2::SDL2-static Vulkan::Headers volk::volk)
 find_package(CURL REQUIRED)
 find_package(ZLIB REQUIRED)
 
@@ -165,51 +208,21 @@ if(RBREW_PLT_GENERATED)
         VERBATIM)
 endif()
 
-add_library(gambit_runtime STATIC
-    runtime/rebrewu_runtime.cpp
-    runtime/rebrewu_paired.cpp
-    gambit_plt_stubs.cpp
-    os/gambit_plt_auto.cpp
-    os/coreinit/coreinit_memory.cpp
-    os/coreinit/coreinit_threads.cpp
-    os/coreinit/coreinit_sync.cpp
-    os/coreinit/coreinit_misc.cpp
-    os/coreinit/coreinit_shared_data.cpp
-    os/coreinit/coreinit_dynload.cpp
-    os/coreinit/coreinit_overlay.cpp
-    os/coreinit/coreinit_system_settings.cpp
-    os/coreinit/coreinit_user_config.cpp
-    os/erreula/erreula.cpp
-    os/nn_act/nn_act.cpp
-    os/nn_nfp/nn_nfp.cpp
-    os/sysapp/sysapp_title.cpp
-    os/coreinit/coreinit_fs.cpp
-    os/gx2/gx2_context.cpp
-    os/gx2/gx2_draw.cpp
-    os/gx2/gx2_surface_layout.cpp
-    os/gx2/r700_to_glsl.cpp
-    os/gx2/gx2_shader_program.cpp
-    os/gx2/gx2_pm4_state.cpp
-    os/gx2/gx2_display_list.cpp
-    os/gx2/gx2_detile.cpp
-    os/gx2/gx2_write_watch.cpp
-    os/gx2/gx2_fetch_decode.cpp
-    os/snd_core/snd_core.cpp
-    os/vpad/game_controllers.cpp
-    os/vpad/vpad.cpp
-    os/padscore/padscore.cpp
-    os/stubs/stubs.cpp
-    os/nsysnet/nsysnet.cpp
-    hooks/gx2_camera_hooks.cpp
-    hooks/player_anim.cpp
-    hooks/branch_tables.cpp
-    hooks/broadcast_guard.cpp
-    loader/gambit_loader.cpp
-    loader/native_console_profile.cpp
-    runtime/splatoon_diagnostics.cpp
-    runtime/discord_rpc.cpp
-    runtime/port_settings.cpp
+file(GLOB_RECURSE GAMBIT_RUNTIME_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/os/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/hooks/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/loader/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/runtime/*.cpp"
 )
+list(REMOVE_ITEM GAMBIT_RUNTIME_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/os/gx2/gx2_render_headless.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/runtime/rebrewu_differential.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/runtime/rebrewu_ppc_hybrid.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/runtime/rebrewu_ppc_interpreter.cpp"
+)
+list(APPEND GAMBIT_RUNTIME_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/gambit_plt_stubs.cpp")
+
+add_library(gambit_runtime STATIC ${GAMBIT_RUNTIME_SOURCES})
 
 target_include_directories(gambit_runtime PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/runtime
@@ -234,7 +247,26 @@ option(HYPER_OPTIMIZE "Aggressive CPU optimizations for guest code (zero-check m
 if(HYPER_OPTIMIZE)
     message(STATUS "HYPER_OPTIMIZE enabled: zero-check guest memory, aggressive inlining")
 endif()
-rbrew_gx2_backend(gambit_runtime PUBLIC)
+target_compile_definitions(gambit_runtime PUBLIC RBREW_GRAPHICS_VULKAN=1)
+if(RBREW_TEXTURE_DIAGNOSTICS)
+    target_compile_definitions(gambit_runtime PRIVATE RBREW_TEXTURE_DIAGNOSTICS=1)
+    if(WIN32)
+        find_file(RBREW_TEXTURE_DIAG_LAYER_JSON VkLayer_khronos_validation.json
+            PATHS "${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin" NO_DEFAULT_PATH)
+        if(RBREW_TEXTURE_DIAG_LAYER_JSON)
+            get_filename_component(layer_directory "${RBREW_TEXTURE_DIAG_LAYER_JSON}" DIRECTORY)
+            target_compile_definitions(gambit_runtime PRIVATE RBREW_TEXTURE_DIAG_LAYER_PATH="${layer_directory}")
+        endif()
+    endif()
+endif()
+if(RBREW_GX2_DEBUG_INFO AND MSVC)
+    file(GLOB_RECURSE RBREW_GX2_DEBUG_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/os/gx2/*.cpp")
+    list(REMOVE_ITEM RBREW_GX2_DEBUG_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/os/gx2/gx2_render_headless.cpp")
+    set_source_files_properties(${RBREW_GX2_DEBUG_SOURCES} PROPERTIES COMPILE_OPTIONS "/Zi")
+endif()
+target_link_libraries(gambit_runtime PUBLIC
+    Vulkan::Headers volk::volk glslang::glslang
+    glslang::glslang-default-resource-limits glslang::SPIRV)
 
 if(HAVE_MINIAUDIO)
     target_compile_definitions(gambit_runtime PUBLIC HAVE_MINIAUDIO)
@@ -356,9 +388,11 @@ if(WIN32)
     add_executable(splport_check_runtime EXCLUDE_FROM_ALL tools/check_prerequisites.cpp)
     target_link_libraries(splport_check_runtime PRIVATE Vulkan::Headers volk::volk)
 endif()
-include(${CMAKE_CURRENT_SOURCE_DIR}/runtime/host_process.cmake)
 if(TARGET Gambit)
-    rbrew_windowed_executable(Gambit)
+    if(WIN32 AND MSVC)
+        set_target_properties(Gambit PROPERTIES WIN32_EXECUTABLE TRUE)
+        target_link_options(Gambit PRIVATE /ENTRY:mainCRTStartup)
+    endif()
     if(NOT RBREW_DIAGNOSTIC_RUNTIME)
         target_compile_definitions(Gambit PRIVATE RBREW_DISABLE_LOGGING)
     endif()

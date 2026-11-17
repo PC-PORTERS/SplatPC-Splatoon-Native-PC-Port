@@ -48,17 +48,84 @@ add_library(nlohmann_json::nlohmann_json ALIAS nlohmann_json)
 target_include_directories(nlohmann_json
     INTERFACE "${CMAKE_SOURCE_DIR}/third_party")
 
-add_subdirectory(src/ir)            # INTERFACE – headers only; no external deps
-add_subdirectory(src/diagnostics)   # lightweight; no external deps
-add_subdirectory(src/core)          # elf / rpx / rpl / relocation / linker
-add_subdirectory(src/ppc)           # decoder / assembler / semantics; links rebrewu_ir
-add_subdirectory(src/patches)       # applies manifest patches to a loaded image
-add_subdirectory(src/analysis)      # function_discovery / cfg / jump_table
-add_subdirectory(src/codegen)       # cpp_emitter / naming
-add_subdirectory(src/config)        # JSON-based config; links nlohmann_json
-add_subdirectory(runtime)           # INTERFACE – runtime shim headers
+function(rebrewu_add_library target src_dir)
+    file(GLOB_RECURSE _srcs CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${src_dir}/*.cpp")
+    add_library(${target} STATIC ${_srcs})
+    target_include_directories(${target}
+        PUBLIC
+            $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src>
+            $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+            $<INSTALL_INTERFACE:include>
+    )
+endfunction()
 
-add_subdirectory(src/cli)
+# rebrewu_runtime: INTERFACE – runtime shim headers
+add_library(rebrewu_runtime INTERFACE)
+target_include_directories(rebrewu_runtime
+    INTERFACE
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/runtime/include>
+        $<INSTALL_INTERFACE:include>
+)
+
+# rebrewu_diagnostics: lightweight; no external deps
+rebrewu_add_library(rebrewu_diagnostics src/diagnostics)
+
+# rebrewu_ir: IR builder and optimizer
+rebrewu_add_library(rebrewu_ir src/ir)
+target_link_libraries(rebrewu_ir PUBLIC rebrewu_diagnostics)
+
+# rebrewu_core: elf / rpx / rpl / relocation / linker / manifest
+rebrewu_add_library(rebrewu_core src/core)
+target_include_directories(rebrewu_core PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/core")
+target_link_libraries(rebrewu_core
+    PUBLIC  rebrewu_diagnostics ZLIB::ZLIB
+    PRIVATE nlohmann_json
+)
+
+# rebrewu_ppc: decoder / assembler / semantics
+rebrewu_add_library(rebrewu_ppc src/ppc)
+target_link_libraries(rebrewu_ppc PUBLIC rebrewu_ir rebrewu_diagnostics)
+
+# rebrewu_patches: applies manifest patches to a loaded image
+rebrewu_add_library(rebrewu_patches src/patches)
+target_link_libraries(rebrewu_patches PUBLIC rebrewu_core rebrewu_ppc)
+
+# rebrewu_analysis: function_discovery / cfg / jump_table
+rebrewu_add_library(rebrewu_analysis src/analysis)
+target_link_libraries(rebrewu_analysis PUBLIC rebrewu_core rebrewu_ppc rebrewu_ir)
+
+# rebrewu_codegen: cpp_emitter / naming
+rebrewu_add_library(rebrewu_codegen src/codegen)
+target_link_libraries(rebrewu_codegen PUBLIC rebrewu_ir rebrewu_analysis rebrewu_diagnostics)
+
+# rebrewu_config: JSON-based config
+rebrewu_add_library(rebrewu_config src/config)
+target_link_libraries(rebrewu_config
+    PRIVATE nlohmann_json
+    PUBLIC  rebrewu_diagnostics
+)
+
+# rebrewu CLI executable
+file(GLOB_RECURSE REBREWU_CLI_SRCS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/cli/*.cpp")
+add_executable(rebrewu ${REBREWU_CLI_SRCS})
+target_include_directories(rebrewu
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}/src
+        ${CMAKE_SOURCE_DIR}/include
+)
+target_link_libraries(rebrewu
+    PRIVATE
+        rebrewu_core
+        rebrewu_ppc
+        rebrewu_patches
+        rebrewu_ir
+        rebrewu_analysis
+        rebrewu_codegen
+        nlohmann_json
+        rebrewu_config
+        rebrewu_diagnostics
+)
+install(TARGETS rebrewu RUNTIME DESTINATION bin)
 
 if(REBREWU_BUILD_TESTS AND EXISTS "${CMAKE_SOURCE_DIR}/tests/CMakeLists.txt")
     enable_testing()
