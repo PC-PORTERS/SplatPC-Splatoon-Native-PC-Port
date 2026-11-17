@@ -69,7 +69,7 @@ Turn it on in the settings menu with *Graphics preset* (Balanced, Realistic or C
    - **Base ROM:** Select your official Splatoon v16 dump folder (`code`, `content`, `meta`).
    - **Updates & Mods:** Click **"Add update or mod..."** to layer an official update (e.g. v288) or resource mods.
    - **Configuration:** Set your initial graphics preset, resolution, and output destination folder.
-   - **Build:** Click **Build** and let the tool compile your game.
+   - **Build:** Click **Build** and let the tool compile your game. If it fails, attach `build/build.log` (in the builder's work folder) to your issue.
 3. Play: Launch **`Splatoon.exe`** (Windows) or **`./Splatoon`** (Linux) in your output directory.
 
 > **Updating:** When a new release comes out, simply download the new builder from Releases and run it again. Your saves (`save/`) and shader cache are always preserved.
