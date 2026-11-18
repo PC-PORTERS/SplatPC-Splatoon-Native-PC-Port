@@ -86,24 +86,31 @@ func NewWizard(a fyne.App, w fyne.Window, repoRoot string, isStandalone bool) *W
 	wiz.settingsView.SyncUIFromConfig()
 	wiz.initUI()
 
-	// Initial check: if prerequisites are missing, show Step -1; otherwise, go to Step 1 directly.
+	// The system check starts several programs and takes a moment: show a
+	// loading screen meanwhile instead of a window that is not there yet.
+	wiz.stepContent.Add(loadingView())
+	go func() {
+		report := prereq.RunChecks()
+		fyne.Do(func() { wiz.start(report, build, installed) })
+	}()
+	return wiz
+}
+
+// start opens the first step once the system check is done: the prerequisites
+// if something is missing, otherwise the ROMs, or the installed game.
+func (w *Wizard) start(report prereq.CheckReport, build installedBuild, installed bool) {
+	w.prereqView.ShowReport(report)
 	firstStep := StepRoms
-	if !prereq.RunChecks().AllRequiredMet {
+	if !report.AllRequiredMet {
 		firstStep = StepPrereq
 	}
 	if !installed {
-		wiz.GoToStep(firstStep)
-		return wiz
+		w.GoToStep(firstStep)
+		return
 	}
-
-	// A game is already built: show it, and ask once the window is up
-	// whether to keep it or start a new build.
-	wiz.doneView.SetInstalled(build)
-	wiz.GoToStep(StepDone)
-	a.Lifecycle().SetOnStarted(func() {
-		wiz.askRebuild(build, firstStep)
-	})
-	return wiz
+	w.doneView.SetInstalled(build)
+	w.GoToStep(StepDone)
+	w.askRebuild(build, firstStep)
 }
 
 func (w *Wizard) askRebuild(build installedBuild, firstStep StepID) {
@@ -133,7 +140,7 @@ func (w *Wizard) initUI() {
 	w.stepperBar = container.NewHBox()
 
 	header := container.NewVBox(
-		w.stepperBar,
+		container.NewBorder(nil, nil, nil, w.troubleshootingButton(), w.stepperBar),
 		widget.NewSeparator(),
 	)
 
@@ -234,13 +241,24 @@ func (w *Wizard) StartBuild() {
 							dialog.ShowInformation("Cancelled", "Build was cancelled by the user.", w.window)
 							w.GoToStep(StepBuildConfig)
 						} else {
-							dialog.ShowError(fmt.Errorf("Build failed: %v", err), w.window)
+							w.showBuildFailed(err)
 						}
 					}
 				})
 			},
 		})
 	}()
+}
+
+func (w *Wizard) showBuildFailed(err error) {
+	message := wrappedLabel(fmt.Sprintf("Build failed: %v", err))
+	d := dialog.NewCustomConfirm("Build failed", "Troubleshooting", "Close", message, func(help bool) {
+		if help {
+			w.showTroubleshooting()
+		}
+	}, w.window)
+	d.Resize(fyne.NewSize(520, 0))
+	d.Show()
 }
 
 func (w *Wizard) CancelBuild() {

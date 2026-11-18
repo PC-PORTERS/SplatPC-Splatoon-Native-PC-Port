@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"splatpc-builder/proc"
 )
 
 type GPUInfo struct {
@@ -82,7 +84,7 @@ func checkNvidiaSmi(info *GPUInfo) bool {
 		}
 	}
 
-	cmd := exec.Command(smiBin, "--query-gpu=name,driver_version", "--format=csv,noheader")
+	cmd := proc.Command(smiBin, "--query-gpu=name,driver_version", "--format=csv,noheader")
 	out, err := cmd.Output()
 	if err == nil {
 		line := strings.TrimSpace(string(out))
@@ -115,7 +117,7 @@ func checkPyTorchCUDA(info *GPUInfo) bool {
 		}
 	}
 
-	cmd := exec.Command(pyBin, "-c", "import torch; print(f'{torch.cuda.is_available()}|{torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"\"}')")
+	cmd := proc.Command(pyBin, "-c", "import torch; print(f'{torch.cuda.is_available()}|{torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"\"}')")
 	out, err := cmd.Output()
 	if err == nil {
 		line := strings.TrimSpace(string(out))
@@ -175,7 +177,7 @@ func checkLinuxPCI(info *GPUInfo) bool {
 }
 
 func checkLinuxLspci(info *GPUInfo) bool {
-	cmd := exec.Command("lspci")
+	cmd := proc.Command("lspci")
 	out, err := cmd.Output()
 	if err == nil {
 		scanner := bufio.NewScanner(strings.NewReader(string(out)))
@@ -208,7 +210,7 @@ func extractGPUNameFromLspci(line string) string {
 
 func checkWindowsWMI(info *GPUInfo) bool {
 	// Query Win32_VideoController via PowerShell
-	cmd := exec.Command("powershell", "-NoProfile", "-Command", "Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name")
+	cmd := proc.Command("powershell", "-NoProfile", "-Command", "Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name")
 	out, err := cmd.Output()
 	if err == nil {
 		lines := strings.Split(string(out), "\n")

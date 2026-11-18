@@ -5,6 +5,8 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+
+	"splatpc-builder/proc"
 )
 
 // Python is the command line that starts Python 3, such as ["py", "-3"].
@@ -33,7 +35,7 @@ func FindPython() (Python, string, bool) {
 			continue
 		}
 		args := append(append([]string{}, candidate[1:]...), "--version")
-		out, err := exec.Command(candidate[0], args...).CombinedOutput()
+		out, err := proc.Command(candidate[0], args...).CombinedOutput()
 		if err == nil && isPython3(string(out)) {
 			return candidate, strings.TrimSpace(string(out)), true
 		}
@@ -43,5 +45,5 @@ func FindPython() (Python, string, bool) {
 
 // Command runs a Python script or module with this interpreter.
 func (p Python) Command(ctx context.Context, args ...string) *exec.Cmd {
-	return exec.CommandContext(ctx, p[0], append(append([]string{}, p[1:]...), args...)...)
+	return proc.CommandContext(ctx, p[0], append(append([]string{}, p[1:]...), args...)...)
 }

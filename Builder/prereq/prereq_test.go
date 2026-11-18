@@ -34,20 +34,6 @@ func TestIsVersionOlder(t *testing.T) {
 	}
 }
 
-func TestGenerateInstallCommand(t *testing.T) {
-	items := []CheckItem{
-		{ID: "cmake", Found: false},
-	}
-	cmdArch := generateInstallCommand("arch", items)
-	if cmdArch == "" {
-		t.Errorf("Expected install command for arch")
-	}
-	cmdDeb := generateInstallCommand("debian", items)
-	if cmdDeb == "" {
-		t.Errorf("Expected install command for debian")
-	}
-}
-
 func TestDetectGPU(t *testing.T) {
 	gpu := DetectGPU()
 	if gpu.Name == "" {

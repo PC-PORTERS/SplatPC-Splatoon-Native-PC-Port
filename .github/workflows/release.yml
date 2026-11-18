@@ -136,6 +136,7 @@ jobs:
         run: |
           cd Builder
           $env:CGO_ENABLED = "1"
+          go generate ./winres.go
           go build -trimpath -ldflags="-H windowsgui -s -w" -o ../SplatPC-Builder.exe .
 
       - name: Package Windows release zip

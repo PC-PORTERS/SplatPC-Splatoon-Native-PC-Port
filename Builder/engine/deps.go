@@ -4,9 +4,10 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"splatpc-builder/proc"
 )
 
 // sourceDependency is a library the Builder downloads, builds with CMake and
@@ -66,7 +67,7 @@ func (b dependencyBuilder) install(dep sourceDependency) (string, error) {
 		if err := os.MkdirAll(source, 0755); err != nil {
 			return "", err
 		}
-		extract := exec.CommandContext(b.ctx, "tar", "-xzf", archive, "-C", source, "--strip-components=1")
+		extract := proc.CommandContext(b.ctx, "tar", "-xzf", archive, "-C", source, "--strip-components=1")
 		if err := runCmdWithLog(extract, b.log); err != nil {
 			return "", fmt.Errorf("extracting %s: %w", dep.name, err)
 		}
@@ -80,11 +81,11 @@ func (b dependencyBuilder) install(dep sourceDependency) (string, error) {
 		// Lets CMake 4 configure projects that still declare a pre-3.5 minimum.
 		"-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
 	}, dep.options...)
-	configure := exec.CommandContext(b.ctx, "cmake", b.cmake.configureArgs(source, build, defines...)...)
+	configure := proc.CommandContext(b.ctx, "cmake", b.cmake.configureArgs(source, build, defines...)...)
 	if err := runCmdWithLog(configure, b.log); err != nil {
 		return "", fmt.Errorf("configuring %s: %w", dep.name, err)
 	}
-	buildCmd := exec.CommandContext(b.ctx, "cmake", b.cmake.buildArgs(build, "install")...)
+	buildCmd := proc.CommandContext(b.ctx, "cmake", b.cmake.buildArgs(build, "install")...)
 	if err := runCmdWithLog(buildCmd, b.log); err != nil {
 		return "", fmt.Errorf("building %s: %w", dep.name, err)
 	}
