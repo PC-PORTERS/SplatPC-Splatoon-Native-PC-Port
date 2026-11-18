@@ -8,14 +8,31 @@ import (
 	"strings"
 )
 
-// linuxTerminals are tried in order; each entry is the program and the flag
-// after which it takes the command to run.
+// linuxTerminals are tried in order: xdg-terminal-exec opens the users
+// default terminal, the others are the fallback. Each entry is the program and
+// the arguments before the command to run (none for terminals that take the command directly)
 var linuxTerminals = [][]string{
+	{"xdg-terminal-exec"},
 	{"x-terminal-emulator", "-e"},
 	{"gnome-terminal", "--"},
+	{"ptyxis", "--"},
 	{"konsole", "-e"},
 	{"xfce4-terminal", "-x"},
+	{"kitty"},
+	{"alacritty", "-e"},
+	{"foot"},
 	{"xterm", "-e"},
+}
+
+// linuxTerminalCommand is the command line that runs script in the first
+// installed terminal, or nil when none is installed
+func linuxTerminalCommand(lookPath func(string) (string, error), script string) []string {
+	for _, term := range linuxTerminals {
+		if _, err := lookPath(term[0]); err == nil {
+			return append(append([]string{}, term...), "bash", script)
+		}
+	}
+	return nil
 }
 
 // OpenInstallTerminal runs the install steps in a visible terminal window, so
@@ -37,10 +54,8 @@ func OpenInstallTerminal(steps []InstallStep) error {
 	if err != nil {
 		return err
 	}
-	for _, term := range linuxTerminals {
-		if _, err := exec.LookPath(term[0]); err == nil {
-			return exec.Command(term[0], term[1], "bash", script).Start()
-		}
+	if command := linuxTerminalCommand(exec.LookPath, script); command != nil {
+		return exec.Command(command[0], command[1:]...).Start()
 	}
 	return fmt.Errorf("no terminal program was found; run this in a terminal:\n%s", installScript(steps, nil))
 }

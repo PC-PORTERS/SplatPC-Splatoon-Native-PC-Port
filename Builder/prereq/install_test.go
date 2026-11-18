@@ -1,6 +1,7 @@
 package prereq
 
 import (
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -46,6 +47,39 @@ func TestLinuxUsesTheDistributionsPackageManager(t *testing.T) {
 		if len(steps) != 1 || steps[0].Command != want {
 			t.Errorf("%s: steps = %+v, expected %q", distro, steps, want)
 		}
+	}
+}
+
+func TestLinuxOpensTheDefaultTerminalFirst(t *testing.T) {
+	installed := func(names ...string) func(string) (string, error) {
+		return func(name string) (string, error) {
+			for _, n := range names {
+				if n == name {
+					return "/usr/bin/" + name, nil
+				}
+			}
+			return "", exec.ErrNotFound
+		}
+	}
+	cases := []struct {
+		installed []string
+		want      string
+	}{
+		{[]string{"xterm", "xdg-terminal-exec"}, "xdg-terminal-exec bash /tmp/s.sh"},
+		{[]string{"xterm", "kitty"}, "kitty bash /tmp/s.sh"},
+		{[]string{"ptyxis"}, "ptyxis -- bash /tmp/s.sh"},
+		{[]string{"alacritty"}, "alacritty -e bash /tmp/s.sh"},
+		{[]string{"foot"}, "foot bash /tmp/s.sh"},
+		{[]string{"xterm"}, "xterm -e bash /tmp/s.sh"},
+	}
+	for _, c := range cases {
+		got := strings.Join(linuxTerminalCommand(installed(c.installed...), "/tmp/s.sh"), " ")
+		if got != c.want {
+			t.Errorf("with %v installed: %q, expected %q", c.installed, got, c.want)
+		}
+	}
+	if got := linuxTerminalCommand(installed(), "/tmp/s.sh"); got != nil {
+		t.Errorf("without a terminal: %q, expected none", got)
 	}
 }
 
