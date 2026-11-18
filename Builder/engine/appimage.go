@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+
+	"splatpc-builder/proc"
 )
 
 func CreateAppImage(gameFolder, repoRoot string, log func(string, ...interface{})) (string, error) {
@@ -90,7 +92,7 @@ StartupNotify=true
 	tmpAppImage := filepath.Join(tmpDir, "Splatoon-x86_64.AppImage")
 
 	log("Packaging AppImage with appimagetool in tmp...")
-	cmd := exec.Command(tool, "-n", appDir, tmpAppImage)
+	cmd := proc.Command(tool, "-n", appDir, tmpAppImage)
 	cmd.Dir = tmpDir
 	cmd.Env = append(os.Environ(), "ARCH=x86_64")
 	output, err := cmd.CombinedOutput()

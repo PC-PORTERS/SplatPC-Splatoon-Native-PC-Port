@@ -64,8 +64,10 @@ func main() {
 
 	a := app.NewWithID("com.splatpc.builder")
 	a.Settings().SetTheme(&ui.SplatTheme{})
+	a.SetIcon(ui.AppIcon)
 
 	w := a.NewWindow("SplatPC - Splatoon PC Native Builder & Setup")
+	w.SetIcon(ui.AppIcon)
 	w.Resize(fyne.NewSize(960, 680))
 	w.CenterOnScreen()
 

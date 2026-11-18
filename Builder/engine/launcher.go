@@ -22,13 +22,13 @@ func OpenFolder(path string) error {
 	return cmd.Start()
 }
 
+// GameExecutable is the path of the built game in gameDir.
+func GameExecutable(gameDir string) string {
+	return filepath.Join(gameDir, exeName("Splatoon"))
+}
+
 func LaunchGame(gameDir string, cfg settings.Configuration, log func(string, ...interface{})) (*exec.Cmd, error) {
-	var exePath string
-	if runtime.GOOS == "windows" {
-		exePath = filepath.Join(gameDir, "Splatoon.exe")
-	} else {
-		exePath = filepath.Join(gameDir, "Splatoon")
-	}
+	exePath := GameExecutable(gameDir)
 
 	if _, err := os.Stat(exePath); err != nil {
 		return nil, fmt.Errorf("executable not found: %s", exePath)
@@ -43,7 +43,7 @@ func LaunchGame(gameDir string, cfg settings.Configuration, log func(string, ...
 		fmt.Sprintf("RBREW_PLAYER_NAME=%s", cfg.PlayerName),
 		fmt.Sprintf("RBREW_MII_NAME=%s", cfg.PlayerName),
 		fmt.Sprintf("RBREW_CONSOLE_LANGUAGE=%d", cfg.LanguageID),
-		fmt.Sprintf("RBREW_CONSOLE_REGION=%s", cfg.ConsoleRegion),
+		fmt.Sprintf("RBREW_CONSOLE_REGION=%s", settings.RegionMask(cfg.ConsoleRegion)),
 	)
 
 	if cfg.UpscaleTextures {

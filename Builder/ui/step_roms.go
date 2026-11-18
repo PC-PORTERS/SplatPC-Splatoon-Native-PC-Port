@@ -130,11 +130,11 @@ func (v *StepRomsView) initUI() {
 		container.NewBorder(nil, nil, nil, v.outputBrowseBtn, v.outputEntry),
 	)
 
-	v.prevBtn = widget.NewButtonWithIcon("← Prerequisites", theme.NavigateBackIcon(), func() {
+	v.prevBtn = widget.NewButtonWithIcon("Prerequisites", theme.NavigateBackIcon(), func() {
 		v.wizard.GoToStep(StepPrereq)
 	})
 
-	v.nextBtn = widget.NewButtonWithIcon("Game Settings →", theme.NavigateNextIcon(), func() {
+	v.nextBtn = widget.NewButtonWithIcon("Game Settings", theme.NavigateNextIcon(), func() {
 		v.wizard.GoToStep(StepSettings)
 	})
 	v.nextBtn.Importance = widget.HighImportance

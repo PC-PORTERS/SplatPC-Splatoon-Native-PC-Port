@@ -93,27 +93,9 @@ jobs:
             echo "StartupNotify=true"
           } > "$APPDIR/splatpc-builder.desktop"
 
-          python3 -c '
-          import zlib, struct
-          w, h = 128, 128
-          raw = bytearray()
-          for y in range(h):
-              raw.append(0)
-              for x in range(w):
-                  if 8 <= x <= 120 and 8 <= y <= 120:
-                      if 14 <= x <= 114 and 14 <= y <= 114:
-                          raw.extend([0, 212, 170, 255])
-                      else:
-                          raw.extend([20, 24, 33, 255])
-                  else:
-                      raw.extend([20, 24, 33, 255])
-          def chunk(t, d):
-              return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
-          png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(bytes(raw))) + chunk(b"IEND", b"")
-          with open("AppDir/splatpc-builder.png", "wb") as f: f.write(png)
-          with open("AppDir/.DirIcon", "wb") as f: f.write(png)
-          with open("AppDir/usr/share/icons/hicolor/128x128/apps/splatpc-builder.png", "wb") as f: f.write(png)
-          '
+          cp Builder/ui/icon.png "$APPDIR/splatpc-builder.png"
+          cp Builder/ui/icon.png "$APPDIR/.DirIcon"
+          cp Builder/ui/icon.png "$APPDIR/usr/share/icons/hicolor/128x128/apps/splatpc-builder.png"
 
           ARCH=x86_64 appimagetool -n "$APPDIR" SplatPC-Builder-x86_64.AppImage
           chmod +x SplatPC-Builder-x86_64.AppImage
@@ -154,6 +136,7 @@ jobs:
         run: |
           cd Builder
           $env:CGO_ENABLED = "1"
+          go generate ./winres.go
           go build -trimpath -ldflags="-H windowsgui -s -w" -o ../SplatPC-Builder.exe .
 
       - name: Package Windows release zip

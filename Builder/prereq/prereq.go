@@ -7,8 +7,11 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
+
+	"splatpc-builder/proc"
 )
 
 type CheckItem struct {
@@ -28,7 +31,10 @@ type CheckReport struct {
 	AllRequiredMet bool
 	OSName         string
 	Distro         string
-	InstallScript  string
+	// InstallSteps install the missing required tools on this system their
+	// commands one per line are InstallScripts
+	InstallSteps  []InstallStep
+	InstallScript string
 }
 
 func DetectDistro() string {
@@ -72,7 +78,7 @@ func RunChecks() CheckReport {
 	if path, err := exec.LookPath("cmake"); err == nil {
 		cmakeItem.Found = true
 		cmakeItem.Path = path
-		if out, err := exec.Command("cmake", "--version").Output(); err == nil {
+		if out, err := proc.Command("cmake", "--version").Output(); err == nil {
 			v := parseVersion(string(out))
 			cmakeItem.Version = v
 			if isVersionOlder(v, "3.20") {
@@ -133,7 +139,7 @@ func RunChecks() CheckReport {
 	if path, err := exec.LookPath("ninja"); err == nil {
 		ninjaItem.Found = true
 		ninjaItem.Path = path
-		if out, err := exec.Command("ninja", "--version").Output(); err == nil {
+		if out, err := proc.Command("ninja", "--version").Output(); err == nil {
 			ninjaItem.Version = strings.TrimSpace(string(out))
 		}
 	} else {
@@ -224,7 +230,15 @@ func RunChecks() CheckReport {
 		}
 	}
 
-	report.InstallScript = generateInstallCommand(report.Distro, report.Items)
+	missing := missingRequired(report.Items)
+	var partialVS *VisualStudio
+	if runtime.GOOS == "windows" && slices.Contains(missing, "compiler") {
+		if vs, ok := findVisualStudioWithoutCpp(); ok {
+			partialVS = &vs
+		}
+	}
+	report.InstallSteps = installSteps(report.Distro, missing, partialVS)
+	report.InstallScript = installScript(report.InstallSteps, missing)
 	return report
 }
 
@@ -234,7 +248,7 @@ func checkCompilers(item *CheckItem) {
 		if path, err := exec.LookPath(c); err == nil {
 			item.Found = true
 			item.Path = path
-			if out, err := exec.Command(c, "--version").Output(); err == nil {
+			if out, err := proc.Command(c, "--version").Output(); err == nil {
 				lines := strings.Split(string(out), "\n")
 				if len(lines) > 0 {
 					item.Version = strings.TrimSpace(lines[0])
@@ -300,7 +314,7 @@ func fileExists(p string) bool {
 }
 
 func pkgConfigExists(pkg string) bool {
-	cmd := exec.Command("pkg-config", "--exists", pkg)
+	cmd := proc.Command("pkg-config", "--exists", pkg)
 	return cmd.Run() == nil
 }
 
@@ -324,29 +338,4 @@ func isVersionOlder(curr, req string) bool {
 		}
 	}
 	return len(currParts) < len(reqParts)
-}
-
-func generateInstallCommand(distro string, items []CheckItem) string {
-	var missing []string
-	for _, it := range items {
-		if !it.Found {
-			missing = append(missing, it.ID)
-		}
-	}
-	if len(missing) == 0 {
-		return ""
-	}
-
-	switch distro {
-	case "arch":
-		return "sudo pacman -S --needed cmake gcc ninja python vulkan-headers zlib curl libx11"
-	case "debian":
-		return "sudo apt update && sudo apt install -y cmake g++ ninja-build python3 curl libvulkan-dev zlib1g-dev libcurl4-openssl-dev libx11-dev"
-	case "fedora":
-		return "sudo dnf install -y cmake gcc-c++ ninja-build python3 curl vulkan-headers zlib-devel libcurl-devel libX11-devel"
-	case "windows":
-		return "winget install Kitware.CMake Python.Python.3.12 && winget install Microsoft.VisualStudio.2022.BuildTools --override \"--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended\""
-	default:
-		return "Please install cmake, g++/clang++, ninja, python3 (>=3.12), vulkan-headers, zlib, libcurl"
-	}
 }

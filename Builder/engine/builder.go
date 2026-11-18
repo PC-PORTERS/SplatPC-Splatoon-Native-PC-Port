@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"splatpc-builder/prereq"
+	"splatpc-builder/proc"
 	"splatpc-builder/roms"
 	"splatpc-builder/settings"
 )
@@ -239,12 +240,12 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 	log("=== Step 5/8: RebrewU Recompiler ===")
 	rebrewuBuild := filepath.Join(buildDir, "rebrewu")
 	rebrewuDefines := append([]string{"-DREBREWU_BUILD_TESTS=OFF"}, libs.zlibDefines...)
-	cmdRebrewuCfg := exec.CommandContext(ctx, "cmake", cmake.configureArgs(recompilerDir, rebrewuBuild, rebrewuDefines...)...)
+	cmdRebrewuCfg := proc.CommandContext(ctx, "cmake", cmake.configureArgs(recompilerDir, rebrewuBuild, rebrewuDefines...)...)
 	if err := runCmdWithLog(cmdRebrewuCfg, log); err != nil {
 		failDone(fmt.Errorf("CMake configuration of RebrewU failed: %w", err))
 		return
 	}
-	cmdRebrewuBuild := exec.CommandContext(ctx, "cmake", cmake.buildArgs(rebrewuBuild, "rebrewu")...)
+	cmdRebrewuBuild := proc.CommandContext(ctx, "cmake", cmake.buildArgs(rebrewuBuild, "rebrewu")...)
 	if err := runCmdWithLog(cmdRebrewuBuild, log); err != nil {
 		failDone(fmt.Errorf("compiling RebrewU: %w", err))
 		return
@@ -262,7 +263,7 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 	generatedDir := filepath.Join(buildDir, "generated", "Gambit")
 	_ = os.MkdirAll(generatedDir, 0755)
 
-	cmdRecompile := exec.CommandContext(ctx, rebrewuExe, "recompile",
+	cmdRecompile := proc.CommandContext(ctx, rebrewuExe, "recompile",
 		"--rpx", rpxPath,
 		"--output", generatedDir,
 		"--manifest", selectedManifest,
@@ -302,13 +303,13 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 		"-DRBREW_DIAGNOSTIC_RUNTIME=OFF",
 		"-DRBREW_TEXTURE_DIAGNOSTICS=OFF",
 	}, libs.gameDefines...)
-	cmdGameCfg := exec.CommandContext(ctx, "cmake", cmake.configureArgs(filepath.Join(recompilerDir, "port"), gameBuild, gameDefines...)...)
+	cmdGameCfg := proc.CommandContext(ctx, "cmake", cmake.configureArgs(filepath.Join(recompilerDir, "port"), gameBuild, gameDefines...)...)
 	if err := runCmdWithLog(cmdGameCfg, log); err != nil {
 		failDone(fmt.Errorf("CMake configuration of the game failed: %w", err))
 		return
 	}
 
-	cmdGameBuild := exec.CommandContext(ctx, "cmake", cmake.buildArgs(gameBuild, "Gambit")...)
+	cmdGameBuild := proc.CommandContext(ctx, "cmake", cmake.buildArgs(gameBuild, "Gambit")...)
 	if err := runCmdWithLog(cmdGameBuild, log); err != nil {
 		failDone(fmt.Errorf("compiling Splatoon executable: %w", err))
 		return
@@ -324,7 +325,7 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 		failDone(err)
 		return
 	}
-	exeDest := filepath.Join(cfg.OutputDir, exeName("Splatoon"))
+	exeDest := GameExecutable(cfg.OutputDir)
 	if err := copySingleFile(exeSource, exeDest); err != nil {
 		failDone(fmt.Errorf("copying executable: %w", err))
 		return

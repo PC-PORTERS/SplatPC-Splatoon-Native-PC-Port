@@ -2,10 +2,12 @@ package ui
 
 import (
 	"fmt"
+	"runtime"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
@@ -21,6 +23,7 @@ type StepPrereqView struct {
 	itemsList    *fyne.Container
 	installCard  *widget.Card
 	installEntry *widget.Entry
+	installBtn   *widget.Button
 	nextBtn      *widget.Button
 	refreshBtn   *widget.Button
 	copyBtn      *widget.Button
@@ -32,7 +35,6 @@ func NewStepPrereqView(w *Wizard) *StepPrereqView {
 		itemsList: container.NewVBox(),
 	}
 	v.initUI()
-	v.Refresh()
 	return v
 }
 
@@ -44,21 +46,28 @@ func (v *StepPrereqView) initUI() {
 		v.Refresh()
 	})
 
-	v.nextBtn = widget.NewButtonWithIcon("Proceed to ROM Definition →", theme.NavigateNextIcon(), func() {
+	v.nextBtn = widget.NewButtonWithIcon("Proceed to ROM Definition", theme.NavigateNextIcon(), func() {
 		v.wizard.GoToStep(StepRoms)
 	})
 	v.nextBtn.Importance = widget.HighImportance
 
-	v.installEntry = widget.NewEntry()
+	v.installEntry = widget.NewMultiLineEntry()
 	v.installEntry.TextStyle = fyne.TextStyle{Monospace: true}
+	v.installEntry.Wrapping = fyne.TextWrapWord
 
 	v.copyBtn = widget.NewButtonWithIcon("Copy", theme.ContentCopyIcon(), func() {
 		v.wizard.window.Clipboard().SetContent(v.installEntry.Text)
 		dialog.ShowInformation("Copied", "Command copied to clipboard!", v.wizard.window)
 	})
 
-	v.installCard = widget.NewCard("Missing Tools Detected - Recommended Installation Command", "",
-		container.NewBorder(nil, nil, nil, v.copyBtn, v.installEntry),
+	v.installBtn = widget.NewButtonWithIcon("Install missing tools", theme.DownloadIcon(), v.installMissing)
+	v.installBtn.Importance = widget.HighImportance
+
+	v.installCard = widget.NewCard("Missing tools", "These commands install what is missing on this PC.",
+		container.NewVBox(
+			v.installEntry,
+			container.NewHBox(v.installBtn, v.copyBtn),
+		),
 	)
 
 	v.statusCard = widget.NewCard("Dependency Status", "", v.itemsList)
@@ -71,7 +80,7 @@ func (v *StepPrereqView) initUI() {
 
 	bottomBar := container.NewHBox(
 		v.refreshBtn,
-		container.NewHBox(),
+		layout.NewSpacer(),
 		v.nextBtn,
 	)
 
@@ -89,8 +98,23 @@ func (v *StepPrereqView) initUI() {
 	)
 }
 
+// Refresh runs the checks again in the background; the buttons wait meanwhile.
 func (v *StepPrereqView) Refresh() {
-	v.report = prereq.RunChecks()
+	v.refreshBtn.Disable()
+	v.nextBtn.Disable()
+	v.refreshBtn.SetText("Checking...")
+	go func() {
+		report := prereq.RunChecks()
+		fyne.Do(func() {
+			v.refreshBtn.SetText("Re-check system")
+			v.refreshBtn.Enable()
+			v.ShowReport(report)
+		})
+	}()
+}
+
+func (v *StepPrereqView) ShowReport(report prereq.CheckReport) {
+	v.report = report
 	v.itemsList.Objects = nil
 
 	for _, item := range v.report.Items {
@@ -134,16 +158,36 @@ func (v *StepPrereqView) Refresh() {
 	} else {
 		v.installCard.Hide()
 	}
+	if len(v.report.InstallSteps) > 0 {
+		v.installBtn.Show()
+	} else {
+		v.installBtn.Hide()
+	}
 
 	if v.report.AllRequiredMet {
 		v.nextBtn.Enable()
-		v.nextBtn.SetText("All tools ready - Proceed to ROMs →")
+		v.nextBtn.SetText("All tools ready - Proceed to ROMs")
 	} else {
 		v.nextBtn.Disable()
 		v.nextBtn.SetText("Required tools are missing")
 	}
 
 	v.container.Refresh()
+}
+
+// installMissing runs the install commands in a terminal window of their own.
+func (v *StepPrereqView) installMissing() {
+	if err := prereq.OpenInstallTerminal(v.report.InstallSteps); err != nil {
+		dialog.ShowError(err, v.wizard.window)
+		return
+	}
+	next := "When it is done, click \"Re-check system\"."
+	if runtime.GOOS == "windows" {
+		// The Builder keeps the PATH it started with, so new programs only show up after a restart.
+		next = "When it is done, close the Builder and start it again so it finds the new tools."
+	}
+	dialog.ShowInformation("Installing the missing tools",
+		"A window opened that installs the missing tools. Windows may ask for permission.\n\n"+next, v.wizard.window)
 }
 
 func (v *StepPrereqView) Container() fyne.CanvasObject {
