@@ -4,6 +4,7 @@
 #include "../../runtime/port_settings.h"
 #include "../../runtime/benchmark_input.h"
 #include "vk/gx2_vk_capture.h"
+#include "vk/gx2_render_vk_state.h"
 
 #include <algorithm>
 #include <bit>
@@ -517,7 +518,9 @@ void set_wanted(bool wanted) {
     s_wanted.store(wanted && mode_enabled(), std::memory_order_relaxed);
 }
 bool capturing() {
-    return !s_replaying && s_wanted.load(std::memory_order_relaxed);
+    // keep() runs after the present has scheduled its replay. Reopening the
+    // capture there would record the replay's swapchain operations as game work.
+    return !s_replaying && !s_pending_replay && s_wanted.load(std::memory_order_relaxed);
 }
 bool replaying() {
     return s_replaying;
@@ -548,6 +551,7 @@ void before_item() {
     sync_capture();
 } // render thread, before each queue item
 void present_begin() { // gx2_render_present: the present's own commands are not the frame's
+    gx2r::end_rendering();
     if (gx2vk::capture::enabled()) gx2vk::capture::set_enabled(false);
 }
 
@@ -673,6 +677,7 @@ void rotate() {
 void present_mid_now() {
     if (!s_mid) return;
     s_mid = false;
+    gx2r::end_rendering();
     const bool capture = gx2vk::capture::enabled();
     if (capture) gx2vk::capture::set_enabled(false);
     gx2_render_interp_present_mid();
@@ -683,6 +688,7 @@ void present_held_now() {
     present_mid_now(); // in order, also when late
     if (!s_held) return;
     s_held = false;
+    gx2r::end_rendering();
     const bool capture = gx2vk::capture::enabled();
     if (capture) gx2vk::capture::set_enabled(false);
     gx2_render_interp_present_held();

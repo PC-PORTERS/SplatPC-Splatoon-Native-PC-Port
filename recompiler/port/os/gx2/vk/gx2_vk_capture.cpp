@@ -75,6 +75,7 @@ struct Header {
     uint32_t pad;
     Thunk fn;
 };
+constexpr uint32_t kAttachmentWrite = 1u << 31;
 constexpr size_t kBlock = size_t(4) << 20;
 constexpr size_t align16(size_t n) {
     return (n + 15) & ~size_t(15);
@@ -99,7 +100,7 @@ struct Arena {
         packets.clear();
         passes.clear();
     }
-    uint8_t* reserve(size_t body, Thunk fn) {
+    uint8_t* reserve(size_t body, Thunk fn, bool attachment_write) {
         const size_t size = sizeof(Header) + align16(body);
         if (size > kBlock) {
             complete = false;
@@ -112,7 +113,7 @@ struct Arena {
             if (block == blocks.size()) blocks.emplace_back(new uint8_t[kBlock]);
         }
         uint8_t* p = blocks[block].get() + used;
-        Header h{uint32_t(size), s_pass_tag, fn};
+        Header h{uint32_t(size), s_pass_tag | (attachment_write ? kAttachmentWrite : 0), fn};
         std::memcpy(p, &h, sizeof(h));
         packets.push_back({block, used});
         used += size;
@@ -124,8 +125,11 @@ Arena s_arenas[2];
 Arena* s_capture = &s_arenas[0];
 Arena* s_replay = &s_arenas[1];
 
-bool capturing() {
-    return s_enabled && !s_replaying;
+// Initialization barriers belong to the prologue command buffer and run
+// before the main commands. Replaying them inline can place image barriers
+// inside a rendering instance and reset images that already contain data.
+bool capturing(VkCommandBuffer cb) {
+    return s_enabled && !s_replaying && gx2vk::is_current_command_buffer(cb);
 }
 std::vector<uint64_t> s_blend_targets; // replay: the scene targets
 std::atomic<bool> s_plaza{false};
@@ -139,10 +143,10 @@ bool blend_pass(uint32_t pass) {
 template <class F> void thunk(uint8_t* body, VkCommandBuffer cb) {
     (*reinterpret_cast<F*>(body))(cb);
 }
-template <class Make> void cap(size_t extra, Make make) {
+template <class Make> void cap(size_t extra, Make make, bool attachment_write = false) {
     using F = decltype(make(static_cast<uint8_t*>(nullptr)));
     static_assert(std::is_trivially_copyable_v<F>);
-    uint8_t* body = s_capture->reserve(align16(sizeof(F)) + extra, &thunk<F>);
+    uint8_t* body = s_capture->reserve(align16(sizeof(F)) + extra, &thunk<F>, attachment_write);
     if (!body) return;
     new (body) F(make(body + align16(sizeof(F))));
 }
@@ -159,7 +163,7 @@ template <class T> constexpr size_t bytes(const T*, uint32_t count) {
 
 #define CAP0(Name, Params, Args, Call)                                                                                 \
     VKAPI_ATTR void VKAPI_CALL c_##Name Params {                                                                       \
-        if (capturing()) cap(0, [=](uint8_t*) { return [=](VkCommandBuffer c) { vkCmd##Name Call; }; });               \
+        if (capturing(cb)) cap(0, [=](uint8_t*) { return [=](VkCommandBuffer c) { vkCmd##Name Call; }; });             \
         prev.Name Args;                                                                                                \
     }
 CAP0(BindPipeline, (VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipeline p), (cb, bp, p), (c, bp, p))
@@ -181,23 +185,23 @@ CAP0(SetDepthBiasEnable, (VkCommandBuffer cb, VkBool32 e), (cb, e), (c, e))
 CAP0(SetPrimitiveRestartEnable, (VkCommandBuffer cb, VkBool32 e), (cb, e), (c, e))
 #undef CAP0
 VKAPI_ATTR void VKAPI_CALL c_EndRendering(VkCommandBuffer cb) {
-    if (capturing()) cap(0, [=](uint8_t*) { return [=](VkCommandBuffer c) { vkCmdEndRendering(c); }; });
+    if (capturing(cb)) cap(0, [=](uint8_t*) { return [=](VkCommandBuffer c) { vkCmdEndRendering(c); }; });
     s_pass_tag = 0;
     prev.EndRendering(cb);
 }
 // Draws inside a transform-feedback section produce guest data: not replayed.
 VKAPI_ATTR void VKAPI_CALL c_Draw(VkCommandBuffer cb, uint32_t v, uint32_t i, uint32_t fv, uint32_t fi) {
-    if (capturing() && !s_tf_active) {
+    if (capturing(cb) && !s_tf_active) {
         if (!s_capture->passes.empty()) ++s_capture->passes.back().draws;
-        cap(0, [=](uint8_t*) { return [=](VkCommandBuffer c) { vkCmdDraw(c, v, i, fv, fi); }; });
+        cap(0, [=](uint8_t*) { return [=](VkCommandBuffer c) { vkCmdDraw(c, v, i, fv, fi); }; }, true);
     }
     prev.Draw(cb, v, i, fv, fi);
 }
 VKAPI_ATTR void VKAPI_CALL c_DrawIndexed(VkCommandBuffer cb, uint32_t n, uint32_t i, uint32_t fi, int32_t vo,
                                          uint32_t fin) {
-    if (capturing() && !s_tf_active) {
+    if (capturing(cb) && !s_tf_active) {
         if (!s_capture->passes.empty()) ++s_capture->passes.back().draws;
-        cap(0, [=](uint8_t*) { return [=](VkCommandBuffer c) { vkCmdDrawIndexed(c, n, i, fi, vo, fin); }; });
+        cap(0, [=](uint8_t*) { return [=](VkCommandBuffer c) { vkCmdDrawIndexed(c, n, i, fi, vo, fin); }; }, true);
     }
     prev.DrawIndexed(cb, n, i, fi, vo, fin);
 }
@@ -212,7 +216,7 @@ VKAPI_ATTR void VKAPI_CALL c_EndTransformFeedbackEXT(VkCommandBuffer cb, uint32_
     prev.EndTransformFeedbackEXT(cb, f, n, b, o);
 }
 VKAPI_ATTR void VKAPI_CALL c_SetBlendConstants(VkCommandBuffer cb, const float k[4]) {
-    if (capturing()) {
+    if (capturing(cb)) {
         struct V {
             float v[4];
         } values;
@@ -222,7 +226,7 @@ VKAPI_ATTR void VKAPI_CALL c_SetBlendConstants(VkCommandBuffer cb, const float k
     prev.SetBlendConstants(cb, k);
 }
 VKAPI_ATTR void VKAPI_CALL c_SetViewport(VkCommandBuffer cb, uint32_t first, uint32_t count, const VkViewport* v) {
-    if (capturing())
+    if (capturing(cb))
         cap(bytes(v, count), [=](uint8_t* p) {
             const VkViewport* x = put(p, v, count);
             return [=](VkCommandBuffer c) { vkCmdSetViewport(c, first, count, x); };
@@ -230,7 +234,7 @@ VKAPI_ATTR void VKAPI_CALL c_SetViewport(VkCommandBuffer cb, uint32_t first, uin
     prev.SetViewport(cb, first, count, v);
 }
 VKAPI_ATTR void VKAPI_CALL c_SetScissor(VkCommandBuffer cb, uint32_t first, uint32_t count, const VkRect2D* s) {
-    if (capturing())
+    if (capturing(cb))
         cap(bytes(s, count), [=](uint8_t* p) {
             const VkRect2D* x = put(p, s, count);
             return [=](VkCommandBuffer c) { vkCmdSetScissor(c, first, count, x); };
@@ -239,7 +243,7 @@ VKAPI_ATTR void VKAPI_CALL c_SetScissor(VkCommandBuffer cb, uint32_t first, uint
 }
 VKAPI_ATTR void VKAPI_CALL c_BindVertexBuffers(VkCommandBuffer cb, uint32_t first, uint32_t count, const VkBuffer* b,
                                                const VkDeviceSize* o) {
-    if (capturing())
+    if (capturing(cb))
         cap(bytes(b, count) + bytes(o, count), [=](uint8_t* p) {
             const VkBuffer* bx = put(p, b, count);
             const VkDeviceSize* ox = put(p, o, count);
@@ -250,8 +254,8 @@ VKAPI_ATTR void VKAPI_CALL c_BindVertexBuffers(VkCommandBuffer cb, uint32_t firs
 VKAPI_ATTR void VKAPI_CALL c_BindDescriptorSets(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipelineLayout l,
                                                 uint32_t first, uint32_t count, const VkDescriptorSet* sets,
                                                 uint32_t dyn_count, const uint32_t* dyn) {
-    if (capturing()) ++s_capture->set_binds;
-    if (capturing())
+    if (capturing(cb)) ++s_capture->set_binds;
+    if (capturing(cb))
         cap(bytes(sets, count) + bytes(dyn, dyn_count), [=](uint8_t* p) {
             const VkDescriptorSet* sx = put(p, sets, count);
             const uint32_t* dx = put(p, dyn, dyn_count);
@@ -261,7 +265,7 @@ VKAPI_ATTR void VKAPI_CALL c_BindDescriptorSets(VkCommandBuffer cb, VkPipelineBi
 }
 VKAPI_ATTR void VKAPI_CALL c_PushConstants(VkCommandBuffer cb, VkPipelineLayout l, VkShaderStageFlags s,
                                            uint32_t offset, uint32_t size, const void* v) {
-    if (capturing())
+    if (capturing(cb))
         cap(align16(size), [=](uint8_t* p) {
             const uint8_t* vx = put(p, static_cast<const uint8_t*>(v), size);
             return [=](VkCommandBuffer c) { vkCmdPushConstants(c, l, s, offset, size, vx); };
@@ -270,12 +274,15 @@ VKAPI_ATTR void VKAPI_CALL c_PushConstants(VkCommandBuffer cb, VkPipelineLayout 
 }
 VKAPI_ATTR void VKAPI_CALL c_ClearAttachments(VkCommandBuffer cb, uint32_t n, const VkClearAttachment* a, uint32_t rn,
                                               const VkClearRect* r) {
-    if (capturing())
-        cap(bytes(a, n) + bytes(r, rn), [=](uint8_t* p) {
-            const VkClearAttachment* ax = put(p, a, n);
-            const VkClearRect* rx = put(p, r, rn);
-            return [=](VkCommandBuffer c) { vkCmdClearAttachments(c, n, ax, rn, rx); };
-        });
+    if (capturing(cb))
+        cap(
+            bytes(a, n) + bytes(r, rn),
+            [=](uint8_t* p) {
+                const VkClearAttachment* ax = put(p, a, n);
+                const VkClearRect* rx = put(p, r, rn);
+                return [=](VkCommandBuffer c) { vkCmdClearAttachments(c, n, ax, rn, rx); };
+            },
+            true);
     prev.ClearAttachments(cb, n, a, rn, r);
 }
 bool buffer_type(VkDescriptorType t) {
@@ -313,7 +320,7 @@ void replay_push(VkCommandBuffer c, VkPipelineBindPoint bp, VkPipelineLayout l, 
 }
 VKAPI_ATTR void VKAPI_CALL c_PushDescriptorSet(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipelineLayout l,
                                                uint32_t set, uint32_t n, const VkWriteDescriptorSet* writes) {
-    if (capturing()) {
+    if (capturing(cb)) {
         bool simple = true;
         size_t extra = bytes(writes, n);
         for (uint32_t i = 0; i < n; ++i) {
@@ -357,7 +364,7 @@ VKAPI_ATTR void VKAPI_CALL c_PushDescriptorSet(VkCommandBuffer cb, VkPipelineBin
     prev.PushDescriptorSetKHR(cb, bp, l, set, n, writes);
 }
 VKAPI_ATTR void VKAPI_CALL c_BeginRendering(VkCommandBuffer cb, const VkRenderingInfo* info) {
-    if (capturing()) {
+    if (capturing(cb)) {
         VkImageView target = info->colorAttachmentCount && info->pColorAttachments
                                  ? info->pColorAttachments[0].imageView
                                  : VK_NULL_HANDLE;
@@ -389,7 +396,7 @@ VKAPI_ATTR void VKAPI_CALL c_BeginRendering(VkCommandBuffer cb, const VkRenderin
     prev.BeginRendering(cb, info);
 }
 VKAPI_ATTR void VKAPI_CALL c_PipelineBarrier2(VkCommandBuffer cb, const VkDependencyInfo* d) {
-    if (capturing()) {
+    if (capturing(cb)) {
         const bool simple =
             !d->pNext &&
             std::all_of(d->pMemoryBarriers, d->pMemoryBarriers + d->memoryBarrierCount,
@@ -418,7 +425,7 @@ VKAPI_ATTR void VKAPI_CALL c_PipelineBarrier(VkCommandBuffer cb, VkPipelineStage
                                              VkDependencyFlags f, uint32_t mn, const VkMemoryBarrier* m, uint32_t bn,
                                              const VkBufferMemoryBarrier* b, uint32_t in,
                                              const VkImageMemoryBarrier* im) {
-    if (capturing())
+    if (capturing(cb))
         cap(bytes(m, mn) + bytes(b, bn) + bytes(im, in), [=](uint8_t* p) {
             const VkMemoryBarrier* mx = put(p, m, mn);
             const VkBufferMemoryBarrier* bx = put(p, b, bn);
@@ -429,7 +436,7 @@ VKAPI_ATTR void VKAPI_CALL c_PipelineBarrier(VkCommandBuffer cb, VkPipelineStage
 }
 VKAPI_ATTR void VKAPI_CALL c_CopyImage(VkCommandBuffer cb, VkImage s, VkImageLayout sl, VkImage d, VkImageLayout dl,
                                        uint32_t n, const VkImageCopy* r) {
-    if (capturing())
+    if (capturing(cb))
         cap(bytes(r, n), [=](uint8_t* p) {
             const VkImageCopy* rx = put(p, r, n);
             return [=](VkCommandBuffer c) { vkCmdCopyImage(c, s, sl, d, dl, n, rx); };
@@ -438,7 +445,7 @@ VKAPI_ATTR void VKAPI_CALL c_CopyImage(VkCommandBuffer cb, VkImage s, VkImageLay
 }
 VKAPI_ATTR void VKAPI_CALL c_BlitImage(VkCommandBuffer cb, VkImage s, VkImageLayout sl, VkImage d, VkImageLayout dl,
                                        uint32_t n, const VkImageBlit* r, VkFilter f) {
-    if (capturing())
+    if (capturing(cb))
         cap(bytes(r, n), [=](uint8_t* p) {
             const VkImageBlit* rx = put(p, r, n);
             return [=](VkCommandBuffer c) { vkCmdBlitImage(c, s, sl, d, dl, n, rx, f); };
@@ -447,7 +454,7 @@ VKAPI_ATTR void VKAPI_CALL c_BlitImage(VkCommandBuffer cb, VkImage s, VkImageLay
 }
 VKAPI_ATTR void VKAPI_CALL c_ClearColorImage(VkCommandBuffer cb, VkImage i, VkImageLayout l, const VkClearColorValue* v,
                                              uint32_t n, const VkImageSubresourceRange* r) {
-    if (capturing())
+    if (capturing(cb))
         cap(bytes(v, 1) + bytes(r, n), [=](uint8_t* p) {
             const VkClearColorValue* vx = put(p, v, v ? 1u : 0u);
             const VkImageSubresourceRange* rx = put(p, r, n);
@@ -458,7 +465,7 @@ VKAPI_ATTR void VKAPI_CALL c_ClearColorImage(VkCommandBuffer cb, VkImage i, VkIm
 VKAPI_ATTR void VKAPI_CALL c_ClearDepthStencilImage(VkCommandBuffer cb, VkImage i, VkImageLayout l,
                                                     const VkClearDepthStencilValue* v, uint32_t n,
                                                     const VkImageSubresourceRange* r) {
-    if (capturing())
+    if (capturing(cb))
         cap(bytes(v, 1) + bytes(r, n), [=](uint8_t* p) {
             const VkClearDepthStencilValue* vx = put(p, v, v ? 1u : 0u);
             const VkImageSubresourceRange* rx = put(p, r, n);
@@ -481,7 +488,7 @@ bool capture_copies() {
 }
 VKAPI_ATTR void VKAPI_CALL c_CopyBufferToImage(VkCommandBuffer cb, VkBuffer b, VkImage i, VkImageLayout l, uint32_t n,
                                                const VkBufferImageCopy* r) {
-    if (capturing() && capture_copies())
+    if (capturing(cb) && capture_copies())
         cap(bytes(r, n), [=](uint8_t* p) {
             const VkBufferImageCopy* rx = put(p, r, n);
             return [=](VkCommandBuffer c) { vkCmdCopyBufferToImage(c, b, i, l, n, rx); };
@@ -493,7 +500,7 @@ VKAPI_ATTR void VKAPI_CALL c_CopyBufferToImage(VkCommandBuffer cb, VkBuffer b, V
 std::vector<VkBuffer> s_staging_buffers;
 VKAPI_ATTR void VKAPI_CALL c_CopyImageToBuffer(VkCommandBuffer cb, VkImage i, VkImageLayout l, VkBuffer b, uint32_t n,
                                                const VkBufferImageCopy* r) {
-    if (capturing() && capture_copies() &&
+    if (capturing(cb) && capture_copies() &&
         std::find(s_staging_buffers.begin(), s_staging_buffers.end(), b) != s_staging_buffers.end())
         cap(bytes(r, n), [=](uint8_t* p) {
             const VkBufferImageCopy* rx = put(p, r, n);
@@ -690,7 +697,9 @@ void replay(Substitute substitute) {
     // value with the new one. Run again per in-between frame they sped the
     // adaptation up, and with two in-between frames (180 FPS) the exposure ran
     // off and the second one came out nearly black. Their frame-N result is
-    // still in place: skipped. RBREW_INTERP_REPLAY_TINY=1: replay them.
+    // still in place: skip attachment writes, but keep their state commands
+    // and rendering boundaries. Later passes can inherit these bindings.
+    // RBREW_INTERP_REPLAY_TINY=1: replay their writes as well.
     static const bool replay_tiny = [] {
         const char* v = std::getenv("RBREW_INTERP_REPLAY_TINY");
         return v && v[0] == '1';
@@ -699,8 +708,9 @@ void replay(Substitute substitute) {
         uint8_t* p = s_replay->blocks[spot.block].get() + spot.offset;
         Header h;
         std::memcpy(&h, p, sizeof(h));
-        if (!replay_tiny && h.pad && h.pad <= s_replay->passes.size()) {
-            const PassInfo& pass = s_replay->passes[h.pad - 1];
+        const uint32_t pass_index = h.pad & ~kAttachmentWrite;
+        if (!replay_tiny && (h.pad & kAttachmentWrite) && pass_index && pass_index <= s_replay->passes.size()) {
+            const PassInfo& pass = s_replay->passes[pass_index - 1];
             if (pass.color && uint64_t(pass.w) * pass.h <= 128) continue;
         }
         h.fn(p + sizeof(Header), cb);
