@@ -29,19 +29,26 @@ type StepBuildingView struct {
 	copyLogBtn *widget.Button
 	timerLabel *widget.Label
 
-	mu        sync.Mutex
-	logLines  []string
+	// The build goroutine appends to logLines the window picks up the newest
+	// lines a few times a second.
+	mu         sync.Mutex
+	logLines   []string
+	logChanged bool
+
 	startTime time.Time
-	ticker    *time.Ticker
-	stopTimer chan struct{}
+	stop      chan struct{}
 }
 
+// maxLogLines is how much of the log Copy Logs keeps build.log has all of it.
+const maxLogLines = 5000
+
+// shownLogLines is how much of the log the text box shows, wrapping the text
+// gets slow quickly (about 0.06 s for 500 lines, 0.9 s for 2000).
+const shownLogLines = 300
+const logRefresh = 250 * time.Millisecond
+
 func NewStepBuildingView(w *Wizard) *StepBuildingView {
-	v := &StepBuildingView{
-		wizard:    w,
-		logLines:  make([]string, 0),
-		stopTimer: make(chan struct{}),
-	}
+	v := &StepBuildingView{wizard: w}
 	v.initUI()
 	return v
 }
@@ -107,59 +114,78 @@ func (v *StepBuildingView) initUI() {
 	)
 }
 
+// Reset starts a new build: empty log, timer from zero. Runs on the UI thread.
 func (v *StepBuildingView) Reset() {
+	v.StopTimer()
 	v.mu.Lock()
 	v.logLines = nil
+	v.logChanged = false
+	v.startTime = time.Now()
+	v.mu.Unlock()
 	v.logBox.SetText("")
 	v.progressBar.SetValue(0.0)
 	v.percentLabel.SetText("0%")
 	v.stepTitle.SetText("Step 5: Compiling Splatoon")
 	v.stepDesc.SetText("Starting build pipeline...")
-	v.startTime = time.Now()
-	v.mu.Unlock()
 
-	if v.ticker != nil {
-		v.ticker.Stop()
-	}
-	v.ticker = time.NewTicker(time.Second)
+	stop := make(chan struct{})
+	v.stop = stop
 	go func() {
+		logTick := time.NewTicker(logRefresh)
+		clockTick := time.NewTicker(time.Second)
+		defer logTick.Stop()
+		defer clockTick.Stop()
 		for {
 			select {
-			case <-v.ticker.C:
+			case <-logTick.C:
+				fyne.Do(v.showNewLines)
+			case <-clockTick.C:
 				elapsed := time.Since(v.startTime)
-				mins := int(elapsed.Minutes())
-				secs := int(elapsed.Seconds()) % 60
 				fyne.Do(func() {
-					v.timerLabel.SetText(fmt.Sprintf("Elapsed Time: %02d:%02d", mins, secs))
+					v.timerLabel.SetText(fmt.Sprintf("Elapsed Time: %02d:%02d", int(elapsed.Minutes()), int(elapsed.Seconds())%60))
 				})
-			case <-v.stopTimer:
+			case <-stop:
 				return
 			}
 		}
 	}()
 }
 
+// StopTimer ends the build page updates and shows the last log lines. Runs on
+// the UI thread.
 func (v *StepBuildingView) StopTimer() {
-	if v.ticker != nil {
-		v.ticker.Stop()
+	if v.stop != nil {
+		close(v.stop)
+		v.stop = nil
 	}
+	v.showNewLines()
 }
 
+// AppendLog is called by the build for every line it prints; it only stores
+// the line, the window picks new lines up a few times a second.
 func (v *StepBuildingView) AppendLog(line string) {
 	v.mu.Lock()
 	v.logLines = append(v.logLines, line)
-	// Retain up to 2000 lines for high performance rendering
-	if len(v.logLines) > 2000 {
-		v.logLines = v.logLines[len(v.logLines)-2000:]
+	if len(v.logLines) > maxLogLines {
+		v.logLines = v.logLines[len(v.logLines)-maxLogLines:]
 	}
-	fullText := strings.Join(v.logLines, "\n")
-	row := len(v.logLines)
+	v.logChanged = true
 	v.mu.Unlock()
+}
 
-	fyne.Do(func() {
-		v.logBox.SetText(fullText)
-		v.logBox.CursorRow = row
-	})
+// showNewLines puts the lines that arrived since the last call on screen.
+func (v *StepBuildingView) showNewLines() {
+	v.mu.Lock()
+	if !v.logChanged {
+		v.mu.Unlock()
+		return
+	}
+	newest := v.logLines[max(0, len(v.logLines)-shownLogLines):]
+	text := strings.Join(newest, "\n")
+	v.logChanged = false
+	v.mu.Unlock()
+	v.logBox.SetText(text)
+	v.logBox.CursorRow = len(newest)
 }
 
 func (v *StepBuildingView) UpdateProgress(step engine.StepInfo) {

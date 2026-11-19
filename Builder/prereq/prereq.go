@@ -7,8 +7,11 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
+
+	"splatpc-builder/proc"
 )
 
 type CheckItem struct {
@@ -28,7 +31,10 @@ type CheckReport struct {
 	AllRequiredMet bool
 	OSName         string
 	Distro         string
-	InstallScript  string
+	// InstallSteps install the missing required tools on this system their
+	// commands one per line are InstallScripts
+	InstallSteps  []InstallStep
+	InstallScript string
 }
 
 func DetectDistro() string {
@@ -72,12 +78,19 @@ func RunChecks() CheckReport {
 	if path, err := exec.LookPath("cmake"); err == nil {
 		cmakeItem.Found = true
 		cmakeItem.Path = path
-		if out, err := exec.Command("cmake", "--version").Output(); err == nil {
+		if out, err := proc.Command("cmake", "--version").Output(); err == nil {
 			v := parseVersion(string(out))
 			cmakeItem.Version = v
 			if isVersionOlder(v, "3.20") {
 				cmakeItem.Found = false
 				cmakeItem.ErrorMsg = fmt.Sprintf("CMake %s is too old (>= 3.20 required)", v)
+			} else if runtime.GOOS == "windows" {
+				if vs, ok := FindVisualStudio(); ok {
+					if msg := cmakeSupportsVisualStudio(v, vs); msg != "" {
+						cmakeItem.Found = false
+						cmakeItem.ErrorMsg = msg
+					}
+				}
 			}
 		}
 	} else {
@@ -92,26 +105,17 @@ func RunChecks() CheckReport {
 		Category: "Tool",
 		Required: true,
 	}
-	pyBin := "python3"
-	if runtime.GOOS == "windows" {
-		if _, err := exec.LookPath("python3"); err != nil {
-			pyBin = "python"
-		}
-	}
-	if path, err := exec.LookPath(pyBin); err == nil {
-		pyItem.Path = path
-		if out, err := exec.Command(pyBin, "--version").Output(); err == nil {
-			v := parseVersion(string(out))
-			pyItem.Version = v
-			if isVersionOlder(v, "3.12") {
-				pyItem.Found = false
-				pyItem.ErrorMsg = fmt.Sprintf("Python %s is too old (>= 3.12 required for tar filters)", v)
-			} else {
-				pyItem.Found = true
-			}
+	if python, versionLine, ok := FindPython(); ok {
+		pyItem.Path = strings.Join(python, " ")
+		v := parseVersion(versionLine)
+		pyItem.Version = v
+		if isVersionOlder(v, "3.12") {
+			pyItem.ErrorMsg = fmt.Sprintf("Python %s is too old (>= 3.12 required for tar filters)", v)
+		} else {
+			pyItem.Found = true
 		}
 	} else {
-		pyItem.ErrorMsg = "Python 3 is not installed or not in PATH"
+		pyItem.ErrorMsg = "Python 3 is not installed or not in PATH (python3, python and py -3 were tried)"
 	}
 	report.Items = append(report.Items, pyItem)
 
@@ -135,7 +139,7 @@ func RunChecks() CheckReport {
 	if path, err := exec.LookPath("ninja"); err == nil {
 		ninjaItem.Found = true
 		ninjaItem.Path = path
-		if out, err := exec.Command("ninja", "--version").Output(); err == nil {
+		if out, err := proc.Command("ninja", "--version").Output(); err == nil {
 			ninjaItem.Version = strings.TrimSpace(string(out))
 		}
 	} else {
@@ -226,7 +230,15 @@ func RunChecks() CheckReport {
 		}
 	}
 
-	report.InstallScript = generateInstallCommand(report.Distro, report.Items)
+	missing := missingRequired(report.Items)
+	var partialVS *VisualStudio
+	if runtime.GOOS == "windows" && slices.Contains(missing, "compiler") {
+		if vs, ok := findVisualStudioWithoutCpp(); ok {
+			partialVS = &vs
+		}
+	}
+	report.InstallSteps = installSteps(report.Distro, missing, partialVS)
+	report.InstallScript = installScript(report.InstallSteps, missing)
 	return report
 }
 
@@ -236,7 +248,7 @@ func checkCompilers(item *CheckItem) {
 		if path, err := exec.LookPath(c); err == nil {
 			item.Found = true
 			item.Path = path
-			if out, err := exec.Command(c, "--version").Output(); err == nil {
+			if out, err := proc.Command(c, "--version").Output(); err == nil {
 				lines := strings.Split(string(out), "\n")
 				if len(lines) > 0 {
 					item.Version = strings.TrimSpace(lines[0])
@@ -247,10 +259,26 @@ func checkCompilers(item *CheckItem) {
 			return
 		}
 	}
+	if runtime.GOOS == "windows" {
+		if vs, ok := FindVisualStudio(); ok {
+			item.Found = true
+			item.Path = vs.Path
+			item.Version = "MSVC (" + vs.DisplayName + " " + vs.Version + ")"
+			return
+		}
+		item.ErrorMsg = "Visual Studio 2022 (or its Build Tools) with the 'Desktop development with C++' workload is not installed"
+		return
+	}
 	item.ErrorMsg = "No C++ compiler found (install g++, clang, or MSVC)"
 }
 
 func checkVulkan(item *CheckItem) {
+	if runtime.GOOS == "windows" {
+		// The Builder downloads and builds Vulkan-Headers itself on Windows.
+		item.Found = true
+		item.Version = "built by the Builder"
+		return
+	}
 	if os.Getenv("VULKAN_SDK") != "" {
 		item.Found = true
 		item.Path = os.Getenv("VULKAN_SDK")
@@ -286,7 +314,7 @@ func fileExists(p string) bool {
 }
 
 func pkgConfigExists(pkg string) bool {
-	cmd := exec.Command("pkg-config", "--exists", pkg)
+	cmd := proc.Command("pkg-config", "--exists", pkg)
 	return cmd.Run() == nil
 }
 
@@ -310,29 +338,4 @@ func isVersionOlder(curr, req string) bool {
 		}
 	}
 	return len(currParts) < len(reqParts)
-}
-
-func generateInstallCommand(distro string, items []CheckItem) string {
-	var missing []string
-	for _, it := range items {
-		if !it.Found {
-			missing = append(missing, it.ID)
-		}
-	}
-	if len(missing) == 0 {
-		return ""
-	}
-
-	switch distro {
-	case "arch":
-		return "sudo pacman -S --needed cmake gcc ninja python vulkan-headers zlib curl libx11"
-	case "debian":
-		return "sudo apt update && sudo apt install -y cmake g++ ninja-build python3 curl libvulkan-dev zlib1g-dev libcurl4-openssl-dev libx11-dev"
-	case "fedora":
-		return "sudo dnf install -y cmake gcc-c++ ninja-build python3 curl vulkan-headers zlib-devel libcurl-devel libX11-devel"
-	case "windows":
-		return "winget install Kitware.CMake Ninja-build.Ninja Python.Python.3.12 LLVM.LLVM LunarG.VulkanSDK"
-	default:
-		return "Please install cmake, g++/clang++, ninja, python3 (>=3.12), vulkan-headers, zlib, libcurl"
-	}
 }

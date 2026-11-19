@@ -314,15 +314,18 @@ if (-not [Environment]::Is64BitOperatingSystem) { Fail 'A 64-bit Windows 10 or 1
 # the compiler mangled: Ninja starts cl.exe with an ANSI command line, so
 # every include path points nowhere ("Cannot open include file", the accent
 # turned into two other characters), issue #10. A junction does not help
-# (CMake resolves it back). Build through a drive letter mapped to this same
-# folder (subst) instead: nothing is moved or copied, and the letter is
-# removed again when setup ends. The game folder keeps the real path.
+# (CMake resolves it back). A bracket in a path without spaces, as in a second
+# download "...-main(1)", is not quoted by CMake: cmd.exe stops at the "(" when
+# it starts the linker, and the compiler check fails (vcpkg's zlib, issue #34).
+# Build through a drive letter mapped to this same folder (subst) instead:
+# nothing is moved or copied, and the letter is removed again when setup ends.
+# The game folder keeps the real path.
 $ProjectRoot = $Root
 $script:BuildDrive = $null
 function Remove-BuildDrive {
     if ($script:BuildDrive) { subst "$($script:BuildDrive)" /D 2>$null | Out-Null; $script:BuildDrive = $null }
 }
-if ($Root -match '[^\x00-\x7F]') {
+if ($Root -match '[^\x00-\x7F]|[()]') {
     # The letter this folder already has from an earlier run, else a free one.
     $mapped = subst | Where-Object { $_ -match '^([A-Z]):\\: => (.*)$' -and $matches[2].TrimEnd('\') -ieq $Root.TrimEnd('\') } |
         ForEach-Object { $_.Substring(0, 2) } | Select-Object -First 1

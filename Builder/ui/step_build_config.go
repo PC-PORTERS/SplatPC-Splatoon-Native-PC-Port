@@ -78,7 +78,7 @@ func (v *StepBuildConfigView) initUI() {
 		),
 	)
 
-	v.prevBtn = widget.NewButtonWithIcon("← Settings", theme.NavigateBackIcon(), func() {
+	v.prevBtn = widget.NewButtonWithIcon("Settings", theme.NavigateBackIcon(), func() {
 		v.wizard.GoToStep(StepSettings)
 	})
 
