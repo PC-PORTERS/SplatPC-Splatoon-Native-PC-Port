@@ -4,6 +4,7 @@
 #include "gx2_guest_memory.h"
 #include "../runtime/camtrace.h"
 #include "../os/gx2/gx2_env_light.h" // online_mode()
+#include "camera_nan_guard.h"
 #include "mouse_camera.h"
 #include "../os/gx2/gx2_render.h"
 #include "../runtime/port_settings.h"
@@ -711,12 +712,37 @@ constexpr double kCameraTurn = kCameraPerMouse * 3.14159265358979 / 180.0;
 // Camera pitch = -7.5 + 67.5 * aim degrees (measured: +60 at the top stop, -75 at the bottom).
 constexpr float kAimPerMouseDegree = float(kCameraPerMouse / 67.5);
 
+// Both filters get r3 = the behind-the-player camera at each of its updates (camera_nan_guard.h).
+struct GuestWords {
+    uint8_t* mem;
+    uint32_t read32(uint32_t a) const { return rbrew_read32(mem, a); }
+    void write32(uint32_t a, uint32_t v) const { rbrew_write32(mem, a, v); }
+};
+
+bool nan_guard_enabled() {
+    static const bool enabled = [] {
+        const char* v = std::getenv("RBREW_CAMERA_NAN_GUARD");
+        return !(v && v[0] == '0');
+    }();
+    return enabled;
+}
+
+void guard_camera(CPUState* cpu) {
+    static rbrew_camera_nan_guard::Guard guard;
+    if (!nan_guard_enabled()) return;
+    GuestWords words{cpu->mem};
+    if (const uint32_t repaired = guard.update(words, cpu->r[3]))
+        RBREW_LOG_WARN("camera", "camera %08x: %u non-finite fields repaired\n", cpu->r[3], repaired);
+}
+
 void gyro_yaw_filter(CPUState* cpu, uint32_t, HostFunc original) {
+    guard_camera(cpu);
     original(cpu);
     cpu->f[1] += double(yaw_queue().take()) * kCameraTurn;
 }
 
 void gyro_pitch_rate(CPUState* cpu, uint32_t, HostFunc original) {
+    guard_camera(cpu);
     const uint32_t camera = cpu->r[3];
     const float target = float(cpu->f[1]);
     // Negative pitch looks up; a higher aim looks up.
