@@ -1,14 +1,15 @@
 // camera_nan_guard.h - keeps the behind-the-player camera finite (Splatoon v288, hooks/gx2_camera_hooks.cpp).
 //
-// Black screen with music (17/11-19/11): in one frame the camera's matrix became +-inf, then NaN,
-// after its field +0x168 (0 at init, normally a small decaying value) ramped past 1. The NaN then
-// stays in the camera for good and the projection, the 3D sound listener and the TV image follow.
+// Black screen with music (17/11-19/11): in one frame the camera's matrix became +-inf, then NaN
+// (cause not found: +0x168 had ramped up just before, but values above 1 are also seen in healthy
+// play). The NaN then stays in the camera for good and the projection, the 3D sound listener and
+// the TV image follow.
 // Writing the last finite values back into the camera of a running game healed the camera and the
 // projection within half a second.
 //
 // The guard runs at each camera update: while the camera is finite it keeps a copy of its float
 // fields; when one is not finite it writes the copy back into the non-finite words only and
-// resets +0x168 to its init value, so the next update does not divide by ~0 again.
+// resets +0x168 to its init value, the state the camera starts from.
 #pragma once
 #include <array>
 #include <cstdint>
@@ -24,7 +25,7 @@ inline constexpr std::array<std::pair<uint32_t, uint32_t>, 4> kRanges{{
     {0x16C, 0x184}, // previous frame copy
 }};
 inline constexpr uint32_t kBackPointer = 0x00; // the player that owns the camera
-inline constexpr uint32_t kRamp = 0x168;       // grows past 1 just before the bad frame
+inline constexpr uint32_t kRamp = 0x168;       // ramped up just before the bad frame
 inline constexpr uint32_t kRampInit = 0;       // 0.0f, what the camera init (02660418) stores
 
 constexpr uint32_t word_count() {
