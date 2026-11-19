@@ -7,7 +7,10 @@
 // Writing the last finite values back into the camera of a running game healed the camera and the
 // projection within half a second.
 //
-// The guard runs at each camera update: while the camera is finite it keeps a copy of its float
+// The second black screen (dump of 19/11 night) is the same case: the active player's camera had
+// these 29 words non-finite (another, inactive player object kept a finite camera).
+//
+// The guard runs after each camera update: while the camera is finite it keeps a copy of its float
 // fields; when one is not finite it writes the copy back into the non-finite words only and
 // resets +0x168 to its init value, the state the camera starts from.
 #pragma once
@@ -36,6 +39,14 @@ constexpr uint32_t word_count() {
 
 constexpr bool finite_bits(uint32_t bits) {
     return (bits & 0x7F800000u) != 0x7F800000u;
+}
+
+// Words: a copy of the camera from offset 0 (one 32-bit word per 4 bytes).
+template <class Words> bool finite_fields(const Words& words) {
+    for (const auto& [begin, end] : kRanges)
+        for (uint32_t off = begin; off < end; off += 4)
+            if (!finite_bits(words[off / 4])) return false;
+    return true;
 }
 
 // Mem: uint32_t read32(uint32_t addr), void write32(uint32_t addr, uint32_t bits); big-endian floats as bits.
@@ -75,20 +86,29 @@ private:
         uint32_t camera = 0;
         uint32_t owner = 0;
         bool valid = false;
+        uint64_t used = 0;
         std::array<uint32_t, word_count()> words{};
     };
 
     // A camera is known by its address and owner: a new scene's camera at the same address starts empty.
+    // Every player of a match has a camera, so there are more slots than players; the least recently
+    // updated camera gives its slot away.
     Slot& slot_for(uint32_t camera, uint32_t owner) {
-        for (Slot& s : m_slots)
-            if (s.camera == camera && s.owner == owner) return s;
-        Slot& s = m_slots[m_next++ % m_slots.size()];
-        s = Slot{camera, owner};
-        return s;
+        ++m_clock;
+        Slot* oldest = &m_slots[0];
+        for (Slot& s : m_slots) {
+            if (s.camera == camera && s.owner == owner) {
+                s.used = m_clock;
+                return s;
+            }
+            if (s.used < oldest->used) oldest = &s;
+        }
+        *oldest = Slot{camera, owner, false, m_clock};
+        return *oldest;
     }
 
-    std::array<Slot, 4> m_slots{};
-    uint32_t m_next = 0;
+    std::array<Slot, 16> m_slots{};
+    uint64_t m_clock = 0;
 };
 
 } // namespace rbrew_camera_nan_guard

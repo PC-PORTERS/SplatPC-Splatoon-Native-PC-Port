@@ -16,7 +16,11 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <ctime>
+#include <filesystem>
+#include <fstream>
 #include <future>
+#include <iomanip>
 #include <mutex>
 #include <utility>
 #include <vector>
@@ -712,37 +716,108 @@ constexpr double kCameraTurn = kCameraPerMouse * 3.14159265358979 / 180.0;
 // Camera pitch = -7.5 + 67.5 * aim degrees (measured: +60 at the top stop, -75 at the bottom).
 constexpr float kAimPerMouseDegree = float(kCameraPerMouse / 67.5);
 
-// Both filters get r3 = the behind-the-player camera at each of its updates (camera_nan_guard.h).
+// 02668434 is the per-frame update of the behind-the-player camera (r3 = camera, from player+0x8D0),
+// whatever drives it (stick, gyro, mouse). The guard checks the camera right after it, before the
+// view and the projection read it (camera_nan_guard.h).
+constexpr uint32_t kCameraUpdate = 0x02668434u;
+constexpr uint32_t kCameraBytes = 0x300;
+constexpr uint32_t kPlayerBytes = 0x1000;
+
 struct GuestWords {
     uint8_t* mem;
     uint32_t read32(uint32_t a) const { return rbrew_read32(mem, a); }
     void write32(uint32_t a, uint32_t v) const { rbrew_write32(mem, a, v); }
 };
 
-bool nan_guard_enabled() {
-    static const bool enabled = [] {
-        const char* v = std::getenv("RBREW_CAMERA_NAN_GUARD");
-        return !(v && v[0] == '0');
-    }();
-    return enabled;
+bool switch_on(const char* name, bool fallback) {
+    const char* v = std::getenv(name);
+    return v && v[0] ? v[0] != '0' : fallback;
 }
 
-void guard_camera(CPUState* cpu) {
+void dump_words(std::ofstream& out, const char* title, const std::vector<uint32_t>& words) {
+    out << title << '\n' << std::hex << std::setfill('0');
+    for (size_t i = 0; i < words.size(); ++i)
+        out << (i % 8 ? " " : (i ? "\n" : "")) << std::setw(4) << 4 * i << ':' << std::setw(8) << words[i];
+    out << std::dec << "\n\n";
+}
+
+std::vector<uint32_t> read_words(uint8_t* mem, uint32_t addr, uint32_t bytes) {
+    std::vector<uint32_t> words(bytes / 4);
+    for (uint32_t i = 0; i < words.size(); ++i) words[i] = rbrew_read32(mem, addr + 4 * i);
+    return words;
+}
+
+// Arguments of one camera update (the update itself reads r3 only; the rest says who called it).
+struct UpdateEntry {
+    uint32_t lr;
+    std::array<uint32_t, 8> r;
+    std::array<double, 8> f;
+    static UpdateEntry of(const CPUState& cpu) {
+        UpdateEntry e{cpu.lr, {}, {}};
+        for (int i = 0; i < 8; ++i) {
+            e.r[i] = cpu.r[3 + i];
+            e.f[i] = cpu.f[1 + i];
+        }
+        return e;
+    }
+};
+
+// An update that turns a finite camera non-finite: its inputs, for the root cause.
+void report_bad_update(const UpdateEntry& entry, uint32_t camera, const std::vector<uint32_t>& before,
+                       const std::vector<uint32_t>& player, uint8_t* mem) {
+    std::error_code error;
+    std::filesystem::create_directories("Diagnostics", error);
+    const std::time_t now = std::time(nullptr);
+    std::tm local{};
+#if defined(_WIN32)
+    localtime_s(&local, &now);
+#else
+    localtime_r(&now, &local);
+#endif
+    char name[64];
+    std::strftime(name, sizeof name, "Diagnostics/camera-nan-%Y%m%d-%H%M%S.txt", &local);
+    std::ofstream out(name);
+    out << "camera " << std::hex << camera << " player " << before[0] << " lr " << entry.lr << std::dec << '\n';
+    for (int i = 0; i < 8; ++i) out << 'r' << 3 + i << '=' << std::hex << entry.r[i] << std::dec << ' ';
+    out << '\n';
+    for (int i = 0; i < 8; ++i) out << 'f' << 1 + i << '=' << entry.f[i] << ' ';
+    out << "\n\n";
+    dump_words(out, "camera before the update", before);
+    dump_words(out, "camera after the update", read_words(mem, camera, kCameraBytes));
+    dump_words(out, "player before the update", player);
+    RBREW_LOG_WARN("camera", "non-finite camera update recorded in %s\n", name);
+}
+
+void camera_update(CPUState* cpu, uint32_t, HostFunc original) {
     static rbrew_camera_nan_guard::Guard guard;
-    if (!nan_guard_enabled()) return;
+    static const bool enabled = switch_on("RBREW_CAMERA_NAN_GUARD", true);
+    static bool reported = false; // one report per session
+    if (!enabled) return original(cpu);
+    const uint32_t camera = cpu->r[3];
+    UpdateEntry entry{};
+    std::vector<uint32_t> before, player;
+    if (!reported) {
+        entry = UpdateEntry::of(*cpu);
+        before = read_words(cpu->mem, camera, kCameraBytes);
+        if (before[0]) player = read_words(cpu->mem, before[0], kPlayerBytes);
+    }
+    original(cpu);
     GuestWords words{cpu->mem};
-    if (const uint32_t repaired = guard.update(words, cpu->r[3]))
-        RBREW_LOG_WARN("camera", "camera %08x: %u non-finite fields repaired\n", cpu->r[3], repaired);
+    if (const uint32_t repaired = guard.update(words, camera)) {
+        if (!reported && rbrew_camera_nan_guard::finite_fields(before)) {
+            report_bad_update(entry, camera, before, player, cpu->mem);
+            reported = true;
+        }
+        RBREW_LOG_WARN("camera", "camera %08x: %u non-finite fields repaired\n", camera, repaired);
+    }
 }
 
 void gyro_yaw_filter(CPUState* cpu, uint32_t, HostFunc original) {
-    guard_camera(cpu);
     original(cpu);
     cpu->f[1] += double(yaw_queue().take()) * kCameraTurn;
 }
 
 void gyro_pitch_rate(CPUState* cpu, uint32_t, HostFunc original) {
-    guard_camera(cpu);
     const uint32_t camera = cpu->r[3];
     const float target = float(cpu->f[1]);
     // Negative pitch looks up; a higher aim looks up.
@@ -760,6 +835,8 @@ void install() {
     if (!rbrew_set_guest_hook(kGyroYawFilter, gyro_yaw_filter) ||
         !rbrew_set_guest_hook(kGyroPitchRate, gyro_pitch_rate))
         RBREW_LOG_ERROR("mouse", "could not register the camera hooks\n");
+    if (!rbrew_set_guest_hook(kCameraUpdate, camera_update))
+        RBREW_LOG_ERROR("camera", "could not register the camera NaN guard\n");
 }
 #else
 void install() {}
