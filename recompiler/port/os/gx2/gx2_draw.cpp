@@ -6,6 +6,7 @@
 #include "../os_common.h"
 #include "../../runtime/benchmark_input.h"
 #include "../../runtime/native_control_defaults.h"
+#include "../../hooks/staff_roll_pages.h"
 #include "gx2_frame_interp.h"
 #include "gx2_attrib.h"
 #include "gx2_blend_state.h"
@@ -1238,6 +1239,8 @@ static void descriptor_command(CPUState* cpu, Gx2DescriptorFn fn, uint32_t bytes
         fn(cpu, nullptr);
 }
 static void GX2SetColorBuffer(CPUState* cpu) {
+    if (ARG0 && rbrew_memory_accessible(MEM, ARG0 + GX2SURF_FORMAT, 4))
+        staff_roll_note_color_buffer(rbrew_read32(MEM, ARG0 + GX2SURF_FORMAT));
     descriptor_command(cpu, apply_color_buffer, GX2CB_SIZEOF);
 }
 static void GX2SetDepthBuffer(CPUState* cpu) {
