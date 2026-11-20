@@ -9,7 +9,7 @@ An unofficial native PC port of **Splatoon (Wii U)** for **Windows and Linux**, 
 
 > **This project contains no Nintendo code, assets or game files.** You need your own copy of the game, dumped from your own Wii U. The setup builds the port on your PC from your files.
 
-> ⚠️ **Work in progress.** Expect graphical glitches, missing effects, stutter and crashes. You need **strong hardware** (see below). If something goes wrong, please [open an issue](https://github.com/NEVESYA/SPLATOON-1-PC-PORT/issues). Include your PC specs and the text from the setup window or a screenshot. **AMD GPU compatibility is experimental**; NVIDIA remains the tested baseline. See [GPU selection](#gpu-selection-amd-and-integrated-graphics).
+> ⚠️ **Work in progress.** Expect graphical glitches, missing effects, stutter and crashes. You need **strong hardware** (see below). If something goes wrong, please [open an issue](https://github.com/NEVESYA/SPLATOON-1-PC-PORT/issues). Include your PC specs and the text from the setup window or a screenshot. **AMD GPU compatibility is experimental**; NVIDIA remains the tested baseline.
 
 ## Features
 
@@ -58,6 +58,8 @@ Turn it on in the settings menu with *Graphics preset* (Balanced, Realistic or C
 - **CPU & RAM:** Modern 6–8 cores CPU or more · 16 GB RAM minimum (32 GB recommended)
 - **Storage:** ~40 GB free during build (final game install is ~6 GB)
 - **Game Dump:** Supported Splatoon Wii U dump (folders `code`, `content`, `meta` dumped from your console, see [VersionDb](/VersionDb.md))
+
+## Installation
 
 1. Download **SplatPC Builder** from the latest [Release](https://github.com/NEVESYA/SPLATOON-1-PC-PORT/releases):
    - **Windows:** **`SplatPC-Builder-Windows-x64.zip`** (unzip it, then run `SplatPC-Builder.exe`)
