@@ -833,11 +833,20 @@ FrameRepairs s_frame_repairs; // game thread only
 
 void frame_step(CPUState* cpu, uint32_t, HostFunc original) {
     if (!player_guard_on()) return original(cpu);
+    static bool logged = false; // the first repair of a session, inside a player update or not
     GuestWords words{cpu->mem};
-    const png::Frame state = png::check_frame(words, cpu->r[3]);
+    const uint32_t ctrl = cpu->r[3];
+    const uint32_t frame = words.read32(ctrl + 0x08), step = words.read32(ctrl + 0x10);
+    const png::Frame state = png::check_frame(words, ctrl);
     if (state != png::Frame::ok) {
         ++s_frame_repairs.count;
-        s_frame_repairs.last = cpu->r[3];
+        s_frame_repairs.last = ctrl;
+        if (!logged) {
+            RBREW_LOG_WARN("player", "frame controller %08x (lr %08x) %s: frame %08x step %08x length %08x\n", ctrl,
+                           uint32_t(cpu->lr), state == png::Frame::skip ? "skipped" : "repaired", frame, step,
+                           words.read32(ctrl + png::kLength));
+            logged = true;
+        }
     }
     if (state != png::Frame::skip) original(cpu);
 }
