@@ -603,8 +603,19 @@ static inline uint32_t rbrew_cmp_f64(double a, double b) {
 // ---------------------------------------------------------------------------
 // FP helper
 // ---------------------------------------------------------------------------
+// Cafe OS runs every thread in non-IEEE mode (FPSCR[NI], decaf sets fpscr = 4): a single-precision result too
+// small to be normal becomes a zero of the same sign. Only arithmetic results go through here; loads, stores and
+// moves stay bit-exact, which is why this is not done with the MXCSR flush-to-zero flags.
+static inline float rbrew_flush_denormal(float f) {
+    uint32_t bits;
+    memcpy(&bits, &f, 4);
+    if ((bits & 0x7F800000u) == 0) bits &= 0x80000000u;
+    memcpy(&f, &bits, 4);
+    return f;
+}
+
 static inline double rbrew_fround(double v) {
-    return (double)(float)v;
+    return (double)rbrew_flush_denormal((float)v);
 }
 
 extern RBREW_HOST_API const bool rbrew_paired_inline_enabled;
@@ -751,8 +762,8 @@ template <uint32_t w> static inline void rbrew_ps_constant(CPUState* cpu, uint8_
             p1 = fma(a1, c1, b1);
         } else
             return rbrew_ps_mem(cpu, mem, w);
-        cpu->f[d] = double(float(p0));
-        cpu->ps1[d] = double(float(p1));
+        cpu->f[d] = double(rbrew_flush_denormal(float(p0)));
+        cpu->ps1[d] = double(rbrew_flush_denormal(float(p1)));
         if constexpr (w & 1) cpu->cr[1] = (cpu->fpscr >> 28) & 15;
         return;
     }

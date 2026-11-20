@@ -37,8 +37,8 @@ uint32_t as_bits(float f) {
     std::memcpy(&v, &f, 4);
     return v;
 }
-double round_single(double v) {
-    return double(float(v));
+double round_single(double v) { // arithmetic results only: non-IEEE mode, see rbrew_flush_denormal
+    return double(rbrew_flush_denormal(float(v)));
 }
 // Double -> float rounding toward zero (decaf truncate_double).
 float truncate_single(double v) {
