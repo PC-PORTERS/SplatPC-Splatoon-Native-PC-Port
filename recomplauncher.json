@@ -1,0 +1,144 @@
+{
+  "$schema": "https://recomplauncher.com/schema/recomplauncher.json",
+  "format": 1,
+  "name": "SplatPC - Splatoon 1 PC Port",
+  "repo": "PC-PORTERS/SplatPC-Splatoon-Native-PC-Port",
+  "game": {
+    "kind": "folder",
+    "label": "Your own Splatoon (Wii U) dump: the folder with code, content and meta, Europe v16 or v288 (see VersionDb in the repo). Disc images must be extracted first.",
+    "check": { "file": "code/Gambit.rpx" }
+  },
+  "start": {
+    "program": ["SplatPC-Builder.exe", "SplatPC-Builder-x86_64.AppImage"],
+    "args": ["--play"]
+  },
+  "prepare": {
+    "program": ["SplatPC-Builder.exe", "SplatPC-Builder-x86_64.AppImage"],
+    "args": ["--prepare", "--game", "{game}"],
+    "label": "Recompiler, fonts and game files from your dump",
+    "timeout": 10800
+  },
+  "config": [
+    {
+      "id": "main",
+      "format": "ini",
+      "file": [{ "path": "{install}/Game/settings.ini" }],
+      "new": {
+        "resolution": "720p",
+        "plaza_60fps": "1",
+        "frame_rate": "60",
+        "gsync": "0",
+        "fullscreen": "1",
+        "simple_overlay": "0",
+        "shader_quality": "0",
+        "antialiasing": "1",
+        "bindings": "2"
+      }
+    }
+  ],
+  "folders": {
+    "saves": [{ "path": "{install}/Game/save" }],
+    "game": [{ "path": "{install}/Game" }]
+  },
+  "exit_codes": {
+    "2": "The setup needs a few free tools on this PC (CMake, a C++ compiler, Python). Install them and set up again.",
+    "3": "That folder is not a supported Splatoon dump: it needs code, content and meta from your own Wii U (Europe, v16 or v288).",
+    "4": "The game has not been built yet. Run the setup on the game's page first."
+  },
+  "settings": [
+    {
+      "id": "resolution",
+      "label": "Resolution",
+      "help": "What the game renders at: 720p is the console's own, native is your desktop resolution.",
+      "choices": [
+        { "label": "720p", "set": { "resolution": "720p" } },
+        { "label": "1080p", "set": { "resolution": "1080p" } },
+        { "label": "1440p", "set": { "resolution": "1440p" } },
+        { "label": "Native", "set": { "resolution": "native" } }
+      ],
+      "defaults": { "resolution": "720p" }
+    },
+    {
+      "id": "window",
+      "label": "Window",
+      "help": "Fullscreen fills the screen; windowed keeps the game in a movable window (F11 switches in game).",
+      "choices": [
+        { "label": "Fullscreen", "set": { "fullscreen": "1" } },
+        { "label": "Windowed", "set": { "fullscreen": "0" } }
+      ],
+      "defaults": { "fullscreen": "1" }
+    },
+    {
+      "id": "frame_rate",
+      "label": "Frame rate",
+      "help": "Frames per second; 120 and 180 add in-between frames, 30 suits weak PCs. Greyed out while Shader quality is above Off, which holds the game at 60.",
+      "choices": [
+        { "label": "30 FPS", "set": { "frame_rate": "30" } },
+        { "label": "60 FPS", "set": { "frame_rate": "60" } },
+        { "label": "120 FPS", "set": { "frame_rate": "120" } },
+        { "label": "180 FPS", "set": { "frame_rate": "180" } }
+      ],
+      "defaults": { "frame_rate": "60" },
+      "when": { "shader_quality": "0" }
+    },
+    {
+      "id": "vrr",
+      "label": "Variable refresh",
+      "help": "Shows each frame the moment it's ready on G-Sync and FreeSync screens. Off waits for the screen's refresh.",
+      "choices": [
+        { "label": "On", "set": { "gsync": "1" } },
+        { "label": "Off", "set": { "gsync": "0" } }
+      ],
+      "defaults": { "gsync": "0" }
+    },
+    {
+      "id": "shader_quality",
+      "label": "Shader quality",
+      "help": "Off is the clean original game. Low, Balanced and High turn on the port's newer shaders (shadows, sky, reflections); they need more GPU and hold the game at 60 FPS.",
+      "choices": [
+        { "label": "Off", "set": { "shader_quality": "0" } },
+        { "label": "Low", "set": { "shader_quality": "1" } },
+        { "label": "Balanced", "set": { "shader_quality": "2" } },
+        { "label": "High", "set": { "shader_quality": "3" } }
+      ],
+      "defaults": { "shader_quality": "0" }
+    },
+    {
+      "id": "plaza_60fps",
+      "label": "Plaza 60 FPS",
+      "help": "Runs Inkopolis Plaza at 60 FPS with normal game speed. Greyed out while Shader quality is above Off, which turns it on.",
+      "choices": [
+        { "label": "On", "set": { "plaza_60fps": "1" } },
+        { "label": "Off", "set": { "plaza_60fps": "0" } }
+      ],
+      "defaults": { "plaza_60fps": "1" },
+      "when": { "shader_quality": "0" }
+    },
+    {
+      "id": "fps",
+      "label": "Show FPS",
+      "help": "The frame rate and frame time readout in the corner of the screen.",
+      "choices": [
+        { "label": "Off", "set": { "simple_overlay": "0" } },
+        { "label": "On", "set": { "simple_overlay": "1" } }
+      ],
+      "defaults": { "simple_overlay": "0" }
+    },
+    {
+      "id": "antialiasing",
+      "label": "Anti-aliasing",
+      "help": "FXAA softens the jagged edges of the picture. Costs very little.",
+      "choices": [
+        { "label": "On", "set": { "antialiasing": "1" } },
+        { "label": "Off", "set": { "antialiasing": "0" } }
+      ],
+      "defaults": { "antialiasing": "1" }
+    }
+  ],
+  "saves": ["{install}/Game/save", "{install}/Game/settings.ini"],
+  "looks": { "graphics": "vulkan" },
+  "actions": [
+    { "id": "saves", "label": "Saves", "help": "Your progress in the game.", "open": "saves" },
+    { "id": "game", "label": "Game folder", "help": "settings.ini, the shader cache, textures and screenshots.", "open": "game" }
+  ]
+}

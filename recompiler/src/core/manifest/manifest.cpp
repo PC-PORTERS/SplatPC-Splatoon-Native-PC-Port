@@ -901,6 +901,33 @@ bool emit(const Manifest& m, const std::string& out_dir, std::vector<std::string
         if (!write_if_changed(path, out.str(), error)) return false;
         written.push_back(relative);
     }
+
+    // PLT dispatch wrappers
+    {
+        std::ostringstream out;
+        const std::string module_name =
+            m.identity_string("module_name").empty() ? "Gambit" : m.identity_string("module_name");
+        out << banner << "// Auto-generated PLT dispatch wrappers — do not edit by hand.\n"
+            << "// Each " << module_name << "_fn_0xXXX entry is a linker-generated PLT stub in the\n"
+            << "// Wii U binary that forwards to an OS library function.\n"
+            << "// At runtime these are resolved via the dispatch table populated by\n"
+            << "// the OS stub layer in port/os/.\n\n"
+            << "#include \"rebrewu_runtime.h\"\n\n"
+            << "#ifdef __cplusplus\nextern \"C\" {\n#endif\n\n";
+        for (const Import& import : imports_by_address(m)) {
+            if (import.data) continue;
+            char hex_digits[16];
+            std::snprintf(hex_digits, sizeof(hex_digits), "%08X", import.address);
+            out << "void " << module_name << "_fn_" << hex_digits << "(CPUState* cpu) {\n"
+                << "    rbrew_dispatch(cpu, 0x" << hex_digits << "u);\n"
+                << "}\n\n";
+        }
+        out << "#ifdef __cplusplus\n} // extern \"C\"\n#endif\n";
+        const std::string relative = "gambit_plt_stubs.cpp";
+        const std::string path = (root / relative).string();
+        if (!write_if_changed(path, out.str(), error)) return false;
+        written.push_back(relative);
+    }
     return true;
 }
 

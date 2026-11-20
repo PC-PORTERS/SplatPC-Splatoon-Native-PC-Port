@@ -34,6 +34,9 @@ bool menu_open();
 // Opens the menu on the amiibo picker (GX2 thread, when the game starts NFC
 // detection). Esc/B/Back returns to the game's own "touch amiibo" screen.
 void open_amiibo_picker();
+// Opens the quit confirmation popup (and the menu if closed).
+void open_quit_confirmation();
+bool is_quit_confirmation_open();
 bool consume_menu_changed(); // true once after the flag changed (GX2 syncs the mouse cursor)
 // True while the menu is open and until every key/button held when it
 // closed is released (the confirming press must not reach the game).

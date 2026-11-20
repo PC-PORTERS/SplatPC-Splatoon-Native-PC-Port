@@ -66,6 +66,7 @@ struct Values {
     bool fullscreen = true;
     bool fps_overlay = false;       // debug overlay (F3), hidden at launch; RBREW_FPS_OVERLAY
     bool simple_overlay = false;    // FPS / frame time / max FPS readout; RBREW_SIMPLE_OVERLAY
+    bool confirm_quit = true;       // confirmation popup before quitting
     bool gyro = true;               // RBREW_GYRO
     int gyro_sensitivity = 100;     // percent
     bool gyro_invert_pitch = false; // RBREW_GYRO_INVERT_PITCH
@@ -138,6 +139,7 @@ inline std::atomic<float> g_gyro_scale{1.0f};
 inline std::atomic<float> g_mouse_scale{1.0f};
 inline std::atomic<bool> g_mouse_direct{true};
 inline std::atomic<float> g_volume{1.0f};
+inline std::atomic<bool> g_confirm_quit{true};
 inline std::atomic<int> g_shader_quality{kShadersOff}; // load() publishes the player's selection
 inline std::atomic<int> g_keys[kActionCount];
 inline std::atomic<int> g_pad[kActionCount];

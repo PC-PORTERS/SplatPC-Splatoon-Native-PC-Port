@@ -55,6 +55,10 @@ std::atomic<bool> s_fullscreen_mirror{true};
 std::atomic<bool> s_fullscreen_requested{false};
 std::atomic<bool> s_fullscreen_value{false};
 std::atomic<bool> s_quit_requested{false};
+std::atomic<bool> s_quit_confirm_requested{false};
+std::atomic<bool> s_quit_confirm_open{false};
+std::atomic<bool> s_quit_opened_from_gameplay{false};
+std::atomic<bool> s_cancel_quit_confirm{false};
 std::atomic<bool> s_capture_active{false};   // render thread waits for a rebinding input
 std::atomic<bool> s_amiibo_requested{false}; // open the menu on the amiibo picker
 
@@ -96,7 +100,6 @@ MenuPage s_capture_page = MenuPage::Keyboard;
 int s_capture_action = 0;
 MenuPage s_focused_page = MenuPage::Keyboard;
 int s_focused_action = -1; // binding row focused for keyboard/gamepad Clear
-double s_quit_armed_at = -1.0;
 
 const char* const kResolutionLabels[rs::kResolutionCount] = {"720p (console)", "1080p", "1440p", "Display"};
 // GamePad input, with what it does in Splatoon where it is fixed.
@@ -228,7 +231,10 @@ void backend_shutdown() {
     s_graphics_page = gx2_graphics_menu::Page::None;
     s_capture = false;
     s_focused_action = -1;
-    s_quit_armed_at = -1.0;
+    s_quit_confirm_requested.store(false);
+    s_quit_confirm_open.store(false);
+    s_quit_opened_from_gameplay.store(false);
+    s_cancel_quit_confirm.store(false);
     s_capture_active.store(false);
 }
 
@@ -292,6 +298,10 @@ void process_nav_event(const SDL_Event& e) {
     const bool back = (e.type == SDL_KEYDOWN && !e.key.repeat && e.key.keysym.scancode == SDL_SCANCODE_BACKSPACE) ||
                       (e.type == SDL_CONTROLLERBUTTONDOWN && e.cbutton.button == SDL_CONTROLLER_BUTTON_B);
     if (back) {
+        if (s_quit_confirm_open.load(std::memory_order_relaxed)) {
+            s_cancel_quit_confirm.store(true, std::memory_order_relaxed);
+            return;
+        }
         if (s_menu_page == MenuPage::Amiibo)
             set_menu_open(false); // back to the game's own "touch amiibo" screen
         else if (s_graphics_page != gx2_graphics_menu::Page::None)
@@ -300,7 +310,6 @@ void process_nav_event(const SDL_Event& e) {
             s_menu_page = MenuPage::Main;
         else
             set_menu_open(false);
-        s_quit_armed_at = -1.0;
         return;
     }
     const bool clear = (e.type == SDL_KEYDOWN && !e.key.repeat && e.key.keysym.scancode == SDL_SCANCODE_DELETE) ||
@@ -712,28 +721,72 @@ void build_settings_window() {
     dirty |= ImGui::Checkbox("Invert gyro up/down", &v.gyro_invert_pitch);
     dirty |= ImGui::SliderInt("Mouse sensitivity", &v.mouse_sensitivity, 25, 400, "%d %%");
     dirty |= ImGui::SliderInt("Volume", &v.volume, 0, 100, "%d %%");
+    dirty |= ImGui::Checkbox("Confirm before quitting", &v.confirm_quit);
     if (ImGui::Button("Keyboard & mouse controls")) s_menu_page = MenuPage::Keyboard;
     if (ImGui::Button("Controller controls")) s_menu_page = MenuPage::Controller;
     if (ImGui::Button("Quit game")) {
-        const double now = ImGui::GetTime();
-        if (s_quit_armed_at >= 0.0 && now - s_quit_armed_at < 5.0) {
-            s_quit_requested.store(true, std::memory_order_relaxed);
-            s_quit_armed_at = -1.0;
-        } else {
-            s_quit_armed_at = now;
-        }
-    }
-    if (s_quit_armed_at >= 0.0) {
-        if (ImGui::GetTime() - s_quit_armed_at >= 5.0) {
-            s_quit_armed_at = -1.0;
-        } else {
-            ImGui::SameLine();
-            ImGui::TextDisabled("Press again to confirm");
-        }
+        open_quit_confirmation();
     }
     if (dirty) rs::set(v);
     ImGui::End();
     if (!open) set_menu_open(false);
+}
+
+void build_quit_confirmation_popup() {
+    static bool s_dont_ask_again = false;
+
+    if (s_quit_confirm_requested.exchange(false, std::memory_order_relaxed)) {
+        s_dont_ask_again = false;
+        ImGui::OpenPopup("Quit Game?###quit_confirm");
+    }
+
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+
+    if (ImGui::BeginPopupModal("Quit Game?###quit_confirm", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
+        s_quit_confirm_open.store(true, std::memory_order_relaxed);
+
+        ImGui::Text("Are you sure you want to quit?");
+        ImGui::Spacing();
+        ImGui::Checkbox("Don't ask again", &s_dont_ask_again);
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        const float button_width = 120.0f;
+        if (ImGui::Button("Quit", ImVec2(button_width, 0))) {
+            if (s_dont_ask_again) {
+                auto settings = rs::get();
+                settings.confirm_quit = false;
+                rs::set(settings);
+            }
+            s_quit_requested.store(true, std::memory_order_relaxed);
+            s_quit_confirm_open.store(false, std::memory_order_relaxed);
+            ImGui::CloseCurrentPopup();
+        }
+
+        ImGui::SameLine();
+        const bool cancel_clicked = ImGui::Button("Cancel", ImVec2(button_width, 0));
+        ImGui::SetItemDefaultFocus();
+
+        const bool cancel_requested =
+            cancel_clicked || s_cancel_quit_confirm.exchange(false, std::memory_order_relaxed) ||
+            ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight);
+
+        if (cancel_requested) {
+            s_quit_confirm_open.store(false, std::memory_order_relaxed);
+            ImGui::CloseCurrentPopup();
+            if (s_quit_opened_from_gameplay.exchange(false, std::memory_order_relaxed)) {
+                set_menu_open(false);
+            }
+        }
+
+        ImGui::EndPopup();
+    } else {
+        if (!s_quit_confirm_requested.load(std::memory_order_relaxed))
+            s_quit_confirm_open.store(false, std::memory_order_relaxed);
+    }
 }
 
 } // namespace
@@ -745,10 +798,18 @@ void process_event(const SDL_Event& event) {
 
 bool menu_event(const SDL_Event& event) {
     if (event.type == SDL_CONTROLLERBUTTONDOWN && event.cbutton.button == SDL_CONTROLLER_BUTTON_TOUCHPAD) {
+        if (s_quit_confirm_open.load(std::memory_order_relaxed)) {
+            s_cancel_quit_confirm.store(true, std::memory_order_relaxed);
+            return true;
+        }
         if (!s_capture_active.load(std::memory_order_relaxed)) set_menu_open(!menu_open());
         return true; // in capture mode the render thread cancels it from the queued copy
     }
     if (event.type == SDL_KEYDOWN && !event.key.repeat && event.key.keysym.scancode == SDL_SCANCODE_ESCAPE) {
+        if (s_quit_confirm_open.load(std::memory_order_relaxed)) {
+            s_cancel_quit_confirm.store(true, std::memory_order_relaxed);
+            return true;
+        }
         if (!s_capture_active.load(std::memory_order_relaxed)) set_menu_open(!menu_open());
         return true;
     }
@@ -768,6 +829,21 @@ bool menu_open() {
 void open_amiibo_picker() {
     s_amiibo_requested.store(true, std::memory_order_relaxed);
     set_menu_open(true);
+}
+
+void open_quit_confirmation() {
+    if (!rs::g_confirm_quit.load(std::memory_order_relaxed)) {
+        s_quit_requested.store(true, std::memory_order_relaxed);
+        return;
+    }
+    if (!menu_open()) s_quit_opened_from_gameplay.store(true, std::memory_order_relaxed);
+    s_quit_confirm_requested.store(true, std::memory_order_relaxed);
+    s_quit_confirm_open.store(true, std::memory_order_relaxed);
+    set_menu_open(true);
+}
+
+bool is_quit_confirmation_open() {
+    return s_quit_confirm_open.load(std::memory_order_relaxed);
 }
 
 bool consume_menu_changed() {
@@ -885,7 +961,6 @@ ImDrawData* begin_frame(VkExtent2D extent) {
         s_menu_page = MenuPage::Main;
         s_graphics_page = gx2_graphics_menu::Page::None;
         s_capture = false;
-        s_quit_armed_at = -1.0;
     }
     if (show_menu && s_amiibo_requested.exchange(false, std::memory_order_relaxed)) {
         diag::RecordEvent(diag::EventCategory::Input, diag::EventSeverity::Info, 11, "amiibo picker shown");
@@ -895,7 +970,8 @@ ImDrawData* begin_frame(VkExtent2D extent) {
     }
     update_shader_activity();
     s_focused_action = -1;
-    if (show_menu) build_settings_window();
+    if (show_menu && !s_quit_opened_from_gameplay.load(std::memory_order_relaxed)) build_settings_window();
+    build_quit_confirmation_popup();
     // Phase scopes (gx2_perf.h) record while this window is visible; off they
     // cost one relaxed load per scope. An RBREW_PERF file keeps them anyway.
     gx2_set_perf_live(visible());

@@ -111,6 +111,7 @@ void publish(const Values& v) {
     g_gyro_scale.store(v.gyro_sensitivity / 100.0f, std::memory_order_relaxed);
     g_mouse_scale.store(v.mouse_sensitivity / 100.0f, std::memory_order_relaxed);
     g_volume.store(v.volume / 100.0f, std::memory_order_relaxed);
+    g_confirm_quit.store(v.confirm_quit, std::memory_order_relaxed);
     for (int i = 0; i < kActionCount; ++i) {
         g_keys[i].store(v.keys[i], std::memory_order_relaxed);
         g_pad[i].store(v.pad[i], std::memory_order_relaxed);
@@ -221,6 +222,7 @@ void write(const Values& v) {
         << "fullscreen=" << v.fullscreen << "\n"
         << "fps_overlay=" << v.fps_overlay << "\n"
         << "simple_overlay=" << v.simple_overlay << "\n"
+        << "confirm_quit=" << v.confirm_quit << "\n"
         << "gyro=" << v.gyro << "\n"
         << "gyro_sensitivity=" << v.gyro_sensitivity << "\n"
         << "gyro_invert_pitch=" << v.gyro_invert_pitch << "\n"
@@ -301,6 +303,8 @@ void load() {
             v.fps_overlay = number != 0;
         else if (key == "simple_overlay")
             v.simple_overlay = number != 0;
+        else if (key == "confirm_quit")
+            v.confirm_quit = number != 0;
         else if (key == "gyro")
             v.gyro = number != 0;
         else if (key == "gyro_sensitivity")

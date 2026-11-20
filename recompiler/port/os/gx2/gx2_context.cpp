@@ -918,7 +918,14 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
                 continue;
             }
             switch (ev.type) {
-            case SDL_QUIT: gx2_close_requested(); break;
+            case SDL_QUIT:
+                if (!s_window || !rbrew_settings::g_confirm_quit.load(std::memory_order_relaxed) ||
+                    gx2_imgui::is_quit_confirmation_open()) {
+                    gx2_close_requested();
+                } else {
+                    gx2_imgui::open_quit_confirmation();
+                }
+                break;
 
             case SDL_KEYDOWN:
                 if (ev.key.repeat) break;

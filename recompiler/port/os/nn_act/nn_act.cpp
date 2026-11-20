@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <stdexcept>
 #include <string>
 
@@ -19,6 +20,35 @@ namespace {
 std::atomic<uint32_t> g_initialize_count{0};
 constexpr std::u16string_view kMiiName = u"default";
 constexpr char kCountry[] = "NN"; // Cemu: country index 0 has no table entry
+
+std::u16string get_active_mii_name() {
+    const char* env_player = std::getenv("RBREW_PLAYER_NAME");
+    if (!env_player || !*env_player) env_player = std::getenv("RBREW_MII_NAME");
+    std::string candidate;
+    if (env_player && *env_player) {
+        candidate = env_player;
+    } else {
+        std::ifstream in("settings.ini");
+        for (std::string line; in && std::getline(in, line);) {
+            if (line.rfind("player_name=", 0) == 0) {
+                candidate = line.substr(12);
+                while (!candidate.empty() &&
+                       (candidate.back() == '\r' || candidate.back() == ' ' || candidate.back() == '\t'))
+                    candidate.pop_back();
+                break;
+            }
+        }
+    }
+    if (!candidate.empty()) {
+        std::u16string name;
+        for (char c : candidate) {
+            if (name.size() >= RBREW_ACT_MII_NAME_MAX) break;
+            name.push_back(static_cast<char16_t>(static_cast<unsigned char>(c)));
+        }
+        if (!name.empty()) return name;
+    }
+    return std::u16string(kMiiName);
+}
 
 void require_guest(const CPUState* cpu, uint32_t address, uint64_t length, const char* what) {
     if (!address || uint64_t(address) + length > cpu->guest_memory_size ||
@@ -37,7 +67,8 @@ bool slot_occupied(uint32_t raw) {
 
 void write_mii(CPUState* cpu, uint32_t address) {
     require_guest(cpu, address, 0x60, "FFLStoreData output");
-    const auto mii = rbrew_act_default_mii(kMiiName);
+    const auto name = get_active_mii_name();
+    const auto mii = rbrew_act_default_mii(name);
     for (uint32_t i = 0; i < mii.size(); ++i) rbrew_write8(cpu->mem, address + i, mii[i]);
 }
 
@@ -96,9 +127,10 @@ void GetParentalControlSlotNoEx(CPUState* cpu) {
 }
 void GetMiiName(CPUState* cpu) {
     const uint32_t out = cpu->r[3];
-    require_guest(cpu, out, (kMiiName.size() + 1) * 2, "Mii name output");
-    for (size_t i = 0; i < kMiiName.size(); ++i) rbrew_write16(cpu->mem, out + uint32_t(i * 2), kMiiName[i]);
-    rbrew_write16(cpu->mem, out + uint32_t(kMiiName.size() * 2), 0);
+    const auto name = get_active_mii_name();
+    require_guest(cpu, out, (name.size() + 1) * 2, "Mii name output");
+    for (size_t i = 0; i < name.size(); ++i) rbrew_write16(cpu->mem, out + uint32_t(i * 2), name[i]);
+    rbrew_write16(cpu->mem, out + uint32_t(name.size() * 2), 0);
     cpu->r[3] = 0;
 }
 void GetCountry(CPUState* cpu) {

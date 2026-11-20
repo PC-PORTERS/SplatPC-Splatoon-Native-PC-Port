@@ -46,6 +46,7 @@ FNV_PRIME = 0x100000001B3
 MASK64 = (1 << 64) - 1
 
 PLT_AUTO = "os/gambit_plt_auto.cpp"
+PLT_STUBS = "gambit_plt_stubs.cpp"
 
 
 
@@ -538,6 +539,29 @@ def emit(m, out_dir):
     chunks.append("}\n")
     if write_if_changed(root / PLT_AUTO, "".join(chunks)):
         written.append((root / PLT_AUTO, True))
+
+    prefix = m.identity_string("module_name") or "Gambit"
+    stub_chunks = [
+        banner,
+        "// Auto-generated PLT dispatch wrappers — do not edit by hand.\n",
+        "// Each %s_fn_0xXXX entry is a linker-generated PLT stub in the\n" % prefix,
+        "// Wii U binary that forwards to an OS library function.\n",
+        "// At runtime these are resolved via the dispatch table populated by\n",
+        "// the OS stub layer in port/os/.\n\n",
+        '#include "rebrewu_runtime.h"\n\n',
+        '#ifdef __cplusplus\nextern "C" {\n#endif\n\n',
+    ]
+    for item in imports_by_address(m):
+        if item.data:
+            continue
+        stub_chunks.append(
+            "void %s_fn_%08X(CPUState* cpu) {\n"
+            "    rbrew_dispatch(cpu, 0x%08Xu);\n"
+            "}\n\n" % (prefix, item.address, item.address)
+        )
+    stub_chunks.append("#ifdef __cplusplus\n} // extern \"C\"\n#endif\n")
+    if write_if_changed(root / PLT_STUBS, "".join(stub_chunks)):
+        written.append((root / PLT_STUBS, True))
     return written
 
 
@@ -815,8 +839,10 @@ def main(argv=None):
     sub = parser.add_subparsers(dest="command", required=True)
 
     emit_parser = sub.add_parser("emit", help="generate address headers and the PLT table")
-    emit_parser.add_argument("--manifest", required=True)
-    emit_parser.add_argument("--out", required=True)
+    emit_parser.add_argument("--manifest", help="source manifest to emit from")
+    emit_parser.add_argument("--rpx", help="Wii U image (selects matching manifest, or scans ROM)")
+    emit_parser.add_argument("--manifest-dir", action="append", default=[], help="manifest search directories")
+    emit_parser.add_argument("--out", required=True, help="output directory")
 
     list_parser = sub.add_parser("list", help="list manifests, optionally ranked against an image")
     list_parser.add_argument("--manifest-dir", action="append", default=[])
@@ -900,7 +926,52 @@ def main(argv=None):
         return 0
 
     if args.command == "emit":
-        m = load_manifest(args.manifest)
+        manifest_path = args.manifest
+        if not manifest_path:
+            if not args.rpx:
+                print("emit requires either --manifest or --rpx", file=sys.stderr)
+                return 1
+            paths = discover_manifests(args.manifest_dir)
+            if paths:
+                try:
+                    selected = select_manifest(args.rpx, paths)
+                    manifest_path = selected.path
+                except SystemExit:
+                    manifest_path = None
+            if not manifest_path:
+                image = Path(args.rpx)
+                if not image.is_file():
+                    print("image not found: %s" % image, file=sys.stderr)
+                    return 1
+                binary = find_rebrewu(None)
+                if not binary:
+                    print("rebrewu binary not found; build it or pass --manifest", file=sys.stderr)
+                    return 1
+                imports = []
+                for line in run_rebrewu(binary, ["imports", str(image)]).splitlines():
+                    match = IMPORT_RE.match(line.strip())
+                    if match:
+                        imports.append(Import(match.group(1), match.group(2), int(match.group(3), 16)))
+                if not imports:
+                    print("no imports reported for %s" % image, file=sys.stderr)
+                    return 1
+                m = Manifest(image)
+                m.id = "rom-" + image.stem
+                m.identity["module_name"] = "Gambit"
+                m.imports = imports
+                m.modules = {
+                    "coreinit": "os/coreinit/coreinit_addrs.h",
+                    "gx2": "os/gx2/gx2_addrs.h",
+                    "padscore": "os/padscore/padscore_addrs.h",
+                    "snd_core": "os/snd_core/snd_core_addrs.h",
+                    "vpad": "os/vpad/vpad_addrs.h",
+                }
+                written = emit(m, args.out)
+                for path, _ in written:
+                    print("Wrote %s" % path)
+                return 0
+
+        m = load_manifest(manifest_path)
         if not verify_hashes(m):
             for error in m.errors:
                 print("manifest: " + error, file=sys.stderr)
