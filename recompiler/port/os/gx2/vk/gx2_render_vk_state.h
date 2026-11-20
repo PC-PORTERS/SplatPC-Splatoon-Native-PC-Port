@@ -435,6 +435,7 @@ VkSampler tex_object_sampler(const TexParams& params, bool shadow, bool integer)
 
 // Internal fullscreen-triangle passes (depth->R32F transfer, capture readback).
 bool depth_to_color_pass(DepthTarget& source, ColorTarget& destination, uint32_t width, uint32_t height);
+bool depth_to_depth_pass(DepthTarget& source, gx2vk::Image& destination, uint32_t level, uint32_t layer);
 // Uploads a CPU-side linear level into a Vulkan image (outside rendering).
 void upload_image_level(gx2vk::Image& image, uint32_t level, uint32_t first_layer, uint32_t layers, uint32_t width,
                         uint32_t height, uint32_t depth, const uint8_t* data, size_t bytes, VkImageAspectFlags aspect);

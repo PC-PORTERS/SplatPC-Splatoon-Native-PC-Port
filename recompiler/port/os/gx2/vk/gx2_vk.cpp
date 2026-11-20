@@ -5,6 +5,7 @@
 #include "gx2_vk.h"
 #include "gx2_vk_capture.h"
 #include "gx2_vk_memory.h"
+#include "gx2_vk_device.h"
 #include "gx2_imgui_overlay.h"
 #include "gx2_vk_shader.h"
 #define SDL_MAIN_HANDLED
@@ -1258,16 +1259,41 @@ bool init(SDL_Window* window, bool native_depth) {
         return false;
     }
 
-    // Physical device: the first discrete GPU with Vulkan 1.3 and a graphics
-    // queue that can present to the window.
+    // Prefer a compatible discrete GPU, then integrated, regardless of vendor.
+    const char* gpu_request = std::getenv("RBREW_GPU");
+    const std::string_view requested_gpu = gpu_request ? gpu_request : "";
     vkEnumeratePhysicalDevices(s_instance, &count, nullptr);
     std::vector<VkPhysicalDevice> devices(count);
     vkEnumeratePhysicalDevices(s_instance, &count, devices.data());
     int best_score = -1;
-    for (auto candidate : devices) {
+    for (uint32_t index = 0; index < devices.size(); ++index) {
+        const auto candidate = devices[index];
         VkPhysicalDeviceProperties props{};
         vkGetPhysicalDeviceProperties(candidate, &props);
-        if (props.apiVersion < VK_API_VERSION_1_3) continue;
+        RBREW_LOG_INFO("vk", "GPU %u: %s (vendor 0x%04x)\n", index, props.deviceName, props.vendorID);
+        if (!device_detail::matches(requested_gpu, index, props.deviceName)) continue;
+        if (props.apiVersion < VK_API_VERSION_1_3) {
+            RBREW_LOG_WARN("vk", "Skipping %s: Vulkan 1.3 required\n", props.deviceName);
+            continue;
+        }
+        VkPhysicalDeviceFeatures2 core{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+        VkPhysicalDeviceVulkan12Features v12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+        VkPhysicalDeviceVulkan13Features v13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+        core.pNext = &v12;
+        v12.pNext = &v13;
+        vkGetPhysicalDeviceFeatures2(candidate, &core);
+        if (const char* missing = device_detail::missing_feature(core.features, v12, v13)) {
+            RBREW_LOG_WARN("vk", "Skipping %s: required feature %s unavailable\n", props.deviceName, missing);
+            continue;
+        }
+        uint32_t extension_count = 0;
+        vkEnumerateDeviceExtensionProperties(candidate, nullptr, &extension_count, nullptr);
+        std::vector<VkExtensionProperties> extensions(extension_count);
+        vkEnumerateDeviceExtensionProperties(candidate, nullptr, &extension_count, extensions.data());
+        if (s_surface && !has_extension(extensions, VK_KHR_SWAPCHAIN_EXTENSION_NAME)) {
+            RBREW_LOG_WARN("vk", "Skipping %s: swapchain extension unavailable\n", props.deviceName);
+            continue;
+        }
         uint32_t families = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(candidate, &families, nullptr);
         std::vector<VkQueueFamilyProperties> family_props(families);
@@ -1275,11 +1301,10 @@ bool init(SDL_Window* window, bool native_depth) {
         for (uint32_t f = 0; f < families; ++f) {
             if (!(family_props[f].queueFlags & VK_QUEUE_GRAPHICS_BIT)) continue;
             VkBool32 present = VK_TRUE;
-            if (s_surface) vkGetPhysicalDeviceSurfaceSupportKHR(candidate, f, s_surface, &present);
+            if (s_surface && vkGetPhysicalDeviceSurfaceSupportKHR(candidate, f, s_surface, &present) != VK_SUCCESS)
+                continue;
             if (!present) continue;
-            const int score = props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU     ? 2
-                              : props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? 1
-                                                                                           : 0;
+            const int score = device_detail::score(props.deviceType);
             if (score > best_score) {
                 best_score = score;
                 s_physical = candidate;
@@ -1289,13 +1314,15 @@ bool init(SDL_Window* window, bool native_depth) {
         }
     }
     if (!s_physical) {
-        RBREW_LOG_FATAL("vk", "FATAL: no Vulkan 1.3 device with a graphics/present queue\n");
+        RBREW_LOG_FATAL("vk", "FATAL: no compatible Vulkan 1.3 GPU (RBREW_GPU='%s'); see adapter diagnostics above\n",
+                        gpu_request ? gpu_request : "auto");
         return false;
     }
     VkPhysicalDeviceProperties props{};
     vkGetPhysicalDeviceProperties(s_physical, &props);
     s_caps.api_version = props.apiVersion;
     s_caps.device_name = props.deviceName;
+    RBREW_LOG_INFO("vk", "Selected GPU: %s\n", props.deviceName);
     s_caps.limits = props.limits;
     vkGetPhysicalDeviceMemoryProperties(s_physical, &s_memory);
 
@@ -1371,31 +1398,9 @@ bool init(SDL_Window* window, bool native_depth) {
     }
     vkGetPhysicalDeviceFeatures2(s_physical, &f2);
 
-    // Required features (the GX2 translation depends on each).
-    struct Required {
-        const char* name;
-        VkBool32 value;
-    };
-    const Required required[] = {
-        {"dynamicRendering", f13.dynamicRendering},
-        {"synchronization2", f13.synchronization2},
-        {"timelineSemaphore", f12.timelineSemaphore},
-        {"hostQueryReset", f12.hostQueryReset},
-        {"geometryShader", f2.features.geometryShader},
-        {"independentBlend", f2.features.independentBlend},
-        {"textureCompressionBC", f2.features.textureCompressionBC},
-        {"imageCubeArray", f2.features.imageCubeArray},
-        {"largePoints", f2.features.largePoints},
-        // glslang lowers GLSL discard (alpha test, GX2 KILL) to
-        // OpDemoteToHelperInvocation for SPIR-V 1.6.
-        {"shaderDemoteToHelperInvocation", f13.shaderDemoteToHelperInvocation},
-    };
-    for (const auto& r : required) {
-        if (!r.value) {
-            RBREW_LOG_FATAL("vk", "FATAL: required device feature %s is not supported by %s\n", r.name,
-                            props.deviceName);
-            return false;
-        }
+    if (const char* missing = device_detail::missing_feature(f2.features, f12, f13)) {
+        RBREW_LOG_FATAL("vk", "FATAL: required device feature %s is not supported by %s\n", missing, props.deviceName);
+        return false;
     }
     // Enabled set: required plus optional capabilities.
     VkPhysicalDeviceFeatures2 e2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};

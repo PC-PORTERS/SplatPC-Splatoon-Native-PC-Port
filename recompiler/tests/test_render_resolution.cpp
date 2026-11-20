@@ -278,6 +278,11 @@ void check_resolution(VkExtent2D display) {
             "depth array alias readback failed");
     std::memcpy(&last_depth, depth_pixels.data() + depth_pixels.size() - 4, 4);
     require(std::abs(last_depth - 0.375f) < 0.00001f, "array alias cropped a scaled depth target");
+    require(gx2r::depth_to_depth_pass(*s.depth_target, *depth_sample->image, 0, 1), "shader depth resampling failed");
+    require(gx2vk::read_image(*depth_sample->image, VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 1280, 720, depth_pixels),
+            "resampled depth slice readback failed");
+    std::memcpy(&last_depth, depth_pixels.data() + depth_pixels.size() - 4, 4);
+    require(std::abs(last_depth - 0.375f) < 0.00001f, "depth resampling missed the selected array slice");
     const auto half = surface(0x800000, 640, 360, 0x1A);
     gx2_render_set_color_buffer(1, mem.data(), half.data(), 0);
     require(s.color_targets[0]->image.desc.width == display.width / 2 &&

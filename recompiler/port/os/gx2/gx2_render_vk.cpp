@@ -1614,6 +1614,7 @@ static bool ensure_texture_storage(Texture& entry, uint32_t target, VkFormat for
     desc.layers = type == VK_IMAGE_TYPE_3D ? 1 : layers;
     desc.levels = levels;
     desc.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    if (depth_format) desc.usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
     if (!gx2vk::format_is_compressed(format) && !depth_format) desc.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
     if (target == wire::TEXTURE_CUBE_MAP_ARRAY) desc.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
     if (!gx2vk::create_image(entry.image, desc)) return false;
@@ -1880,8 +1881,13 @@ void gx2_render_upload_texture(uint32_t tex_addr, uint32_t slot, uint8_t* mem, c
                                    VK_IMAGE_LAYOUT_GENERAL, 1, &region);
                 } else {
                     if (!gx2vk::format_supports(depth.format,
-                                                VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT))
-                        return;
+                                                VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT)) {
+                        if (!depth_to_depth_pass(const_cast<DepthTarget&>(depth), entry.image, key[5],
+                                                 key[6] - first_slice))
+                            return;
+                        live_copy_recorded(entry, depth);
+                        continue;
+                    }
                     VkImageBlit blit{};
                     blit.srcSubresource = region.srcSubresource;
                     blit.dstSubresource = region.dstSubresource;
