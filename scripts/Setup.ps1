@@ -317,15 +317,23 @@ if (-not [Environment]::Is64BitOperatingSystem) { Fail 'A 64-bit Windows 10 or 1
 # (CMake resolves it back). A bracket in a path without spaces, as in a second
 # download "...-main(1)", is not quoted by CMake: cmd.exe stops at the "(" when
 # it starts the linker, and the compiler check fails (vcpkg's zlib, issue #34).
+# A long path breaks the build too, issue #62: the compiler check of vcpkg's
+# CMake puts its object files about 125 characters below the project folder, and
+# cl.exe cannot open a file whose path passes ~250 characters ("C1083 Cannot
+# open compiler generated file"), even with LongPathsEnabled. The deepest build
+# file seen is ~170 characters below the project folder, so a folder path over
+# 80 characters gets the same treatment.
 # Build through a drive letter mapped to this same folder (subst) instead:
 # nothing is moved or copied, and the letter is removed again when setup ends.
 # The game folder keeps the real path.
 $ProjectRoot = $Root
+$MaxBuildPathLength = 80
 $script:BuildDrive = $null
 function Remove-BuildDrive {
     if ($script:BuildDrive) { subst "$($script:BuildDrive)" /D 2>$null | Out-Null; $script:BuildDrive = $null }
 }
-if ($Root -match '[^\x00-\x7F]|[()]') {
+if ($Root -match '[^\x00-\x7F]|[()]' -or $Root.TrimEnd('\').Length -gt $MaxBuildPathLength) {
+    $why = if ($Root.TrimEnd('\').Length -gt $MaxBuildPathLength -and $Root -notmatch '[^\x00-\x7F]|[()]') { 'is long' } else { 'contains special characters' }
     # The letter this folder already has from an earlier run, else a free one.
     $mapped = subst | Where-Object { $_ -match '^([A-Z]):\\: => (.*)$' -and $matches[2].TrimEnd('\') -ieq $Root.TrimEnd('\') } |
         ForEach-Object { $_.Substring(0, 2) } | Select-Object -First 1
@@ -334,9 +342,9 @@ if ($Root -match '[^\x00-\x7F]|[()]') {
         if ($free) { subst "${free}:" "$Root" 2>$null | Out-Null; if (Test-Path -LiteralPath "${free}:\scripts\Setup.ps1") { $mapped = "${free}:"; $script:BuildDrive = $mapped } }
     }
     if (-not $mapped) {
-        Fail "Your folder path contains special characters ($Root), which the C++ compiler cannot handle, and no free drive letter was found to work around it. Move the project to a folder like C:\SplatoonPort and run Setup.bat again."
+        Fail "Your folder path $why ($Root), which the C++ compiler cannot handle, and no free drive letter was found to work around it. Move the project to a short folder like C:\SplatoonPort and run Setup.bat again."
     }
-    Info "Your folder path contains special characters; the build runs through drive $mapped (the same folder)."
+    Info "Your folder path $why; the build runs through drive $mapped (the same folder)."
     $Root = "$mapped\"
     $Recompiler = Join-Path $Root 'recompiler'
     $Work = Join-Path $Root 'build'
