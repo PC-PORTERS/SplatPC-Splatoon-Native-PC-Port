@@ -24,6 +24,7 @@
 #include <future>
 #include <iomanip>
 #include <mutex>
+#include <string>
 #include <utility>
 #include <vector>
 #if defined(HAVE_SDL2)
@@ -831,30 +832,8 @@ struct FrameRepairs {
 };
 FrameRepairs s_frame_repairs; // game thread only
 
-void frame_step(CPUState* cpu, uint32_t, HostFunc original) {
-    if (!player_guard_on()) return original(cpu);
-    static bool logged = false; // the first repair of a session, inside a player update or not
-    GuestWords words{cpu->mem};
-    const uint32_t ctrl = cpu->r[3];
-    const uint32_t frame = words.read32(ctrl + 0x08), step = words.read32(ctrl + 0x10);
-    const png::Frame state = png::check_frame(words, ctrl);
-    if (state != png::Frame::ok) {
-        ++s_frame_repairs.count;
-        s_frame_repairs.last = ctrl;
-        if (!logged) {
-            RBREW_LOG_WARN("player", "frame controller %08x (lr %08x) %s: frame %08x step %08x length %08x\n", ctrl,
-                           uint32_t(cpu->lr), state == png::Frame::skip ? "skipped" : "repaired", frame, step,
-                           words.read32(ctrl + png::kLength));
-            logged = true;
-        }
-    }
-    if (state != png::Frame::skip) original(cpu);
-}
-
-// The first update of a session that left a player non-finite, or that needed a frame controller repair.
-void report_player(const char* what, const UpdateEntry& entry, uint32_t player, uint32_t frame_repairs,
-                   const std::array<uint32_t, png::kPlayerWords>* seen,
-                   const std::array<uint32_t, png::kPlayerWords>* restored, uint8_t* mem) {
+// Diagnostics/<kind>-<date>-<guest address>.txt (relative to the working directory, like the camera report).
+std::string diagnostics_file(const char* kind, uint32_t addr) {
     std::error_code error;
     std::filesystem::create_directories("Diagnostics", error);
     const std::time_t now = std::time(nullptr);
@@ -864,9 +843,43 @@ void report_player(const char* what, const UpdateEntry& entry, uint32_t player, 
 #else
     localtime_r(&now, &local);
 #endif
-    char stamp[32], name[80];
+    char stamp[32], name[96];
     std::strftime(stamp, sizeof stamp, "%Y%m%d-%H%M%S", &local);
-    std::snprintf(name, sizeof name, "Diagnostics/player-nan-%s-%08x.txt", stamp, player);
+    std::snprintf(name, sizeof name, "Diagnostics/%s-%s-%08x.txt", kind, stamp, addr);
+    return name;
+}
+
+void frame_step(CPUState* cpu, uint32_t, HostFunc original) {
+    if (!player_guard_on()) return original(cpu);
+    // Release builds compile logging out: the first repair of a session, inside a player update or not, goes to a
+    // file so that a repair of a controller that is not a player's shows up after a match.
+    static bool reported = false;
+    GuestWords words{cpu->mem};
+    const uint32_t ctrl = cpu->r[3];
+    std::array<uint32_t, 16> before{};
+    if (!reported)
+        for (uint32_t i = 0; i < before.size(); ++i) before[i] = words.read32(ctrl + 4 * i);
+    const png::Frame state = png::check_frame(words, ctrl);
+    if (state != png::Frame::ok) {
+        ++s_frame_repairs.count;
+        s_frame_repairs.last = ctrl;
+        if (!reported) {
+            std::ofstream out(diagnostics_file("frame-nan", ctrl));
+            out << "frame controller " << std::hex << ctrl << (state == png::Frame::skip ? " skipped" : " repaired")
+                << " (lr " << uint32_t(cpu->lr) << ")\n"
+                << std::dec;
+            dump_words(out, "frame controller before the repair", std::vector<uint32_t>(before.begin(), before.end()));
+            reported = true;
+        }
+    }
+    if (state != png::Frame::skip) original(cpu);
+}
+
+// The first update of a session that left a player non-finite, or that needed a frame controller repair.
+void report_player(const char* what, const UpdateEntry& entry, uint32_t player, uint32_t frame_repairs,
+                   const std::array<uint32_t, png::kPlayerWords>* seen,
+                   const std::array<uint32_t, png::kPlayerWords>* restored, uint8_t* mem) {
+    const std::string name = diagnostics_file("player-nan", player);
     std::ofstream out(name);
     const uint32_t control = rbrew_read32(mem, player + png::kControl);
     out << what << "\nplayer " << std::hex << player << ": " << png::role(control) << " (+0x50 = " << control
@@ -889,7 +902,7 @@ void report_player(const char* what, const UpdateEntry& entry, uint32_t player, 
         dump_words(out, "player after the update", read_words(mem, player, png::kPlayerBytes));
     }
     if (s_frame_repairs.last) dump_words(out, "frame controller", read_words(mem, s_frame_repairs.last, 0x40));
-    RBREW_LOG_WARN("player", "non-finite player update recorded in %s\n", name);
+    RBREW_LOG_WARN("player", "non-finite player update recorded in %s\n", name.c_str());
 }
 
 void player_update(CPUState* cpu, uint32_t, HostFunc original) {
