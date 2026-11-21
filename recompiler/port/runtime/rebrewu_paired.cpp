@@ -40,6 +40,9 @@ uint32_t as_bits(float f) {
 double round_single(double v) { // arithmetic results only: non-IEEE mode, see rbrew_flush_denormal
     return double(rbrew_flush_denormal(float(v)));
 }
+double copy_single(double v) { // the slot ps_sum0/ps_sum1 copy from frC: a move, never flushed
+    return double(float(v));
+}
 // Double -> float rounding toward zero (decaf truncate_double).
 float truncate_single(double v) {
     if (std::isnan(v) || std::isinf(v)) return float(v);
@@ -204,11 +207,11 @@ extern "C" void rbrew_ps_mem(CPUState* cpu, uint8_t* mem, uint32_t w) {
     const double c0 = cpu->f[c], c1 = cpu->ps1[c];
     switch (xo5) {
     case 10:
-        set_pair(cpu, d, round_single(a0 + b1), round_single(c1));
+        set_pair(cpu, d, round_single(a0 + b1), copy_single(c1));
         record(cpu, w);
         return; // ps_sum0
     case 11:
-        set_pair(cpu, d, round_single(c0), round_single(a0 + b1));
+        set_pair(cpu, d, copy_single(c0), round_single(a0 + b1));
         record(cpu, w);
         return; // ps_sum1
     case 12:

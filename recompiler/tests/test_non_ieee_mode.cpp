@@ -3,6 +3,7 @@
 // `x > 0` test; its Newton square root (1/sqrt(x), then squared in single) overflowed and the player became NaN:
 // invisible with the player guard, frozen game without it.
 #include "runtime/rebrewu_runtime.h"
+#include <bit>
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
@@ -24,6 +25,29 @@ bool newton_step_finite(double x) {
     return std::isfinite(rbrew_fround(-std::fma(yy, x, -3.0)));
 }
 
+// ps_sumN f5, f1, f3, f2: the sum f1.ps0 + f2.ps1 is an arithmetic result, the other slot is copied from f3.
+// Flushing that copy broke the ink and wall rendering of the session host in a duo.
+constexpr uint32_t ps_sum(uint32_t xo) {
+    return (4u << 26) | (5u << 21) | (1u << 16) | (2u << 11) | (3u << 6) | (xo << 1);
+}
+
+template <uint32_t word> void check_sum(bool inline_path, const char* name) {
+    const double denormal = double(std::bit_cast<float>(0x00011111u));
+    CPUState cpu{};
+    cpu.f[1] = denormal; // the sum denormal + 0 is flushed
+    cpu.f[3] = denormal;
+    cpu.ps1[3] = -denormal;
+    if (inline_path)
+        rbrew_ps_constant<word>(&cpu);
+    else
+        rbrew_ps(&cpu, word);
+    const bool sum0 = ((word >> 1) & 31) == 10;
+    const double sum = sum0 ? cpu.f[5] : cpu.ps1[5], copy = sum0 ? cpu.ps1[5] : cpu.f[5];
+    const double copied = sum0 ? -denormal : denormal;
+    check(sum == 0.0 && !std::signbit(sum), name);
+    check(std::bit_cast<uint64_t>(copy) == std::bit_cast<uint64_t>(copied), name);
+}
+
 } // namespace
 
 int main() {
@@ -42,6 +66,11 @@ int main() {
     }
     check(finite, "a decaying speed never overflows the square root");
     check(speed == 0.0, "a decaying speed reaches zero");
+
+    check_sum<ps_sum(10)>(false, "ps_sum0 keeps its copied slot (interpreter)");
+    check_sum<ps_sum(10)>(true, "ps_sum0 keeps its copied slot (inline)");
+    check_sum<ps_sum(11)>(false, "ps_sum1 keeps its copied slot (interpreter)");
+    check_sum<ps_sum(11)>(true, "ps_sum1 keeps its copied slot (inline)");
 
     if (failures) {
         std::printf("%d failure(s)\n", failures);
