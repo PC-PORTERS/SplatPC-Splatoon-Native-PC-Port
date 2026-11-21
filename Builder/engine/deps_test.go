@@ -43,10 +43,16 @@ func TestVolkUsesTheBundledVulkanHeaders(t *testing.T) {
 }
 
 func TestBundledLibrariesAreStatic(t *testing.T) {
-	options := strings.Join(curlDependency.options, " ")
+	winOptions := strings.Join(curlDependencyFor("windows").options, " ")
 	for _, want := range []string{"-DBUILD_SHARED_LIBS=OFF", "-DBUILD_STATIC_LIBS=ON", "-DCURL_USE_SCHANNEL=ON"} {
-		if !strings.Contains(options, want) {
-			t.Errorf("expected %s in the curl options", want)
+		if !strings.Contains(winOptions, want) {
+			t.Errorf("expected %s in the Windows curl options", want)
+		}
+	}
+	linuxOptions := strings.Join(curlDependencyFor("linux").options, " ")
+	for _, want := range []string{"-DBUILD_SHARED_LIBS=OFF", "-DBUILD_STATIC_LIBS=ON", "-DCURL_ENABLE_SSL=OFF"} {
+		if !strings.Contains(linuxOptions, want) {
+			t.Errorf("expected %s in the Linux curl options", want)
 		}
 	}
 }

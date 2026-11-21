@@ -127,6 +127,8 @@ def main():
     common = ['-G', args.generator]
     if 'Visual Studio' in args.generator:
         common += ['-A', 'x64']  # MSBuild platform; Make/Ninja generators reject -A
+    else:
+        common += ['-DCMAKE_BUILD_TYPE=Release']
     profiles = [
         (sdl, 'sdl2-vulkan', ['-DSDL_SHARED=OFF', '-DSDL_STATIC=ON', '-DSDL_TEST=OFF', '-DSDL_TESTS=OFF',
             '-DSDL_OPENGL=OFF', '-DSDL_OPENGLES=OFF', '-DSDL_VULKAN=ON', '-DSDL_RENDER_D3D=OFF',

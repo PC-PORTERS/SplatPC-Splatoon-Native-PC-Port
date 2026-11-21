@@ -13,11 +13,12 @@ import (
 type StepBuildConfigView struct {
 	wizard *Wizard
 
-	container  *fyne.Container
-	jobsSlider *widget.Slider
-	jobsLabel  *widget.Label
-	cleanCheck *widget.Check
-	systemInfo *widget.Label
+	container        *fyne.Container
+	jobsSlider       *widget.Slider
+	jobsLabel        *widget.Label
+	cleanCheck       *widget.Check
+	cleanupDepsCheck *widget.Check
+	systemInfo       *widget.Label
 
 	prevBtn  *widget.Button
 	buildBtn *widget.Button
@@ -53,6 +54,11 @@ func (v *StepBuildConfigView) initUI() {
 	})
 	v.cleanCheck.SetChecked(cfg.CleanBuild)
 
+	v.cleanupDepsCheck = widget.NewCheck("Delete downloaded dependencies & build cache after build", func(b bool) {
+		cfg.CleanupDepsAfterBuild = b
+	})
+	v.cleanupDepsCheck.SetChecked(cfg.CleanupDepsAfterBuild)
+
 	v.systemInfo = widget.NewLabel(fmt.Sprintf(
 		"System Information:\n• CPU: %d logical cores detected\n• OS: %s / %s\n• Recommended jobs: %d (calibrated to RAM: ~3 GB RAM per job for C++ recompiler)",
 		maxCPU, runtime.GOOS, runtime.GOARCH, cfg.ParallelJobs,
@@ -71,10 +77,13 @@ func (v *StepBuildConfigView) initUI() {
 		),
 	)
 
-	cardClean := widget.NewCard("Build Cache Options", "",
+	cardClean := widget.NewCard("Build Cache & Cleanup Options", "",
 		container.NewVBox(
 			v.cleanCheck,
 			widget.NewLabelWithStyle("Removes previous build/ directory to recompile every module from scratch.", fyne.TextAlignLeading, fyne.TextStyle{Italic: true}),
+			widget.NewSeparator(),
+			v.cleanupDepsCheck,
+			widget.NewLabelWithStyle("Automatically deletes downloaded userspace tools, dependency sources, and temporary build files once the game is ready.", fyne.TextAlignLeading, fyne.TextStyle{Italic: true}),
 		),
 	)
 

@@ -15,22 +15,25 @@ import (
 )
 
 type CheckItem struct {
-	ID         string
-	Name       string
-	Category   string // "Tool", "Compiler", "Library"
-	Required   bool
-	Found      bool
-	Version    string
-	Path       string
-	ErrorMsg   string
-	InstallCmd string
+	ID           string
+	Name         string
+	Category     string // "Tool", "Compiler", "Library"
+	Required     bool
+	Found        bool
+	Userspace    bool
+	Downloadable bool
+	Version      string
+	Path         string
+	ErrorMsg     string
+	InstallCmd   string
 }
 
 type CheckReport struct {
-	Items          []CheckItem
-	AllRequiredMet bool
-	OSName         string
-	Distro         string
+	Items               []CheckItem
+	AllRequiredMet      bool
+	MissingDownloadable []string
+	OSName              string
+	Distro              string
 	// InstallSteps install the missing required tools on this system their
 	// commands one per line are InstallScripts
 	InstallSteps  []InstallStep
@@ -68,42 +71,26 @@ func RunChecks() CheckReport {
 		Distro: DetectDistro(),
 	}
 
+	toolsRoot := UserToolsDir()
+
 	// 1. CMake
 	cmakeItem := CheckItem{
-		ID:       "cmake",
-		Name:     "CMake (>= 3.20)",
-		Category: "Tool",
-		Required: true,
+		ID:           "cmake",
+		Name:         "CMake (>= 3.20)",
+		Category:     "Tool",
+		Required:     true,
+		Downloadable: true,
 	}
-	if path, err := exec.LookPath("cmake"); err == nil {
-		cmakeItem.Found = true
-		cmakeItem.Path = path
-		if out, err := proc.Command("cmake", "--version").Output(); err == nil {
-			v := parseVersion(string(out))
-			cmakeItem.Version = v
-			if isVersionOlder(v, "3.20") {
-				cmakeItem.Found = false
-				cmakeItem.ErrorMsg = fmt.Sprintf("CMake %s is too old (>= 3.20 required)", v)
-			} else if runtime.GOOS == "windows" {
-				if vs, ok := FindVisualStudio(); ok {
-					if msg := cmakeSupportsVisualStudio(v, vs); msg != "" {
-						cmakeItem.Found = false
-						cmakeItem.ErrorMsg = msg
-					}
-				}
-			}
-		}
-	} else {
-		cmakeItem.ErrorMsg = "CMake is not installed or not in PATH"
-	}
+	checkCMake(&cmakeItem, toolsRoot)
 	report.Items = append(report.Items, cmakeItem)
 
 	// 2. Python 3
 	pyItem := CheckItem{
-		ID:       "python3",
-		Name:     "Python 3 (>= 3.12)",
-		Category: "Tool",
-		Required: true,
+		ID:           "python3",
+		Name:         "Python 3 (>= 3.12)",
+		Category:     "Tool",
+		Required:     true,
+		Downloadable: true,
 	}
 	if python, versionLine, ok := FindPython(); ok {
 		pyItem.Path = strings.Join(python, " ")
@@ -113,6 +100,10 @@ func RunChecks() CheckReport {
 			pyItem.ErrorMsg = fmt.Sprintf("Python %s is too old (>= 3.12 required for tar filters)", v)
 		} else {
 			pyItem.Found = true
+			if isUnderDir(python[0], toolsRoot) {
+				pyItem.Userspace = true
+				pyItem.Version += " (userspace)"
+			}
 		}
 	} else {
 		pyItem.ErrorMsg = "Python 3 is not installed or not in PATH (python3, python and py -3 were tried)"
@@ -121,26 +112,36 @@ func RunChecks() CheckReport {
 
 	// 3. C++ Compiler
 	compilerItem := CheckItem{
-		ID:       "compiler",
-		Name:     "C++ Compiler (GCC / Clang / MSVC)",
-		Category: "Compiler",
-		Required: true,
+		ID:           "compiler",
+		Name:         "C++ Compiler (GCC / Clang / MSVC)",
+		Category:     "Compiler",
+		Required:     true,
+		Downloadable: true,
 	}
-	checkCompilers(&compilerItem)
+	checkCompilers(&compilerItem, toolsRoot)
 	report.Items = append(report.Items, compilerItem)
 
 	// 4. Ninja (Recommended) or Make
 	ninjaItem := CheckItem{
-		ID:       "ninja",
-		Name:     "Ninja Build System",
-		Category: "Tool",
-		Required: false,
+		ID:           "ninja",
+		Name:         "Ninja Build System",
+		Category:     "Tool",
+		Required:     false,
+		Downloadable: true,
 	}
-	if path, err := exec.LookPath("ninja"); err == nil {
+	if path, ok := LookPath("ninja"); ok {
 		ninjaItem.Found = true
 		ninjaItem.Path = path
-		if out, err := proc.Command("ninja", "--version").Output(); err == nil {
+		if out, err := proc.Command(path, "--version").Output(); err == nil {
 			ninjaItem.Version = strings.TrimSpace(string(out))
+		}
+		if isUnderDir(path, toolsRoot) {
+			ninjaItem.Userspace = true
+			if ninjaItem.Version != "" {
+				ninjaItem.Version += " (userspace)"
+			} else {
+				ninjaItem.Version = "userspace"
+			}
 		}
 	} else {
 		ninjaItem.ErrorMsg = "Optional (speeds up compilation significantly)"
@@ -157,33 +158,59 @@ func RunChecks() CheckReport {
 	checkVulkan(&vulkanItem)
 	report.Items = append(report.Items, vulkanItem)
 
-	// 6. Linux specific libraries
+	// 6. Linux specific libraries & tools
 	if runtime.GOOS == "linux" {
-		// zlib
+		// appimagetool (Optional for AppImage packaging)
+		appImageItem := CheckItem{
+			ID:           "appimagetool",
+			Name:         "AppImageTool (Linux AppImage)",
+			Category:     "Tool",
+			Required:     false,
+			Downloadable: true,
+		}
+		if path, ok := LookPath("appimagetool"); ok {
+			appImageItem.Found = true
+			appImageItem.Path = path
+			if isUnderDir(path, toolsRoot) {
+				appImageItem.Userspace = true
+				appImageItem.Version = "userspace"
+			} else {
+				appImageItem.Version = "System"
+			}
+		} else {
+			appImageItem.ErrorMsg = "Optional (needed for standalone Linux AppImage packaging)"
+		}
+		report.Items = append(report.Items, appImageItem)
+
+		// zlib (built in userspace when absent on system)
 		zlibItem := CheckItem{
 			ID:       "zlib",
 			Name:     "zlib development headers",
 			Category: "Library",
 			Required: true,
+			Found:    true,
 		}
-		if fileExists("/usr/include/zlib.h") || fileExists("/usr/local/include/zlib.h") || pkgConfigExists("zlib") {
-			zlibItem.Found = true
+		if HasSystemZlib() && !UsingUserspaceCompiler() {
+			zlibItem.Version = "System"
 		} else {
-			zlibItem.ErrorMsg = "Missing zlib headers (install zlib / zlib-devel / zlib1g-dev)"
+			zlibItem.Userspace = true
+			zlibItem.Version = "built by the Builder (userspace)"
 		}
 		report.Items = append(report.Items, zlibItem)
 
-		// libcurl
+		// libcurl (built in userspace when absent on system)
 		curlItem := CheckItem{
 			ID:       "libcurl",
 			Name:     "libcurl development headers",
 			Category: "Library",
 			Required: true,
+			Found:    true,
 		}
-		if fileExists("/usr/include/curl/curl.h") || fileExists("/usr/local/include/curl/curl.h") || pkgConfigExists("libcurl") {
-			curlItem.Found = true
+		if HasSystemCurl() && !UsingUserspaceCompiler() {
+			curlItem.Version = "System"
 		} else {
-			curlItem.ErrorMsg = "Missing libcurl headers (install libcurl / curl-devel / libcurl4-openssl-dev)"
+			curlItem.Userspace = true
+			curlItem.Version = "built by the Builder (userspace)"
 		}
 		report.Items = append(report.Items, curlItem)
 
@@ -229,6 +256,7 @@ func RunChecks() CheckReport {
 			break
 		}
 	}
+	report.MissingDownloadable = DownloadableMissingTools(report)
 
 	missing := missingRequired(report.Items)
 	var partialVS *VisualStudio
@@ -242,20 +270,75 @@ func RunChecks() CheckReport {
 	return report
 }
 
-func checkCompilers(item *CheckItem) {
+func checkCMake(item *CheckItem, toolsRoot string) {
+	var candidates []string
+	if path, ok := LookPath("cmake"); ok {
+		candidates = append(candidates, path)
+	}
+	if sysPath, err := exec.LookPath("cmake"); err == nil && !slices.Contains(candidates, sysPath) {
+		candidates = append(candidates, sysPath)
+	}
+	if len(candidates) == 0 {
+		item.ErrorMsg = "CMake is not installed or not in PATH"
+		return
+	}
+	var vs VisualStudio
+	var hasVS bool
+	if runtime.GOOS == "windows" {
+		vs, hasVS = FindVisualStudio()
+	}
+
+	var firstErr string
+	var firstPath string
+	var firstVer string
+	for _, path := range candidates {
+		out, err := proc.Command(path, "--version").Output()
+		if err != nil {
+			continue
+		}
+		v := parseVersion(string(out))
+		if firstPath == "" {
+			firstPath = path
+			firstVer = v
+		}
+		if isVersionOlder(v, "3.20") {
+			if firstErr == "" {
+				firstErr = fmt.Sprintf("CMake %s is too old (>= 3.20 required)", v)
+			}
+			continue
+		}
+		if hasVS {
+			if msg := cmakeSupportsVisualStudio(v, vs); msg != "" {
+				if firstErr == "" {
+					firstErr = msg
+				}
+				continue
+			}
+		}
+		item.Found = true
+		item.Path = path
+		item.Version = v
+		if isUnderDir(path, toolsRoot) {
+			item.Userspace = true
+			item.Version += " (userspace)"
+		}
+		return
+	}
+	item.Path = firstPath
+	item.Version = firstVer
+	if firstErr != "" {
+		item.ErrorMsg = firstErr
+	} else {
+		item.ErrorMsg = "CMake could not be executed"
+	}
+}
+
+func checkCompilers(item *CheckItem, toolsRoot string) {
+	// Prefer system compilers or Visual Studio first; fall back to userspace toolchain.
 	compilers := []string{"g++", "clang++", "cl"}
 	for _, c := range compilers {
-		if path, err := exec.LookPath(c); err == nil {
-			item.Found = true
-			item.Path = path
-			if out, err := proc.Command(c, "--version").Output(); err == nil {
-				lines := strings.Split(string(out), "\n")
-				if len(lines) > 0 {
-					item.Version = strings.TrimSpace(lines[0])
-				}
-			} else {
-				item.Version = c
-			}
+		if path, err := exec.LookPath(c); err == nil && !isUnderDir(path, toolsRoot) {
+			setCompilerFound(item, path, c, false)
 			return
 		}
 	}
@@ -266,32 +349,47 @@ func checkCompilers(item *CheckItem) {
 			item.Version = "MSVC (" + vs.DisplayName + " " + vs.Version + ")"
 			return
 		}
-		item.ErrorMsg = "Visual Studio 2022 (or its Build Tools) with the 'Desktop development with C++' workload is not installed"
+	}
+	if path, ok := LookPath("clang++"); ok && isUnderDir(path, toolsRoot) {
+		setCompilerFound(item, path, "clang++", true)
 		return
 	}
-	item.ErrorMsg = "No C++ compiler found (install g++, clang, or MSVC)"
+	if runtime.GOOS == "windows" {
+		item.ErrorMsg = "No C++ compiler found (Visual Studio Build Tools or userspace LLVM-MinGW)"
+		return
+	}
+	item.ErrorMsg = "No C++ compiler found (system g++/clang++ or userspace Zig toolchain)"
 }
 
-func checkVulkan(item *CheckItem) {
+func setCompilerFound(item *CheckItem, path, cmdName string, userspace bool) {
+	item.Found = true
+	item.Path = path
+	item.Userspace = userspace
+	if out, err := proc.Command(path, "--version").Output(); err == nil {
+		lines := strings.Split(string(out), "\n")
+		if len(lines) > 0 {
+			item.Version = strings.TrimSpace(lines[0])
+		}
+	}
+	if item.Version == "" {
+		item.Version = cmdName
+	}
+	if userspace {
+		item.Version += " (userspace)"
+	}
+}
+
+// HasSystemVulkan reports whether Vulkan headers are available from the OS or VULKAN_SDK.
+func HasSystemVulkan() bool {
 	if runtime.GOOS == "windows" {
-		// The Builder downloads and builds Vulkan-Headers itself on Windows.
-		item.Found = true
-		item.Version = "built by the Builder"
-		return
+		return false
 	}
 	if os.Getenv("VULKAN_SDK") != "" {
-		item.Found = true
-		item.Path = os.Getenv("VULKAN_SDK")
-		item.Version = "SDK"
-		return
+		return true
 	}
-	// Check pkg-config or cmake package config
 	if pkgConfigExists("vulkan") || pkgConfigExists("VulkanHeaders") {
-		item.Found = true
-		item.Version = "System Headers"
-		return
+		return true
 	}
-	// Common system header paths
 	paths := []string{
 		"/usr/include/vulkan/vulkan.h",
 		"/usr/local/include/vulkan/vulkan.h",
@@ -300,12 +398,66 @@ func checkVulkan(item *CheckItem) {
 	}
 	for _, p := range paths {
 		if fileExists(p) {
-			item.Found = true
-			item.Path = filepath.Dir(p)
-			return
+			return true
 		}
 	}
-	item.ErrorMsg = "Vulkan Headers not found (install vulkan-headers / Vulkan-Headers)"
+	return false
+}
+
+// HasSystemZlib reports whether zlib development headers are present on the OS.
+func HasSystemZlib() bool {
+	if runtime.GOOS != "linux" {
+		return false
+	}
+	return fileExists("/usr/include/zlib.h") || fileExists("/usr/local/include/zlib.h") || pkgConfigExists("zlib")
+}
+
+// HasSystemCurl reports whether libcurl development headers are present on the OS.
+func HasSystemCurl() bool {
+	if runtime.GOOS != "linux" {
+		return false
+	}
+	return fileExists("/usr/include/curl/curl.h") || fileExists("/usr/local/include/curl/curl.h") || pkgConfigExists("libcurl")
+}
+
+func checkVulkan(item *CheckItem) {
+	if runtime.GOOS == "windows" {
+		// The Builder downloads and builds Vulkan-Headers itself on Windows.
+		item.Found = true
+		item.Userspace = true
+		item.Version = "built by the Builder (userspace)"
+		return
+	}
+	if !UsingUserspaceCompiler() {
+		if os.Getenv("VULKAN_SDK") != "" {
+			item.Found = true
+			item.Path = os.Getenv("VULKAN_SDK")
+			item.Version = "SDK"
+			return
+		}
+		if pkgConfigExists("vulkan") || pkgConfigExists("VulkanHeaders") {
+			item.Found = true
+			item.Version = "System Headers"
+			return
+		}
+		paths := []string{
+			"/usr/include/vulkan/vulkan.h",
+			"/usr/local/include/vulkan/vulkan.h",
+			"/usr/share/cmake/VulkanHeaders/VulkanHeadersConfig.cmake",
+			"/usr/lib/cmake/VulkanHeaders/VulkanHeadersConfig.cmake",
+		}
+		for _, p := range paths {
+			if fileExists(p) {
+				item.Found = true
+				item.Path = filepath.Dir(p)
+				item.Version = "System Headers"
+				return
+			}
+		}
+	}
+	item.Found = true
+	item.Userspace = true
+	item.Version = "built by the Builder (userspace)"
 }
 
 func fileExists(p string) bool {

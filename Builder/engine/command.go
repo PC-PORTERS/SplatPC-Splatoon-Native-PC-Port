@@ -5,11 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
+
+	"splatpc-builder/prereq"
 )
 
 type logFunc func(format string, args ...interface{})
@@ -77,6 +80,9 @@ func (e *commandError) Unwrap() error {
 // runCmdWithLog runs cmd, sends every output line to log and returns an error
 // naming the program and its first error line when it fails.
 func runCmdWithLog(cmd *exec.Cmd, log logFunc) error {
+	if cmd.Env == nil {
+		cmd.Env = prereq.ToolEnv(os.Environ())
+	}
 	program := strings.TrimSuffix(filepath.Base(cmd.Path), ".exe")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

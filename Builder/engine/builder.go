@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -131,6 +130,7 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 	log("Selecting manifest for Gambit.rpx...")
 	cmdSelect := python.Command(ctx, filepath.Join(recompilerDir, "tools", "plt_resolver.py"),
 		"select", "--rpx", rpxPath, "--manifest-dir", manifestDir)
+	cmdSelect.Env = prereq.ToolEnv(os.Environ())
 	selectOut, err := cmdSelect.Output()
 	if err != nil {
 		failDone(fmt.Errorf("unsupported game version or manifest selection failed: %w", err))
@@ -196,14 +196,13 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 		}
 	}
 
-	cmakePath, _ := exec.LookPath("cmake")
 	cmdBuildDeps := python.Command(ctx, filepath.Join(recompilerDir, "tools", "build_vulkan_dependencies.py"),
 		"--sdl-source", sdlSource,
 		"--glslang-archive", glslangTar,
 		"--build-root", filepath.Join(buildDir, "deps-build"),
 		"--prefix", depsDir,
 		"--generator", cmake.generator,
-		"--cmake", cmakePath,
+		"--cmake", cmake.exe,
 		"--cache-dir", filepath.Join(buildDir, "cache", "deps"),
 	)
 	if err := runCmdWithLog(cmdBuildDeps, log); err != nil {
@@ -211,12 +210,14 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 		return
 	}
 
-	// STEP 4: Native libraries. Windows has no system Vulkan-Headers, zlib or
-	// curl, so the Builder provides them there.
+	// STEP 4: Native libraries. Build Vulkan-Headers, volk, zlib, curl and
+	// header dependencies (imgui, miniaudio, nlohmann/json) in userspace whenever
+	// missing from the system or when using the hermetic userspace compiler.
 	progress(4, "Native Libraries", "Setting up volk and the libraries the game links", 0.35)
 	log("=== Step 4/8: Native Libraries ===")
 	var libs bundledLibraries
-	if runtime.GOOS == "windows" {
+	userspaceCC := prereq.UsingUserspaceCompiler()
+	if runtime.GOOS == "windows" || userspaceCC || !prereq.HasSystemVulkan() {
 		if libs, err = installVulkanHeaders(deps); err != nil {
 			failDone(err)
 			return
@@ -228,11 +229,21 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 		return
 	}
 	log("Volk ready: %s (prefix: %s)", volkDir, volkPrefix)
-	if runtime.GOOS == "windows" {
-		if err := installZlibAndCurl(deps, &libs); err != nil {
+	if runtime.GOOS == "windows" || userspaceCC || !prereq.HasSystemZlib() {
+		if err := installZlib(deps, &libs); err != nil {
 			failDone(err)
 			return
 		}
+	}
+	if runtime.GOOS == "windows" || userspaceCC || !prereq.HasSystemCurl() {
+		if err := installCurl(deps, &libs); err != nil {
+			failDone(err)
+			return
+		}
+	}
+	if err := prepareHeaderDependencies(deps, recompilerDir, &libs); err != nil {
+		failDone(err)
+		return
 	}
 
 	// STEP 5: Build RebrewU recompiler
@@ -240,12 +251,15 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 	log("=== Step 5/8: RebrewU Recompiler ===")
 	rebrewuBuild := filepath.Join(buildDir, "rebrewu")
 	rebrewuDefines := append([]string{"-DREBREWU_BUILD_TESTS=OFF"}, libs.zlibDefines...)
-	cmdRebrewuCfg := proc.CommandContext(ctx, "cmake", cmake.configureArgs(recompilerDir, rebrewuBuild, rebrewuDefines...)...)
+	if cmake.isWindowsMinGW() {
+		rebrewuDefines = append(rebrewuDefines, "-DCMAKE_EXE_LINKER_FLAGS=-static")
+	}
+	cmdRebrewuCfg := proc.CommandContext(ctx, cmake.exe, cmake.configureArgs(recompilerDir, rebrewuBuild, rebrewuDefines...)...)
 	if err := runCmdWithLog(cmdRebrewuCfg, log); err != nil {
 		failDone(fmt.Errorf("CMake configuration of RebrewU failed: %w", err))
 		return
 	}
-	cmdRebrewuBuild := proc.CommandContext(ctx, "cmake", cmake.buildArgs(rebrewuBuild, "rebrewu")...)
+	cmdRebrewuBuild := proc.CommandContext(ctx, cmake.exe, cmake.buildArgs(rebrewuBuild, "rebrewu")...)
 	if err := runCmdWithLog(cmdRebrewuBuild, log); err != nil {
 		failDone(fmt.Errorf("compiling RebrewU: %w", err))
 		return
@@ -303,13 +317,16 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 		"-DRBREW_DIAGNOSTIC_RUNTIME=OFF",
 		"-DRBREW_TEXTURE_DIAGNOSTICS=OFF",
 	}, libs.gameDefines...)
-	cmdGameCfg := proc.CommandContext(ctx, "cmake", cmake.configureArgs(filepath.Join(recompilerDir, "port"), gameBuild, gameDefines...)...)
+	if cmake.isWindowsMinGW() {
+		gameDefines = append(gameDefines, "-DCMAKE_EXE_LINKER_FLAGS=-static")
+	}
+	cmdGameCfg := proc.CommandContext(ctx, cmake.exe, cmake.configureArgs(filepath.Join(recompilerDir, "port"), gameBuild, gameDefines...)...)
 	if err := runCmdWithLog(cmdGameCfg, log); err != nil {
 		failDone(fmt.Errorf("CMake configuration of the game failed: %w", err))
 		return
 	}
 
-	cmdGameBuild := proc.CommandContext(ctx, "cmake", cmake.buildArgs(gameBuild, "Gambit")...)
+	cmdGameBuild := proc.CommandContext(ctx, cmake.exe, cmake.buildArgs(gameBuild, "Gambit")...)
 	if err := runCmdWithLog(cmdGameBuild, log); err != nil {
 		failDone(fmt.Errorf("compiling Splatoon executable: %w", err))
 		return
@@ -361,6 +378,13 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 		appImagePath, appErr = CreateAppImage(cfg.OutputDir, repoRoot, log)
 		if appErr != nil {
 			log("Warning: AppImage generation failed: %v", appErr)
+		}
+	}
+
+	if cfg.CleanupDepsAfterBuild {
+		log("=== Post-Build Cleanup: Removing dependencies & build cache ===")
+		if _, cleanAfterErr := CleanupAfterBuild(repoRoot, cfg.OutputDir, true, log); cleanAfterErr != nil {
+			log("Warning: post-build cleanup finished with errors: %v", cleanAfterErr)
 		}
 	}
 

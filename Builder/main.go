@@ -17,6 +17,9 @@ import (
 
 func main() {
 	checkOnly := flag.Bool("check", false, "Check system prerequisites and exit")
+	installDeps := flag.Bool("install-deps", false, "Download and install missing userspace build dependencies and exit")
+	cleanupDeps := flag.Bool("cleanup-deps", false, "Delete downloaded build dependencies and intermediate build cache (or clean after --prepare)")
+	autoDeps := flag.Bool("auto-deps", false, "Automatically download missing userspace dependencies during --prepare")
 	prepare := flag.Bool("prepare", false, "Run the setup without a window, print progress lines and exit")
 	play := flag.Bool("play", false, "Start the built game and wait for it")
 	gamePath := flag.String("game", "", "Path to the player's dump folder (with --prepare)")
@@ -46,9 +49,13 @@ func main() {
 		os.Exit(0)
 	}
 
+	if *installDeps {
+		os.Exit(runInstallDeps())
+	}
+
 	repoRoot, isStandalone, err := embedded.ResolveRepoRoot()
 	if err != nil {
-		if *prepare || *play {
+		if *prepare || *play || *cleanupDeps {
 			fmt.Fprintf(os.Stderr, "Resolving builder environment: %v\n", err)
 			os.Exit(exitSetupFailed)
 		}
@@ -56,7 +63,10 @@ func main() {
 	}
 
 	if *prepare {
-		os.Exit(runPrepare(repoRoot, isStandalone, *gamePath))
+		os.Exit(runPrepareWithOptions(repoRoot, isStandalone, *gamePath, *autoDeps, *cleanupDeps))
+	}
+	if *cleanupDeps {
+		os.Exit(runCleanupDeps(repoRoot, isStandalone))
 	}
 	if *play {
 		os.Exit(runPlay(repoRoot, isStandalone))

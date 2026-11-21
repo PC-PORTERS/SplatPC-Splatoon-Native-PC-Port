@@ -27,6 +27,10 @@ type StepDoneView struct {
 	hdCard        *widget.Card
 	appImageCard  *widget.Card
 	appImageLabel *widget.Label
+	cleanupCard   *widget.Card
+	cleanupLabel  *widget.Label
+	cleanDepsBtn  *widget.Button
+	cleanAllBtn   *widget.Button
 
 	launchAppImage *widget.Button
 
@@ -108,6 +112,23 @@ func (v *StepDoneView) initUI() {
 	v.appImageCard = widget.NewCard("Linux AppImage", "", v.appImageLabel)
 	v.appImageCard.Hide()
 
+	v.cleanupLabel = wrappedLabel("")
+	v.cleanDepsBtn = widget.NewButtonWithIcon("Delete Dependencies", theme.DeleteIcon(), func() {
+		v.runCleanup(false)
+	})
+	v.cleanAllBtn = widget.NewButtonWithIcon("Delete Dependencies & Build Files", theme.DeleteIcon(), func() {
+		v.runCleanup(true)
+	})
+	v.cleanAllBtn.Importance = widget.DangerImportance
+	v.cleanupCard = widget.NewCard("Free Disk Space (Build Cleanup)",
+		"Delete downloaded tools and dependencies now that Splatoon is built. Your game and saves are untouched.",
+		container.NewVBox(
+			v.cleanupLabel,
+			container.NewHBox(v.cleanDepsBtn, v.cleanAllBtn),
+		),
+	)
+	v.cleanupCard.Hide()
+
 	bottomBar := container.NewVBox(
 		widget.NewSeparator(),
 		container.NewPadded(container.NewVBox(
@@ -121,6 +142,7 @@ func (v *StepDoneView) initUI() {
 		widget.NewCard("Installation Summary", "", v.summary),
 		v.hdCard,
 		v.appImageCard,
+		v.cleanupCard,
 	)
 	v.container = container.NewBorder(header, bottomBar, nil, nil, container.NewVScroll(container.NewPadded(content)))
 }
@@ -188,7 +210,64 @@ func (v *StepDoneView) show(title, description string, buildRow [2]string, appIm
 		v.launchAppImage.Hide()
 	}
 
+	v.refreshCleanupCard()
 	v.container.Refresh()
+}
+
+func (v *StepDoneView) refreshCleanupCard() {
+	stats := engine.MeasureCleanup(v.wizard.repoRoot, v.wizard.config.OutputDir)
+	depsBytes := stats.TotalDepsBytes()
+	allBytes := stats.TotalAllBytes()
+	if allBytes == 0 {
+		v.cleanupCard.Hide()
+		return
+	}
+	v.cleanupLabel.SetText(fmt.Sprintf(
+		"Downloaded userspace tools & dependencies: %s\nIntermediate build cache & objects: %s",
+		engine.FormatBytes(depsBytes),
+		engine.FormatBytes(stats.BuildArtifactsBytes),
+	))
+	if depsBytes > 0 {
+		v.cleanDepsBtn.SetText(fmt.Sprintf("Delete Dependencies (%s)", engine.FormatBytes(depsBytes)))
+		v.cleanDepsBtn.Enable()
+		v.cleanDepsBtn.Show()
+	} else {
+		v.cleanDepsBtn.Hide()
+	}
+	v.cleanAllBtn.SetText(fmt.Sprintf("Delete Dependencies & Build Files (%s)", engine.FormatBytes(allBytes)))
+	v.cleanAllBtn.Enable()
+	v.cleanupCard.Show()
+}
+
+func (v *StepDoneView) runCleanup(includeBuildArtifacts bool) {
+	stats := engine.MeasureCleanup(v.wizard.repoRoot, v.wizard.config.OutputDir)
+	targetBytes := stats.TotalDepsBytes()
+	scopeDesc := "downloaded userspace tools, dependency archives, and compiled dependency libraries"
+	if includeBuildArtifacts {
+		targetBytes = stats.TotalAllBytes()
+		scopeDesc = "downloaded userspace tools, dependencies, AND intermediate C++/recompiler build directories"
+	}
+	msg := fmt.Sprintf("Delete %s?\n\nThis will free %s.\nYour built game in %s and your saves are NOT deleted.",
+		scopeDesc, engine.FormatBytes(targetBytes), v.wizard.config.OutputDir)
+	dialog.ShowConfirm("Confirm Cleanup", msg, func(confirm bool) {
+		if !confirm {
+			return
+		}
+		v.cleanDepsBtn.Disable()
+		v.cleanAllBtn.Disable()
+		go func() {
+			freed, err := engine.CleanupAfterBuild(v.wizard.repoRoot, v.wizard.config.OutputDir, includeBuildArtifacts, nil)
+			fyne.Do(func() {
+				if err != nil {
+					dialog.ShowError(err, v.wizard.window)
+				} else {
+					dialog.ShowInformation("Cleanup Complete", fmt.Sprintf("Freed %s of disk space.", engine.FormatBytes(freed)), v.wizard.window)
+				}
+				v.refreshCleanupCard()
+				v.container.Refresh()
+			})
+		}()
+	}, v.wizard.window)
 }
 
 func (v *StepDoneView) Container() fyne.CanvasObject {
