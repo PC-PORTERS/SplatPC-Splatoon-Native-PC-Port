@@ -133,6 +133,45 @@ func runPlay(repoRoot string, standalone bool) int {
 	return 0
 }
 
+func runBuildRuntime(repoRoot string, standalone, autoDeps, cleanupDeps bool) int {
+	report := prereq.RunChecks()
+	if !report.AllRequiredMet && autoDeps && len(report.MissingDownloadable) > 0 {
+		if err := prereq.InstallUserspaceTools(context.Background(), report.MissingDownloadable, func(format string, args ...interface{}) {
+			fmt.Printf(format+"\n", args...)
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "Installing userspace dependencies failed: %v\n", err)
+			return exitMissingTools
+		}
+		report = prereq.RunChecks()
+	}
+	if !report.AllRequiredMet {
+		fmt.Fprintln(os.Stderr, "Missing build tools:")
+		for _, item := range report.Items {
+			if item.Required && !item.Found {
+				fmt.Fprintf(os.Stderr, "  %s: %s\n", item.Name, item.ErrorMsg)
+			}
+		}
+		return exitMissingTools
+	}
+	cfg := settings.DefaultConfiguration(repoRoot)
+	cfg.OutputDir = settings.OutputDirFor(repoRoot, standalone)
+	if err := engine.RunRuntimeBuild(context.Background(), repoRoot, cfg, true, func(line string) {
+		fmt.Println(line)
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "Runtime build failed: %v\n", err)
+		return exitSetupFailed
+	}
+	if cleanupDeps {
+		if _, err := engine.CleanupAfterBuild(repoRoot, cfg.OutputDir, true, func(format string, args ...interface{}) {
+			fmt.Printf(format+"\n", args...)
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "Cleanup failed: %v\n", err)
+			return exitSetupFailed
+		}
+	}
+	return 0
+}
+
 func runInstallDeps() int {
 	report := prereq.RunChecks()
 	if len(report.MissingDownloadable) == 0 {

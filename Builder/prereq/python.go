@@ -30,6 +30,9 @@ func pythonCandidates(goos string) []Python {
 			candidates = append(candidates, Python{userPy})
 		}
 	}
+	if UserspaceOnly() {
+		return candidates
+	}
 	candidates = append(candidates, Python{"python3"}, Python{"python"})
 	if goos == "windows" {
 		candidates = append(candidates, Python{"py", "-3"})

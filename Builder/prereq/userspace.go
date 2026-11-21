@@ -34,6 +34,12 @@ type ToolSpec struct {
 	StripTopDir bool
 }
 
+// UserspaceOnly reports whether system tools and headers should be ignored
+// so the Builder operates strictly with tools in UserToolsDir().
+func UserspaceOnly() bool {
+	return os.Getenv("SPLATPC_USERSPACE_ONLY") == "1"
+}
+
 // UserToolsDir returns the 100% userspace directory where downloaded build
 // tools and toolchains live. Overridable via SPLATPC_TOOLS_DIR.
 func UserToolsDir() string {
@@ -96,7 +102,7 @@ func isUnderDir(path, dir string) bool {
 }
 
 // LookPath finds an executable first in the userspace tools directory, then
-// on the system PATH.
+// on the system PATH (unless UserspaceOnly is enabled).
 func LookPath(name string) (string, bool) {
 	exe := name
 	if runtime.GOOS == "windows" && filepath.Ext(exe) == "" {
@@ -107,6 +113,9 @@ func LookPath(name string) (string, bool) {
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
 			return candidate, true
 		}
+	}
+	if UserspaceOnly() {
+		return "", false
 	}
 	if p, err := exec.LookPath(name); err == nil {
 		return p, true
@@ -119,20 +128,24 @@ func LookPath(name string) (string, bool) {
 func UsingUserspaceCompiler() bool {
 	root := UserToolsDir()
 	if runtime.GOOS == "windows" {
-		if _, ok := FindVisualStudio(); ok {
-			return false
-		}
-		for _, c := range []string{"cl", "g++", "clang++"} {
-			if p, err := exec.LookPath(c); err == nil && !isUnderDir(p, root) {
+		if !UserspaceOnly() {
+			if _, ok := FindVisualStudio(); ok {
 				return false
+			}
+			for _, c := range []string{"cl", "g++", "clang++"} {
+				if p, err := exec.LookPath(c); err == nil && !isUnderDir(p, root) {
+					return false
+				}
 			}
 		}
 		_, err := os.Stat(filepath.Join(root, "llvm-mingw", "bin", "clang++.exe"))
 		return err == nil
 	}
-	for _, c := range []string{"g++", "clang++"} {
-		if p, err := exec.LookPath(c); err == nil && !isUnderDir(p, root) {
-			return false
+	if !UserspaceOnly() {
+		for _, c := range []string{"g++", "clang++"} {
+			if p, err := exec.LookPath(c); err == nil && !isUnderDir(p, root) {
+				return false
+			}
 		}
 	}
 	_, err := os.Stat(filepath.Join(root, "toolchain", "bin", "clang++"))
@@ -167,7 +180,12 @@ func ToolEnv(baseEnv []string) []string {
 			bin := filepath.Join(root, "llvm-mingw", "bin")
 			env = setEnvDefault(env, "CC", filepath.Join(bin, "clang.exe"))
 			env = setEnvDefault(env, "CXX", filepath.Join(bin, "clang++.exe"))
-			env = setEnvDefault(env, "RC", filepath.Join(bin, "windres.exe"))
+			for _, rcName := range []string{"windres.exe", "llvm-windres.exe", "llvm-rc.exe"} {
+				if rcPath := filepath.Join(bin, rcName); fileExists(rcPath) {
+					env = setEnvDefault(env, "RC", rcPath)
+					break
+				}
+			}
 			env = setEnvDefault(env, "AR", filepath.Join(bin, "llvm-ar.exe"))
 			env = setEnvDefault(env, "RANLIB", filepath.Join(bin, "llvm-ranlib.exe"))
 		} else {
@@ -456,10 +474,10 @@ func createZigWrappers(root, zigDir string) error {
 	}
 
 	wrappers := map[string]string{
-		"cc":      fmt.Sprintf("#!/bin/sh\nexec %q cc -fno-sanitize=undefined \"$@\"\n", zigBin),
-		"clang":   fmt.Sprintf("#!/bin/sh\nexec %q cc -fno-sanitize=undefined \"$@\"\n", zigBin),
-		"c++":     fmt.Sprintf("#!/bin/sh\nexec %q c++ -fno-sanitize=undefined \"$@\"\n", zigBin),
-		"clang++": fmt.Sprintf("#!/bin/sh\nexec %q c++ -fno-sanitize=undefined \"$@\"\n", zigBin),
+		"cc":      fmt.Sprintf("#!/bin/sh\nexec %q cc -fno-sanitize=undefined -g0 \"$@\"\n", zigBin),
+		"clang":   fmt.Sprintf("#!/bin/sh\nexec %q cc -fno-sanitize=undefined -g0 \"$@\"\n", zigBin),
+		"c++":     fmt.Sprintf("#!/bin/sh\nexec %q c++ -fno-sanitize=undefined -g0 \"$@\"\n", zigBin),
+		"clang++": fmt.Sprintf("#!/bin/sh\nexec %q c++ -fno-sanitize=undefined -g0 \"$@\"\n", zigBin),
 		"ar":      fmt.Sprintf("#!/bin/sh\nexec %q ar \"$@\"\n", zigBin),
 		"ranlib":  fmt.Sprintf("#!/bin/sh\nexec %q ranlib \"$@\"\n", zigBin),
 	}
@@ -728,13 +746,15 @@ func extractZip(archivePath, destDir string, stripTop bool) error {
 }
 
 func extractTarXz(ctx context.Context, archivePath, destDir string, stripTop bool) error {
-	if _, err := exec.LookPath("tar"); err == nil {
-		args := []string{"-xJf", archivePath, "-C", destDir}
-		if stripTop {
-			args = append(args, "--strip-components=1")
-		}
-		if err := proc.CommandContext(ctx, "tar", args...).Run(); err == nil {
-			return nil
+	if !UserspaceOnly() {
+		if _, err := exec.LookPath("tar"); err == nil {
+			args := []string{"-xJf", archivePath, "-C", destDir}
+			if stripTop {
+				args = append(args, "--strip-components=1")
+			}
+			if err := proc.CommandContext(ctx, "tar", args...).Run(); err == nil {
+				return nil
+			}
 		}
 	}
 	python, _, ok := FindPython()

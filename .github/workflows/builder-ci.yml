@@ -106,6 +106,27 @@ jobs:
           chmod +x SplatPC-Builder-x86_64.AppImage
           test -f SplatPC-Builder-x86_64.AppImage
 
+      - name: Test Userspace Dependency Download, Build & Cleanup (Linux)
+        env:
+          SPLATPC_TOOLS_DIR: ${{ runner.temp }}/splatpc-userspace-tools
+          SPLATPC_USERSPACE_ONLY: "1"
+        run: |
+          rm -rf "$SPLATPC_TOOLS_DIR"
+          ./Builder/splatpc-builder --install-deps
+          ./Builder/splatpc-builder -check
+          ./Builder/splatpc-builder --build-runtime
+
+          ./build/rebrewu/bin/rebrewu manifest verify --manifest Manifest/Gambit_v16.manifest
+          "$SPLATPC_TOOLS_DIR/cmake/bin/ctest" --test-dir build/port --output-on-failure \
+            -R "^(native_texture_pack|native_nn_nfp|native_quit_confirm|native_mouse_camera|weather_math)$"
+
+          ./Builder/splatpc-builder --cleanup-deps
+          test ! -d "$SPLATPC_TOOLS_DIR"
+          test ! -d build/downloads
+          test ! -d build/deps
+          test ! -d build/rebrewu
+          test ! -d build/port
+
       - name: Upload Linux Builder Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -155,10 +176,39 @@ jobs:
           $env:CGO_ENABLED = "1"
           go generate ./winres.go
           go build -trimpath -ldflags="-H windowsgui -s -w" -o ../SplatPC-Builder.exe .
+          go build -trimpath -ldflags="-s -w" -o splatpc-builder-cli.exe .
           cd ..
           if (-not (Test-Path SplatPC-Builder.exe)) {
             throw "SplatPC-Builder.exe was not created"
           }
+
+      - name: Test Userspace Dependency Download, Build & Cleanup (Windows)
+        shell: pwsh
+        env:
+          SPLATPC_TOOLS_DIR: ${{ runner.temp }}\splatpc-userspace-tools
+          SPLATPC_USERSPACE_ONLY: "1"
+        run: |
+          if (Test-Path $env:SPLATPC_TOOLS_DIR) { Remove-Item -Recurse -Force $env:SPLATPC_TOOLS_DIR }
+          .\Builder\splatpc-builder-cli.exe --install-deps
+          if ($LASTEXITCODE -ne 0) { throw "--install-deps failed" }
+          .\Builder\splatpc-builder-cli.exe -check
+          if ($LASTEXITCODE -ne 0) { throw "-check failed" }
+          .\Builder\splatpc-builder-cli.exe --build-runtime
+          if ($LASTEXITCODE -ne 0) { throw "--build-runtime failed" }
+
+          .\build\rebrewu\bin\rebrewu.exe manifest verify --manifest Manifest/Gambit_v16.manifest
+          if ($LASTEXITCODE -ne 0) { throw "Manifest verify failed" }
+          & "$env:SPLATPC_TOOLS_DIR\cmake\bin\ctest.exe" --test-dir build/port -C Release --output-on-failure `
+            -R "^(native_texture_pack|native_nn_nfp|native_quit_confirm|native_mouse_camera|weather_math)$"
+          if ($LASTEXITCODE -ne 0) { throw "CTest failed" }
+
+          .\Builder\splatpc-builder-cli.exe --cleanup-deps
+          if ($LASTEXITCODE -ne 0) { throw "--cleanup-deps failed" }
+          if (Test-Path $env:SPLATPC_TOOLS_DIR) { throw "SPLATPC_TOOLS_DIR was not deleted" }
+          if (Test-Path build/downloads) { throw "build/downloads was not deleted" }
+          if (Test-Path build/deps) { throw "build/deps was not deleted" }
+          if (Test-Path build/rebrewu) { throw "build/rebrewu was not deleted" }
+          if (Test-Path build/port) { throw "build/port was not deleted" }
 
       - name: Upload Windows Builder Artifact
         uses: actions/upload-artifact@v4

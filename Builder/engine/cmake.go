@@ -35,8 +35,10 @@ func newCMakeProject(jobs int) cmakeProject {
 // Studio is installed, otherwise Ninja when using a userspace MinGW toolchain.
 func cmakeGenerator() string {
 	if runtime.GOOS == "windows" {
-		if vs, ok := prereq.FindVisualStudio(); ok {
-			return vs.CMakeGenerator()
+		if !prereq.UserspaceOnly() {
+			if vs, ok := prereq.FindVisualStudio(); ok {
+				return vs.CMakeGenerator()
+			}
 		}
 		if _, ok := prereq.LookPath("ninja"); ok {
 			return "Ninja"
@@ -59,7 +61,11 @@ func (c cmakeProject) configureArgs(source, build string, defines ...string) []s
 }
 
 func (c cmakeProject) buildArgs(build, target string) []string {
-	return []string{"--build", build, "--config", buildConfig, "--target", target, "--parallel", strconv.Itoa(c.jobs)}
+	args := []string{"--build", build, "--config", buildConfig}
+	if target != "" {
+		args = append(args, "--target", target)
+	}
+	return append(args, "--parallel", strconv.Itoa(c.jobs))
 }
 
 func exeName(name string) string {

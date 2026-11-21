@@ -103,6 +103,7 @@ def main():
     parser.add_argument('--generator', default='Ninja',
         help='CMake generator (Ninja, "Unix Makefiles", "Visual Studio 17 2022", ...)')
     parser.add_argument('--cmake', default='cmake', help='cmake executable')
+    parser.add_argument('--jobs', type=int, default=0, help='total parallel build jobs across profiles (0 = auto)')
     args = parser.parse_args()
 
     # Check cache first
@@ -137,7 +138,8 @@ def main():
             '-DENABLE_GLSLANG_BINARIES=OFF', '-DENABLE_HLSL=OFF', '-DENABLE_OPT=OFF', '-DENABLE_RTTI=OFF',
             '-DGLSLANG_ENABLE_INSTALL=ON'])]
 
-    parallel_jobs = max(4, os.cpu_count() or 4)
+    total_jobs = args.jobs if args.jobs > 0 else max(4, os.cpu_count() or 4)
+    parallel_jobs = max(1, total_jobs // 2)
     # Build both dependencies concurrently
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         futures = [

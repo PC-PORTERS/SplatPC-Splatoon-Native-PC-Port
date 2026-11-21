@@ -19,7 +19,9 @@ func main() {
 	checkOnly := flag.Bool("check", false, "Check system prerequisites and exit")
 	installDeps := flag.Bool("install-deps", false, "Download and install missing userspace build dependencies and exit")
 	cleanupDeps := flag.Bool("cleanup-deps", false, "Delete downloaded build dependencies and intermediate build cache (or clean after --prepare)")
-	autoDeps := flag.Bool("auto-deps", false, "Automatically download missing userspace dependencies during --prepare")
+	autoDeps := flag.Bool("auto-deps", false, "Automatically download missing userspace dependencies during --prepare or --build-runtime")
+	userspaceOnly := flag.Bool("userspace-only", false, "Ignore system tools/headers and use only userspace tools")
+	buildRuntime := flag.Bool("build-runtime", false, "Build all native dependencies, rebrewu, and port runtime/tests without a game dump")
 	prepare := flag.Bool("prepare", false, "Run the setup without a window, print progress lines and exit")
 	play := flag.Bool("play", false, "Start the built game and wait for it")
 	gamePath := flag.String("game", "", "Path to the player's dump folder (with --prepare)")
@@ -29,6 +31,9 @@ func main() {
 	flag.CommandLine.Init(os.Args[0], flag.ContinueOnError)
 	if err := flag.CommandLine.Parse(os.Args[1:]); err == flag.ErrHelp {
 		os.Exit(0)
+	}
+	if *userspaceOnly {
+		_ = os.Setenv("SPLATPC_USERSPACE_ONLY", "1")
 	}
 
 	if *checkOnly {
@@ -55,13 +60,16 @@ func main() {
 
 	repoRoot, isStandalone, err := embedded.ResolveRepoRoot()
 	if err != nil {
-		if *prepare || *play || *cleanupDeps {
+		if *prepare || *play || *cleanupDeps || *buildRuntime {
 			fmt.Fprintf(os.Stderr, "Resolving builder environment: %v\n", err)
 			os.Exit(exitSetupFailed)
 		}
 		fmt.Fprintf(os.Stderr, "Warning resolving builder environment: %v\n", err)
 	}
 
+	if *buildRuntime {
+		os.Exit(runBuildRuntime(repoRoot, isStandalone, *autoDeps, *cleanupDeps))
+	}
 	if *prepare {
 		os.Exit(runPrepareWithOptions(repoRoot, isStandalone, *gamePath, *autoDeps, *cleanupDeps))
 	}

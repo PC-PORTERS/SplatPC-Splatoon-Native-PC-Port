@@ -186,8 +186,27 @@ func TestCreateZigWrappers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "-fno-sanitize=undefined") {
-		t.Errorf("expected -fno-sanitize=undefined in Zig c++ wrapper, got %q", string(data))
+	if !strings.Contains(string(data), "-fno-sanitize=undefined") || !strings.Contains(string(data), "-g0") {
+		t.Errorf("expected -fno-sanitize=undefined and -g0 in Zig c++ wrapper, got %q", string(data))
+	}
+}
+
+func TestUserspaceOnlyIgnoresSystemTools(t *testing.T) {
+	t.Setenv("SPLATPC_TOOLS_DIR", t.TempDir())
+	t.Setenv("SPLATPC_USERSPACE_ONLY", "1")
+
+	if !UserspaceOnly() {
+		t.Fatal("expected UserspaceOnly() == true")
+	}
+	if _, ok := LookPath("sh"); ok {
+		t.Errorf("expected LookPath to ignore system tools when SPLATPC_USERSPACE_ONLY=1")
+	}
+	if HasSystemVulkan() || HasSystemZlib() || HasSystemCurl() {
+		t.Errorf("expected HasSystem* to return false when SPLATPC_USERSPACE_ONLY=1")
+	}
+	report := RunChecks()
+	if report.AllRequiredMet {
+		t.Errorf("expected AllRequiredMet == false in empty SPLATPC_TOOLS_DIR with SPLATPC_USERSPACE_ONLY=1")
 	}
 }
 

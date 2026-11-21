@@ -166,7 +166,7 @@ var (
 )
 
 // zlibStaticNames are the static library names zlib's CMake build installs.
-var zlibStaticNames = []string{"zlibstatic.lib", "zs.lib", "libz.a"}
+var zlibStaticNames = []string{"zlibstatic.lib", "zs.lib", "libzlibstatic.a", "libz.a"}
 
 // bundledLibraries holds the CMake definitions pointing rebrewu and the game
 // at the libraries the Builder built.
@@ -252,7 +252,7 @@ func locateVolk(b dependencyBuilder, dep sourceDependency) (string, string, erro
 const (
 	imguiDockingURL = "https://github.com/ocornut/imgui/archive/refs/heads/docking.tar.gz"
 	miniaudioURL    = "https://raw.githubusercontent.com/mackron/miniaudio/0.11.25/miniaudio.h"
-	miniaudioSHA256 = "ac7af4de748b7e748b7e37e01cee313a308a7296a3eb080e2906b320cc55c89"
+	miniaudioSHA256 = "ac7af4de748b7e26b777f37e01cee313a308a7296a3eb080e2906b320cc55c89"
 	nlohmannURL     = "https://github.com/nlohmann/json/releases/download/v3.11.3/json.hpp"
 	nlohmannSHA256  = "9bea4c8066ef4a1c206b2be5a36302f8926f7fdc6087af5d20b417d0cf103ea6"
 )

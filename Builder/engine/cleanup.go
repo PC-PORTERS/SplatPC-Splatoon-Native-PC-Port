@@ -51,6 +51,7 @@ func buildArtifactPaths(repoRoot string) []string {
 	return []string{
 		filepath.Join(buildDir, "rebrewu"),
 		filepath.Join(buildDir, "game"),
+		filepath.Join(buildDir, "port"),
 		filepath.Join(buildDir, "generated"),
 		filepath.Join(buildDir, "staging-rom"),
 	}

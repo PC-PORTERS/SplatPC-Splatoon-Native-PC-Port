@@ -275,8 +275,10 @@ func checkCMake(item *CheckItem, toolsRoot string) {
 	if path, ok := LookPath("cmake"); ok {
 		candidates = append(candidates, path)
 	}
-	if sysPath, err := exec.LookPath("cmake"); err == nil && !slices.Contains(candidates, sysPath) {
-		candidates = append(candidates, sysPath)
+	if !UserspaceOnly() {
+		if sysPath, err := exec.LookPath("cmake"); err == nil && !slices.Contains(candidates, sysPath) {
+			candidates = append(candidates, sysPath)
+		}
 	}
 	if len(candidates) == 0 {
 		item.ErrorMsg = "CMake is not installed or not in PATH"
@@ -284,7 +286,7 @@ func checkCMake(item *CheckItem, toolsRoot string) {
 	}
 	var vs VisualStudio
 	var hasVS bool
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == "windows" && !UserspaceOnly() {
 		vs, hasVS = FindVisualStudio()
 	}
 
@@ -334,20 +336,22 @@ func checkCMake(item *CheckItem, toolsRoot string) {
 }
 
 func checkCompilers(item *CheckItem, toolsRoot string) {
-	// Prefer system compilers or Visual Studio first; fall back to userspace toolchain.
-	compilers := []string{"g++", "clang++", "cl"}
-	for _, c := range compilers {
-		if path, err := exec.LookPath(c); err == nil && !isUnderDir(path, toolsRoot) {
-			setCompilerFound(item, path, c, false)
-			return
+	if !UserspaceOnly() {
+		// Prefer system compilers or Visual Studio first; fall back to userspace toolchain.
+		compilers := []string{"g++", "clang++", "cl"}
+		for _, c := range compilers {
+			if path, err := exec.LookPath(c); err == nil && !isUnderDir(path, toolsRoot) {
+				setCompilerFound(item, path, c, false)
+				return
+			}
 		}
-	}
-	if runtime.GOOS == "windows" {
-		if vs, ok := FindVisualStudio(); ok {
-			item.Found = true
-			item.Path = vs.Path
-			item.Version = "MSVC (" + vs.DisplayName + " " + vs.Version + ")"
-			return
+		if runtime.GOOS == "windows" {
+			if vs, ok := FindVisualStudio(); ok {
+				item.Found = true
+				item.Path = vs.Path
+				item.Version = "MSVC (" + vs.DisplayName + " " + vs.Version + ")"
+				return
+			}
 		}
 	}
 	if path, ok := LookPath("clang++"); ok && isUnderDir(path, toolsRoot) {
@@ -381,7 +385,7 @@ func setCompilerFound(item *CheckItem, path, cmdName string, userspace bool) {
 
 // HasSystemVulkan reports whether Vulkan headers are available from the OS or VULKAN_SDK.
 func HasSystemVulkan() bool {
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == "windows" || UserspaceOnly() {
 		return false
 	}
 	if os.Getenv("VULKAN_SDK") != "" {
@@ -406,7 +410,7 @@ func HasSystemVulkan() bool {
 
 // HasSystemZlib reports whether zlib development headers are present on the OS.
 func HasSystemZlib() bool {
-	if runtime.GOOS != "linux" {
+	if runtime.GOOS != "linux" || UserspaceOnly() {
 		return false
 	}
 	return fileExists("/usr/include/zlib.h") || fileExists("/usr/local/include/zlib.h") || pkgConfigExists("zlib")
@@ -414,7 +418,7 @@ func HasSystemZlib() bool {
 
 // HasSystemCurl reports whether libcurl development headers are present on the OS.
 func HasSystemCurl() bool {
-	if runtime.GOOS != "linux" {
+	if runtime.GOOS != "linux" || UserspaceOnly() {
 		return false
 	}
 	return fileExists("/usr/include/curl/curl.h") || fileExists("/usr/local/include/curl/curl.h") || pkgConfigExists("libcurl")
