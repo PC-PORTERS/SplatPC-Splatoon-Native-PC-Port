@@ -94,6 +94,41 @@ function Ask-YesNo([string]$Question) {
     $answer = Read-Host "      $Question [Y/N]"
     return $answer -match '^(y|yes|s|sim)$'
 }
+function Same-File([string]$A, [string]$B) {
+    if (-not $A -or -not $B) { return $false }
+    return [string]::Equals([IO.Path]::GetFullPath($A), [IO.Path]::GetFullPath($B), [StringComparison]::OrdinalIgnoreCase)
+}
+# Writes "Splatoon PC Port.lnk" in $Folder for the game in $GameFolder and
+# returns its path. A shortcut of that name opening something else is only
+# replaced when the player says so; otherwise a numbered one is added.
+function New-GameShortcut([string]$Folder, [string]$GameFolder) {
+    $exe = Join-Path $GameFolder 'Splatoon.exe'
+    $shell = New-Object -ComObject WScript.Shell
+    $path = Join-Path $Folder 'Splatoon PC Port.lnk'
+    if (Test-Path -LiteralPath $path) {
+        $target = $shell.CreateShortcut($path).TargetPath
+        if (-not (Same-File $target $exe)) {
+            if (-not $target) { $target = '(unknown target)' }
+            Warn "A desktop shortcut 'Splatoon PC Port' already exists and opens: $target"
+            if (-not (Ask-YesNo 'Replace it? (N keeps it and adds a second shortcut)')) {
+                $n = 2
+                do {
+                    $path = Join-Path $Folder "Splatoon PC Port ($n).lnk"
+                    $n++
+                } while ((Test-Path -LiteralPath $path) -and -not (Same-File ($shell.CreateShortcut($path).TargetPath) $exe))
+            }
+        }
+    }
+    # Always a new file: reopening an old one would keep its arguments, icon and hotkey.
+    if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+    $shortcut = $shell.CreateShortcut($path)
+    $shortcut.TargetPath = $exe
+    $shortcut.Arguments = ''
+    $shortcut.WorkingDirectory = $GameFolder
+    $shortcut.IconLocation = "$exe,0"
+    $shortcut.Save()
+    return $path
+}
 function Full-FolderPath([string]$Path) {
     $Path = $Path.Trim().Trim('"')
     if (-not $Path) { return '' }
@@ -835,12 +870,8 @@ Write-Host '   Setup complete!' -ForegroundColor Green
 Write-Host "   Play: $(Join-Path $Output 'Splatoon.exe')" -ForegroundColor Green
 Write-Host '============================================================' -ForegroundColor Green
 if (Ask-YesNo 'Create a desktop shortcut?') {
-    $shell = New-Object -ComObject WScript.Shell
-    $shortcut = $shell.CreateShortcut((Join-Path ([Environment]::GetFolderPath('Desktop')) 'Splatoon PC Port.lnk'))
-    $shortcut.TargetPath = Join-Path $Output 'Splatoon.exe'
-    $shortcut.WorkingDirectory = $Output
-    $shortcut.Save()
-    Good 'Shortcut created on your desktop.'
+    $link = New-GameShortcut ([Environment]::GetFolderPath('Desktop')) $Output
+    Good "Shortcut created on your desktop: $([IO.Path]::GetFileNameWithoutExtension($link))"
 }
 
 # ---------------------------------------------------------------------------
