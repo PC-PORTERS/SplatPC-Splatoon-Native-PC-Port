@@ -29,7 +29,9 @@
 #pragma comment(lib, "ws2_32")
 typedef int socklen_t;
 typedef unsigned short sa_family_t;
+#if !defined(_SSIZE_T_DEFINED) && !defined(__MINGW32__)
 typedef int ssize_t;
+#endif
 #define CLOSE_SOCKET(fd) closesocket(fd)
 #define SOCK_ERRNO WSAGetLastError()
 #else
