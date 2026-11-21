@@ -2,7 +2,7 @@
 """
 bundle_builder_assets.py
 
-Packages the required source files (Manifest, recompiler, scripts, LICENSES, setup.sh, build.sh)
+Packages the required source files (Manifest, recompiler, scripts, LICENSES)
 into Builder/embedded/assets.zip so that the standalone SplatPC-Builder executable
 can function completely offline and standalone without needing an external repository clone.
 """
@@ -48,14 +48,6 @@ def bundle_assets(repo_root: str, output_zip: str):
                         zf.write(file_path, rel_path)
                         count += 1
                         total_uncompressed += os.path.getsize(file_path)
-
-        for single_file in ["setup.sh", "build.sh", "CMakeLists.txt"]:
-            file_path = os.path.join(repo_root, single_file)
-            if os.path.exists(file_path):
-                rel_path = single_file
-                zf.write(file_path, rel_path)
-                count += 1
-                total_uncompressed += os.path.getsize(file_path)
 
     zip_size = os.path.getsize(output_zip)
     print(f"Bundled {count} files ({total_uncompressed / (1024*1024):.2f} MB uncompressed) into {output_zip} ({zip_size / (1024*1024):.2f} MB compressed)")

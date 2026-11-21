@@ -24,17 +24,16 @@ executable next to the base game.
 You need the base v16 dump and the update 288 dump (folders `code`, `content`, `meta`), Python 3,
 the normal setup tools, and about 10 GB free. Do not use a save you cannot afford to reset.
 
-1. Extract the zip.
-2. Merge the two dumps from the repository folder:
+1. Download and launch **SplatPC Builder**.
+2. Either layer the update directly in SplatPC Builder's ROM step (**"Add update or mod..."**), or merge the two dumps first:
    ```bash
    python scripts/update_combinator.py --base "D:/Owned/Splatoon v16" --update "D:/Owned/Splatoon 288" --output "D:/Owned/Splatoon v288 combined"
    ```
    On Linux use `python3`. Add `--force` to replace an existing merged folder.
-3. Run `Setup.bat` and select the merged folder. On Linux run
-   `./setup.sh --dump "D:/Owned/Splatoon v288 combined"`.
+3. Select your ROM (or the merged folder) in **SplatPC Builder** and run the build.
 4. Start `Game\Splatoon.exe` on Windows or `./Game/Splatoon` on Linux.
 
-The merged folder is a normal Wii U dump structure, so Setup builds it directly. The original
+The merged folder is a normal Wii U dump structure, so SplatPC Builder builds it directly. The original
 dumps are not modified. Keep the merged folder private; it contains Nintendo content.
 
 ## Reporting a problem
@@ -55,8 +54,8 @@ python scripts/update_combinator.py \
 ```
 
 The tool copies the base dump first and overlays the update dump. Original dumps are not changed.
-It refuses to write into a non-empty folder unless `--force` is given. Then run Setup on the merged
-folder; Setup reads the revision from the selected manifest and compiles the matching game.
+It refuses to write into a non-empty folder unless `--force` is given. Then run SplatPC Builder on the merged
+folder; SplatPC Builder reads the revision from the selected manifest and compiles the matching game.
 
 ## Validation
 

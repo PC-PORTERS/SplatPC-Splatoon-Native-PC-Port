@@ -2,8 +2,8 @@
 """Update-combinator: merge a base v16 dump and a newer update into one ROM folder.
 
 The base dump is copied first, then the update overlays it. The result is a normal
-Wii U folder structure (code/, content/, meta/) that Setup.bat and setup.sh can use
-as their game dump. Original dumps are never modified.
+Wii U folder structure (code/, content/, meta/) that SplatPC Builder can use
+as its game dump. Original dumps are never modified.
 """
 
 from __future__ import annotations
@@ -140,7 +140,7 @@ def main(argv: list[str] | None = None) -> int:
     version = title_version(result)
     suffix = f" (title version {version})" if version else ""
     print(f"Merged ROM ready: {result}{suffix}")
-    print("Select this folder in Setup.bat or setup.sh. Original dumps were not changed.")
+    print("Select this folder in SplatPC Builder. Original dumps were not changed.")
     return 0
 
 

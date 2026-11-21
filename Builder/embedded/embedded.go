@@ -37,14 +37,10 @@ func IsRepoRoot(path string) bool {
 		return false
 	}
 	manifestDir := filepath.Join(path, "Manifest")
-	recompilerDir := filepath.Join(path, "recompiler")
-	setupScript := filepath.Join(path, "setup.sh")
+	recompilerCMake := filepath.Join(path, "recompiler", "CMakeLists.txt")
+	licensesDir := filepath.Join(path, "LICENSES")
 
-	hasManifest := fileExists(manifestDir)
-	hasRecompiler := fileExists(recompilerDir)
-	hasSetup := fileExists(setupScript)
-
-	return hasManifest && hasRecompiler && hasSetup
+	return fileExists(manifestDir) && fileExists(recompilerCMake) && fileExists(licensesDir)
 }
 
 func fileExists(p string) bool {

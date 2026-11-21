@@ -29,7 +29,7 @@ Turn it on in the settings menu with *Graphics preset* (Balanced, Realistic or C
 - Camera spots and character spawn points for testing
 
 **HD textures (optional, built on your PC)**
-- `HD-Textures` upscales the textures you saw while playing with Real-ESRGAN into `Game\textures`; nothing is downloaded or shared
+- **SplatPC Builder** upscales the textures you saw while playing with Real-ESRGAN into `Game/textures`; nothing is downloaded or shared
 
 **Releases for Windows and Linux**
 - The [Releases page](https://github.com/NEVESYA/SPLATOON-1-PC-PORT/releases) provides standalone graphical builder tools for each release:
@@ -79,8 +79,7 @@ Turn it on in the settings menu with *Graphics preset* (Balanced, Realistic or C
 ### Optional: HD textures
 
 Upscales textures captured during gameplay using Real-ESRGAN into `textures/`.
-- **SplatPC Builder** detects compatible NVIDIA GPUs and automatically activates HD texturing (CUDA acceleration).
-- You can also run the standalone scripts: `HD-Textures.bat` (Windows) or `./HD-Textures.sh` (Linux).
+- **SplatPC Builder** detects compatible NVIDIA GPUs and automatically activates HD texturing (CUDA acceleration). Play the game to capture textures into `texture-dump/`, then click **"Upscale Dumped Textures to HD (Real-ESRGAN)"** in the builder.
 
 ---
 

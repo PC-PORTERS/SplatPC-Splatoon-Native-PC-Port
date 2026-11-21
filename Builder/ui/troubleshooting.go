@@ -48,7 +48,7 @@ func troubleshootingTopics(logPath string) []troubleshootingTopic {
 		{"\"No dumped textures found\" (HD textures)", "The upscaler works on textures the game recorded while you played. " +
 			"Turn on HD texturing, play for a while (plaza, Octo Valley, a few stages), close the game, then click **Upscale Dumped Textures**."},
 		{"My installed game is not detected", "The Builder looks in the folder of its last successful build and in its default `Game` folder. " +
-			"A game built with Setup.bat or into another folder is found once the Builder has built into that folder."},
+			"A game built into another folder (or from an older setup) is found once the Builder has built into that folder."},
 	}
 	if runtime.GOOS != "windows" {
 		// The Visual Studio, winget and .bat topics only apply to Windows

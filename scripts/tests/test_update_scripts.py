@@ -38,27 +38,28 @@ def write_dump(root, version, files):
 
 
 class UpdateCombinatorTests(unittest.TestCase):
-    def test_only_setup_powershell_script_remains(self):
-        names = sorted(p.name for p in SCRIPTS.glob('*.ps1'))
-        self.assertEqual(names, ['Setup.ps1'])
-        self.assertFalse((SCRIPTS / 'Install-Update.ps1').exists())
+    def test_legacy_setup_and_hd_scripts_are_removed(self):
+        self.assertEqual(list(SCRIPTS.glob('*.ps1')), [])
+        for name in ('Setup.bat', 'setup.sh', 'build.sh', 'HD-Textures.bat', 'HD-Textures.sh', 'scripts/Setup.ps1'):
+            self.assertFalse((ROOT / name).exists(), f'{name} should have been removed')
 
-    def test_setup_scripts_use_the_merged_rom_directly(self):
-        for name in ('Setup.bat', 'setup.sh', 'scripts/Setup.ps1'):
-            body = text(ROOT / name)
-            self.assertNotIn('Install-Update.ps1', body, name)
-            self.assertNotIn('Test-UpdateManifest', body, name)
-        setup_bat = text(ROOT / 'Setup.bat')
-        self.assertIn(r'scripts\Setup.ps1', setup_bat)
-        self.assertNotIn('update dump', setup_bat.lower())
-        setup = text(SCRIPTS / 'Setup.ps1')
-        self.assertNotIn('Splatoon-v', setup)
+    def test_builder_and_combinator_do_not_reference_legacy_scripts(self):
+        embedded = text(ROOT / 'Builder/embedded/embedded.go')
+        self.assertNotIn('setup.sh', embedded)
+        bundler = text(SCRIPTS / 'bundle_builder_assets.py')
+        self.assertNotIn('setup.sh', bundler)
+        self.assertNotIn('build.sh', bundler)
+        combinator = text(TOOL)
+        self.assertNotIn('Setup.bat', combinator)
+        self.assertNotIn('setup.sh', combinator)
 
     def test_readme_and_docs_describe_the_merged_rom(self):
         readme = text(ROOT / 'README.md')
         self.assertIn('update_combinator.py', readme)
         self.assertIn('Update-combinator', readme)
         self.assertNotIn('Install-Update.ps1', readme)
+        self.assertNotIn('Setup.bat', readme)
+        self.assertNotIn('setup.sh', readme)
         for doc in (ROOT / 'docs').glob('*.md'):
             self.assertNotIn('Install-Update.ps1', text(doc), doc.name)
 
