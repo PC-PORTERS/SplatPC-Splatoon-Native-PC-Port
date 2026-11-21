@@ -6,6 +6,7 @@
 #include <SDL2/SDL.h>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <stdexcept>
 
 namespace {

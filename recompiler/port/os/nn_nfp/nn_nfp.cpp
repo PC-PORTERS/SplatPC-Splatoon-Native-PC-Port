@@ -5,6 +5,7 @@
 #include "../../runtime/splatoon_diagnostics.h"
 #include <algorithm>
 #include <atomic>
+#include <cstdio>
 #include <fstream>
 #include <mutex>
 #include <optional>
