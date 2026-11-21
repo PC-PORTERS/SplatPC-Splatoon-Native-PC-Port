@@ -70,6 +70,8 @@ struct PlazaGovernor {
 
 #if RBREW_GAME_REVISION == 288
 #include "../runtime/rebrewu_runtime.h"
+#include "staff_roll_pages.h"
+#include "rebrewu/logger.hpp"
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -138,7 +140,9 @@ inline void speed_keeper_update(uint8_t* mem, float frame_ms, uint32_t flags, ui
     }
     static SpeedKeeper keeper;
     const double step_ms = 1001.0 / 60.0 * double(swap_interval > 1 ? swap_interval : 1);
-    const bool twice = keeper.update(double(frame_ms) / step_ms, (flags & 1u) ? 2u : 1u);
+    // The debt still builds up during the credits' page encodes and is repaid after them.
+    const bool encoding_credits = staff_roll_encode_burst(mem);
+    const bool twice = keeper.update(double(frame_ms) / step_ms, (flags & 1u) ? 2u : 1u) && !encoding_credits;
     const uint32_t now = rbrew_read32(mem, manager + 0x304);
     if (twice != bool(now & 1u)) rbrew_write32(mem, manager + 0x304, twice ? (now | 1u) : (now & ~1u));
     plaza_regulator_detail::keeper_owns = twice;
