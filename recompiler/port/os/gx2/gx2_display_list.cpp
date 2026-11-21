@@ -635,7 +635,7 @@ void mark_tags(const uint8_t* begin, size_t bytes, uint32_t limit, uint64_t* liv
 }
 // False if the memory faulted (a protection change during the scan).
 bool mark_tags_guarded(const uint8_t* begin, size_t bytes, uint32_t limit, uint64_t* live) {
-#if defined(_WIN32)
+#if defined(_MSC_VER)
     __try {
         mark_tags(begin, bytes, limit, live);
     } __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER
