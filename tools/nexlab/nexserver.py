@@ -385,7 +385,7 @@ class SecureServer(secure.SecureConnectionServer):
         # Bound the log line (S-06): the body can be large and may carry player data.
         blob = bytes(data)
         head = blob[:32].hex()
-        log.info("SendReport id=%d bytes=%d data=%s%s", report_id, len(blob), head,
+        log.info("SendReport pid=%08x id=%d bytes=%d data=%s%s", client.pid(), report_id, len(blob), head,
                  "..." if len(blob) > 32 else "")
         # The generated handler has no return fields: None produces RMC success.
 
