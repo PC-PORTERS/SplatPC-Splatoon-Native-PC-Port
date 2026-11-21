@@ -346,7 +346,12 @@ struct SweepPacing {
     size_t free_slice = 1024;                   // freed lists per 1 ms pause (0: all at once)
 };
 SweepPacing s_pacing;
-void release_paced(std::vector<Commands>& retired) {
+// A dropped recording's commands and baked form, freed after the registry lock.
+struct Retired {
+    Commands commands;
+    std::shared_ptr<const BakedList> baked;
+};
+void release_paced(std::vector<Retired>& retired) {
     const size_t kSlice = s_pacing.free_slice ? s_pacing.free_slice : ~size_t(0);
 #if defined(_WIN32)
     thread_local HANDLE timer =
@@ -510,7 +515,7 @@ void evict_old_recordings() {
 #ifdef RBREW_GX2_QUEUE_TESTS
         if (gate) gate();
 #endif
-        std::vector<Commands> retired;
+        std::vector<Retired> retired;
         retired.reserve(cold->size());
         // Never acquire the recording registry while holding the archive
         // mutex. A cold-list restore holds them in the opposite order.
@@ -561,8 +566,7 @@ void evict_old_recordings() {
                 if (resident.last_use != candidate.snapshot.last_use ||
                     resident.commands != candidate.snapshot.commands)
                     continue;
-                retired.push_back(std::move(resident.commands));
-                resident.baked.reset();
+                retired.push_back({std::move(resident.commands), std::move(resident.baked)});
                 --s_resident_recordings;
                 s_resident_bytes -= resident.bytes;
             }
@@ -767,8 +771,8 @@ void sweep_recordings(uint32_t limit) {
         return;
     }
     SWEEP_PHASE("scanned");
-    std::vector<Commands> retired; // released outside the registry lock
-    size_t scanned = 0;            // s_tracked entries present when the pass starts
+    std::vector<Retired> retired; // released outside the registry lock
+    size_t scanned = 0;           // s_tracked entries present when the pass starts
     // Both passes run in short locked chunks and let a waiting game/render
     // caller take the registry between chunks (std::mutex is not fair).
     auto yield_to_waiters = [] {
@@ -852,8 +856,7 @@ void sweep_recordings(uint32_t limit) {
                 continue;
             }
             if (r->commands) {
-                retired.push_back(std::move(r->commands));
-                r->baked.reset();
+                retired.push_back({std::move(r->commands), std::move(r->baked)});
                 --s_resident_recordings;
                 s_resident_bytes -= r->bytes;
             }
