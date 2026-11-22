@@ -10,6 +10,11 @@ if(NOT RBREW_GAME_REVISION MATCHES "^[0-9]+$")
     message(FATAL_ERROR "Unsupported title revision")
 endif()
 add_compile_definitions(RBREW_GAME_REVISION=${RBREW_GAME_REVISION})
+# MinGW headers (the Builder's userspace clang) default to Windows 7 and hide Windows 10 APIs such as
+# BCryptHash; the MSVC SDK already targets Windows 10.
+if(MINGW)
+    add_compile_definitions(_WIN32_WINNT=0x0A00)
+endif()
 
 # Windowing & input: require the audited static SDL2 Vulkan-only profile.
 find_package(SDL2 CONFIG REQUIRED)
