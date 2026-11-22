@@ -36,20 +36,10 @@ func LaunchGame(gameDir string, cfg settings.Configuration, log func(string, ...
 		return nil, fmt.Errorf("executable not found: %s", exePath)
 	}
 
+	// Persist latest settings.ini before launching directly into the binary
+	_ = settings.WriteSettingsIni(cfg, gameDir)
+
 	cmd := exec.Command(exePath)
-	// Linux: the launcher written by the build (Splatoon.sh) also does the online sign-up,
-	// version check and friends relay when online is on; play through it like the player would.
-	if script := filepath.Join(gameDir, "Splatoon.sh"); runtime.GOOS != "windows" && cfg.EnableOnline {
-		if _, err := os.Stat(script); err == nil {
-			cmd = exec.Command("bash", script)
-		}
-	}
-	// Windows: same idea through Launch_Splatoon.bat (it goes through scripts\Splatoon-Login.ps1 when present).
-	if script := filepath.Join(gameDir, "Launch_Splatoon.bat"); runtime.GOOS == "windows" && cfg.EnableOnline {
-		if _, err := os.Stat(script); err == nil {
-			cmd = exec.Command("cmd", "/c", script)
-		}
-	}
 	cmd.Dir = gameDir
 
 	// Inherit process environment and pass game configuration

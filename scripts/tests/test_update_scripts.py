@@ -38,30 +38,12 @@ def write_dump(root, version, files):
 
 
 class UpdateCombinatorTests(unittest.TestCase):
-    def test_only_setup_powershell_script_remains(self):
-        names = sorted(p.name for p in SCRIPTS.glob('*.ps1'))
-        allowed = {'Setup.ps1', 'Launch-Online.ps1', 'Splatoon-Login.ps1', 'Launch-Duo.ps1', 'Launch-Duo-Public.ps1'}
-        self.assertTrue(set(names).issubset(allowed))
-        self.assertFalse((SCRIPTS / 'Install-Update.ps1').exists())
-
-    def test_update_bat_only_fast_forwards_then_runs_setup(self):
-        lines = text(ROOT / 'update.bat').lower().splitlines()
-        body = '\n'.join(line for line in lines if not line.startswith('rem '))
-        self.assertIn('--ff-only', body)
-        self.assertIn('setup.bat', body)
-        for word in ('reset', 'clean', 'stash', 'checkout', 'rebase', '--force', 'game\\save', 'online_identity'):
-            self.assertNotIn(word, body, word)
-
-    def test_setup_scripts_use_the_merged_rom_directly(self):
-        for name in ('Setup.bat', 'setup.sh', 'scripts/Setup.ps1'):
-            body = text(ROOT / name)
-            self.assertNotIn('Install-Update.ps1', body, name)
-            self.assertNotIn('Test-UpdateManifest', body, name)
-        setup_bat = text(ROOT / 'Setup.bat')
-        self.assertIn(r'scripts\Setup.ps1', setup_bat)
-        self.assertNotIn('update dump', setup_bat.lower())
-        setup = text(SCRIPTS / 'Setup.ps1')
-        self.assertNotIn('Splatoon-v', setup)
+    def test_no_legacy_batch_shell_or_ps1_scripts_remain(self):
+        self.assertEqual(list(SCRIPTS.glob('*.ps1')), [])
+        for name in ('Setup.bat', 'setup.sh', 'Play-Online.bat', 'Play-Online.sh', 'HD-Textures.bat', 'HD-Textures.sh', 'update.bat'):
+            self.assertFalse((ROOT / name).exists(), name)
+        self.assertFalse((SCRIPTS / 'splatoon_login.py').exists())
+        self.assertFalse((SCRIPTS / 'friends_relay.py').exists())
 
     def test_readme_and_docs_describe_the_merged_rom(self):
         readme = text(ROOT / 'README.md')

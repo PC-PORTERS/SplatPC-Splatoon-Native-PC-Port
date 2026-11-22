@@ -197,6 +197,7 @@ func (w *Wizard) GoToStep(step StepID) {
 	case StepRoms:
 		w.stepContent.Add(w.romsView.Container())
 	case StepSettings:
+		w.settingsView.SyncUIFromConfig()
 		w.stepContent.Add(w.settingsView.Container())
 	case StepBuildConfig:
 		w.stepContent.Add(w.buildConfigView.Container())
@@ -212,6 +213,11 @@ func (w *Wizard) StartBuild() {
 	if w.config.BaseDumpPath == "" {
 		dialog.ShowError(fmt.Errorf("please specify the base ROM in Step 1"), w.window)
 		w.GoToStep(StepRoms)
+		return
+	}
+	if w.config.EnableOnline && !roms.HasV288(w.config.BaseDumpPath, w.overlays, w.config.OutputDir) {
+		dialog.ShowError(fmt.Errorf("online multiplayer requires the latest game version (v288). Please add the v288 update in Step 1 or disable Online in Step 2"), w.window)
+		w.GoToStep(StepSettings)
 		return
 	}
 

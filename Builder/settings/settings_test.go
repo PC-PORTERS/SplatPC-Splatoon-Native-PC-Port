@@ -3,7 +3,6 @@ package settings
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -165,46 +164,6 @@ look_1=custom_look_data
 	}
 }
 
-func TestWriteLauncherScript(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "test_launcher_*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
-
-	cfg := DefaultConfiguration("/tmp")
-	cfg.PlayerName = "InklingMaster"
-	cfg.LanguageID = 2
-
-	err = WriteLauncherScript(cfg, tempDir)
-	if err != nil {
-		t.Fatalf("WriteLauncherScript failed: %v", err)
-	}
-
-	launcherName := "Splatoon.sh"
-	expectedPlayer := `RBREW_PLAYER_NAME="InklingMaster"`
-	expectedLang := `RBREW_CONSOLE_LANGUAGE="2"`
-	if runtime.GOOS == "windows" {
-		launcherName = "Launch_Splatoon.bat"
-		expectedPlayer = `set "RBREW_PLAYER_NAME=InklingMaster"`
-		expectedLang = `set "RBREW_CONSOLE_LANGUAGE=2"`
-	}
-
-	scriptPath := filepath.Join(tempDir, launcherName)
-	data, err := os.ReadFile(scriptPath)
-	if err != nil {
-		t.Fatalf("Failed to read %s: %v", launcherName, err)
-	}
-
-	content := string(data)
-	if !strings.Contains(content, expectedPlayer) {
-		t.Errorf("Expected %s in launcher script", expectedPlayer)
-	}
-	if !strings.Contains(content, expectedLang) {
-		t.Errorf("Expected %s in launcher script", expectedLang)
-	}
-}
-
 func TestHDTexturingOption(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "test_hd_settings_*")
 	if err != nil {
@@ -226,24 +185,6 @@ func TestHDTexturingOption(t *testing.T) {
 
 	if !strings.Contains(string(data), "hd_textures=1") {
 		t.Errorf("Expected hd_textures=1 in settings.ini, got:\n%s", string(data))
-	}
-
-	// Verify launcher script sets RBREW_TEXTURE_DUMP
-	if err := WriteLauncherScript(cfg, tempDir); err != nil {
-		t.Fatalf("WriteLauncherScript failed: %v", err)
-	}
-
-	launcherName := "Splatoon.sh"
-	if runtime.GOOS == "windows" {
-		launcherName = "Launch_Splatoon.bat"
-	}
-	scriptPath := filepath.Join(tempDir, launcherName)
-	sData, err := os.ReadFile(scriptPath)
-	if err != nil {
-		t.Fatalf("Failed to read launcher script: %v", err)
-	}
-	if !strings.Contains(string(sData), "RBREW_TEXTURE_DUMP") {
-		t.Errorf("Expected RBREW_TEXTURE_DUMP in launcher script when UpscaleTextures is true")
 	}
 }
 
@@ -292,70 +233,17 @@ func TestOnlineSettings(t *testing.T) {
 		t.Errorf("Expected PlayerName OnlineSquid, got %s", loadedCfg.PlayerName)
 	}
 
-	// 3. Launcher script generation with online enabled
-	if err := WriteLauncherScript(cfg, tempDir); err != nil {
-		t.Fatalf("WriteLauncherScript failed: %v", err)
-	}
-	launcherName := "Splatoon.sh"
-	if runtime.GOOS == "windows" {
-		launcherName = "Launch_Splatoon.bat"
-	}
-	launcherData, err := os.ReadFile(filepath.Join(tempDir, launcherName))
-	if err != nil {
-		t.Fatalf("Failed to read launcher: %v", err)
-	}
-	launcherContent := string(launcherData)
-	if !strings.Contains(launcherContent, "RBREW_ONLINE_SERVER") {
-		t.Errorf("Expected RBREW_ONLINE_SERVER in launcher script when online enabled")
-	}
-	if !strings.Contains(launcherContent, "RBREW_PSEUDO") {
-		t.Errorf("Expected RBREW_PSEUDO in launcher script when online enabled")
-	}
-
-	// 4. Launcher script generation with online disabled
+	// 3. Disabling online clears online_server
 	cfg.EnableOnline = false
-	if err := WriteLauncherScript(cfg, tempDir); err != nil {
-		t.Fatalf("WriteLauncherScript (offline) failed: %v", err)
+	if err := WriteSettingsIni(cfg, tempDir); err != nil {
+		t.Fatalf("WriteSettingsIni (offline) failed: %v", err)
 	}
-	launcherDataOff, err := os.ReadFile(filepath.Join(tempDir, launcherName))
-	if err != nil {
-		t.Fatalf("Failed to read offline launcher: %v", err)
+	var reloadedOffline Configuration
+	if err := LoadSettingsIni(iniPath, &reloadedOffline); err != nil {
+		t.Fatalf("LoadSettingsIni (offline) failed: %v", err)
 	}
-	launcherContentOff := string(launcherDataOff)
-	if strings.Contains(launcherContentOff, "RBREW_ONLINE_SERVER") {
-		t.Errorf("Did not expect RBREW_ONLINE_SERVER in launcher script when online disabled")
-	}
-}
-
-func TestLinuxLauncherOnline(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Splatoon.sh is only written on Linux")
-	}
-	tempDir := t.TempDir()
-	cfg := DefaultConfiguration("/tmp")
-	cfg.PlayerName = "Sq\"$(id)`x`"
-	cfg.EnableOnline = true
-	cfg.OnlineServer = "127.0.0.1:60000"
-	if err := WriteLauncherScript(cfg, tempDir); err != nil {
-		t.Fatalf("WriteLauncherScript failed: %v", err)
-	}
-	data, err := os.ReadFile(filepath.Join(tempDir, "Splatoon.sh"))
-	if err != nil {
-		t.Fatalf("Failed to read launcher: %v", err)
-	}
-	content := string(data)
-	for _, want := range []string{`cd "$HERE"`, "scripts/splatoon_login.py", `--game "$HERE"`, "RBREW_PSEUDO=\"Sq\\\"\\$(id)\\`x\\`\""} {
-		if !strings.Contains(content, want) {
-			t.Errorf("Expected %q in launcher:\n%s", want, content)
-		}
-	}
-	cfg.EnableOnline = false
-	if err := WriteLauncherScript(cfg, tempDir); err != nil {
-		t.Fatalf("WriteLauncherScript (offline) failed: %v", err)
-	}
-	data, _ = os.ReadFile(filepath.Join(tempDir, "Splatoon.sh"))
-	if strings.Contains(string(data), "splatoon_login.py") {
-		t.Errorf("Did not expect the online launcher when online is disabled")
+	if reloadedOffline.EnableOnline || reloadedOffline.OnlineServer != "" {
+		t.Errorf("Expected offline settings to clear online_server, got %q", reloadedOffline.OnlineServer)
 	}
 }
 

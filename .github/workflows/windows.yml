@@ -37,7 +37,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/vcpkg_cache
-          key: windows-vcpkg-${{ hashFiles('scripts/Setup.ps1') }}
+          key: windows-vcpkg-${{ hashFiles('recompiler/port/CMakeLists.txt') }}
 
       - name: Install vcpkg dependencies
         shell: pwsh

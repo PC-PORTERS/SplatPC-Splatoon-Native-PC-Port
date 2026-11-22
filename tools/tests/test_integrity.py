@@ -27,7 +27,6 @@ def load(name, relative):
 
 
 integrity = load("integrity", "scripts/integrity.py")
-friends_relay = load("friends_relay", "scripts/friends_relay.py")
 
 
 def make_install(base, files, version="0.1.3"):
@@ -83,9 +82,9 @@ class ClientHashTests(unittest.TestCase):
         self.assertEqual(integrity.attestation(str(self.root))["code"], "")
 
     def test_what_is_covered(self):
-        for yes in ("recompiler/port/os/x.cpp", "scripts/Launch-Online.ps1", "VERSION", "profiles/agmp-v288.json"):
+        for yes in ("recompiler/port/os/x.cpp", "scripts/integrity.py", "VERSION", "profiles/agmp-v288.json"):
             self.assertTrue(integrity.covered(yes), yes)
-        for no in ("docs/x.md", "scripts/tests/t.ps1", "scripts/integrity-manifest.txt", "scripts/server.txt",
+        for no in ("docs/x.md", "scripts/tests/t.py", "scripts/integrity-manifest.txt", "scripts/server.txt",
                    "tools/nexlab/social.py", "scripts/__pycache__/x.pyc"):
             self.assertFalse(integrity.covered(no), no)
 
@@ -175,7 +174,7 @@ class SocialIntegrityTests(unittest.TestCase):
 
 
 class RelayIntegrityTests(unittest.TestCase):
-    """The relay against a real local server in enforce mode."""
+    """Server integrity enforcement and /health endpoint against a real local server."""
 
     def setUp(self):
         self.path = pathlib.Path(tempfile.gettempdir()) / f"integ-relay-{secrets.token_hex(3)}.sqlite3"
@@ -189,8 +188,6 @@ class RelayIntegrityTests(unittest.TestCase):
         self.server = register_server.RegistrationServer(
             self.accounts, "127.0.0.1", 0, integrity_mode="enforce", integrity_releases={"0.1.3": [self.release]}).start()
         self.url = f"http://127.0.0.1:{self.server._httpd.server_address[1]}"
-        self.game = self.dir / "game"
-        self.game.mkdir()
 
     def tearDown(self):
         self.server.stop()
@@ -198,27 +195,29 @@ class RelayIntegrityTests(unittest.TestCase):
         for suffix in ("", "-wal", "-shm"):
             pathlib.Path(str(self.path) + suffix).unlink(missing_ok=True)
 
-    def relay(self, client):
-        return friends_relay.Relay(self.url, self.pid, self.password, "Alice", str(self.game), client=client)
+    def post_session(self, client):
+        data = json.dumps({"pid": f"0x{self.pid:08x}", "password": self.password, "client": client}).encode()
+        req = urllib.request.Request(self.url + "/social/session", data=data, headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as reply:
+                return reply.status, json.loads(reply.read())
+        except urllib.error.HTTPError as err:
+            return err.code, json.loads(err.read() or b"{}")
 
     def test_official_files_sign_in(self):
-        relay = self.relay(integrity.attestation(str(self.root)))
-        relay.step()
-        self.assertEqual(relay.message, "")
+        status, body = self.post_session(integrity.attestation(str(self.root)))
+        self.assertEqual(status, 200)
+        self.assertIn("token", body)
         self.assertTrue(self.server.social.is_attested(self.pid))
 
     def test_edited_files_are_refused_with_a_readable_message(self):
         (self.root / "recompiler" / "a.cpp").write_bytes(b"int cheat;\n")
-        relay = self.relay(integrity.attestation(str(self.root)))
-        relay.step()
-        self.assertIn("not recognised", relay.message)
+        status, body = self.post_session(integrity.attestation(str(self.root)))
+        self.assertEqual(status, 426)
+        self.assertIn("game files not recognised", body.get("error", ""))
         self.assertFalse(self.server.social.is_attested(self.pid))
-        state = (self.game / "friends" / "state.res").read_text()
-        self.assertIn("msg|Game files not recognised by the server. Update the game.", state)
-        self.assertIn("detail|game files not recognised", state)   # the server's words, for the launcher log
 
     def test_health_publishes_mode_and_latest_version_but_no_hash(self):
-        import json, urllib.request
         with urllib.request.urlopen(self.url + "/health", timeout=5) as reply:
             body = json.loads(reply.read())
         self.assertEqual(body["integrity_mode"], self.server.social.integrity_mode)
@@ -227,14 +226,13 @@ class RelayIntegrityTests(unittest.TestCase):
 
     def test_refusal_names_the_version_to_update_to(self):
         (self.root / "recompiler" / "a.cpp").write_bytes(b"int cheat;\n")
-        relay = self.relay(integrity.attestation(str(self.root)))
-        relay.step()
-        self.assertIn("update the game to " + self.server.social.latest_version(), relay.detail)
+        status, body = self.post_session(integrity.attestation(str(self.root)))
+        self.assertEqual(status, 426)
+        self.assertIn("update the game to " + self.server.social.latest_version(), body.get("error", ""))
 
     def test_an_old_relay_without_a_proof_is_refused(self):
-        relay = self.relay(None)
-        relay.step()
-        self.assertIn("Update the game", relay.message)
+        status, _ = self.post_session(None)
+        self.assertEqual(status, 426)
 
 
 class ModerationTests(unittest.TestCase):

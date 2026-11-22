@@ -343,7 +343,7 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 		_ = os.MkdirAll(filepath.Join(cfg.OutputDir, "texture-dump"), 0755)
 	}
 
-	// Write settings.ini and launcher script
+	// Write settings.ini (native binary reads online & gameplay settings directly; no wrapper scripts)
 	log("Writing custom settings (player nickname: %s)...", cfg.PlayerName)
 	if cfg.EnableOnline && strings.TrimSpace(cfg.OnlineServer) != "" {
 		log("Online multiplayer configured: server %s (pseudo: '%s')", strings.TrimSpace(cfg.OnlineServer), cfg.PlayerName)
@@ -351,9 +351,9 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 	if err := settings.WriteSettingsIni(cfg, cfg.OutputDir); err != nil {
 		log("Warning: Failed to write settings.ini: %v", err)
 	}
-	if err := settings.WriteLauncherScript(cfg, cfg.OutputDir); err != nil {
-		log("Warning: Failed to write launch script: %v", err)
-	}
+	// Remove legacy launcher scripts if present from earlier builds
+	_ = os.Remove(filepath.Join(cfg.OutputDir, "Splatoon.sh"))
+	_ = os.Remove(filepath.Join(cfg.OutputDir, "Launch_Splatoon.bat"))
 
 	var appImagePath string
 	// Optional STEP 9: AppImage for Linux

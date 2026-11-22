@@ -38,13 +38,9 @@ func IsRepoRoot(path string) bool {
 	}
 	manifestDir := filepath.Join(path, "Manifest")
 	recompilerDir := filepath.Join(path, "recompiler")
-	setupScript := filepath.Join(path, "setup.sh")
+	versionFile := filepath.Join(path, "VERSION")
 
-	hasManifest := fileExists(manifestDir)
-	hasRecompiler := fileExists(recompilerDir)
-	hasSetup := fileExists(setupScript)
-
-	return hasManifest && hasRecompiler && hasSetup
+	return fileExists(manifestDir) && fileExists(recompilerDir) && fileExists(versionFile)
 }
 
 func fileExists(p string) bool {
@@ -141,8 +137,8 @@ func ExtractEmbeddedAssets(targetDir string) error {
 		if mode == 0 {
 			mode = 0644
 		}
-		// Ensure executability for scripts and manifests
-		if strings.HasSuffix(cleanName, ".sh") || strings.HasSuffix(cleanName, ".py") {
+		// Ensure executability for Python helper tools
+		if strings.HasSuffix(cleanName, ".py") {
 			mode |= 0755
 		}
 
