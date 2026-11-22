@@ -64,7 +64,7 @@ func (w *Wizard) showTroubleshooting() {
 		body.Wrapping = fyne.TextWrapWord
 		accordion.Append(widget.NewAccordionItem(t.title, body))
 	}
-	intro := wrappedLabel("Click a problem to see how to fix it. If nothing helps, open an issue on GitHub and attach the build log.")
+	intro := wrappedLabel("Click a problem to see how to fix it. If nothing helps, ask on Discord or open an issue on GitHub and attach the build log.")
 	content := container.NewBorder(intro, nil, nil, nil, container.NewVScroll(accordion))
 
 	d := dialog.NewCustom("Troubleshooting", "Close", content, w.window)
