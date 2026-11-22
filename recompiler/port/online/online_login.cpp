@@ -177,8 +177,14 @@ bool perform_account_login(Transport& transport, const std::string& register_url
         return false;
     }
     if (session_reply.status == 426) {
-        error_out = "Game files not recognised by the server. Update the game.";
-        detail_out = error_text(session_reply.body, "");
+        const std::string text = error_text(session_reply.body, "");
+        if (session_reply.body.is_object() && session_reply.body.value("reason", nlohmann::json()) == "revision" &&
+            !text.empty()) {
+            error_out = text; // built from another game update: the server says which one it needs
+        } else {
+            error_out = "Game files not recognised by the server. Update the game.";
+            detail_out = text;
+        }
         return false;
     }
     if (session_reply.status == 403) {

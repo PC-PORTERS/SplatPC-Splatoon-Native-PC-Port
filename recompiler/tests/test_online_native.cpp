@@ -180,6 +180,14 @@ void test_relay() {
               "msg|Game files not recognised by the server. Update the game.\ndetail|update the game to 0.1.5\n",
           "426 keeps the server's words for the launcher log");
     check(closed.count("session") == 1, "no new sign-in right after a 426");
+    FakeTransport other_update;
+    other_update.replies["session"] = {
+        Reply{426, {{"error", "Online needs Splatoon update 288"}, {"reason", "revision"}}}};
+    const fs::path v16_game = scratch("relay_v16"), v16_dir = v16_game / "friends";
+    FriendsRelay v16(other_update, 1, "pw", "", v16_game, v16_dir, proof);
+    v16.step();
+    check(v16.message() == "Online needs Splatoon update 288", "a wrong game update shows the server's words");
+    check(read(v16_dir / "state.res") == "msg|Online needs Splatoon update 288\n", "no detail for a wrong update");
     FakeTransport reopened;
     reopened.replies["session"] = {Reply{426, json::object()}, Reply{200, {{"token", "t"}}}};
     FriendsRelay back(reopened, 1, "pw", "", scratch("relay_back"), scratch("relay_back") / "friends", proof);
@@ -251,6 +259,12 @@ void test_login_and_url_split() {
                                 "Inkling", "0.1.5", {{"version", "0.1.5"}, {"code", "ab"}}, token, err, detail) &&
               token == "tok_saved_123",
           "full login sequence acquires token");
+    srv.replies["session"] = {Reply{426, {{"error", "Online needs Splatoon update 288"}, {"reason", "revision"}}}};
+    srv.replies["GET /health"] = {Reply{200, {{"min_client_version", "0.1.5"}}}};
+    check(!perform_account_login(srv, "https://example.com/register", "/register", game, 0x10000001, "SecretPass123456",
+                                 "Inkling", "0.1.5", {{"version", "0.1.5"}, {"code", "ab"}}, token, err, detail) &&
+              err == "Online needs Splatoon update 288" && detail.empty(),
+          "the login screen shows the update the server needs");
 }
 
 int run_tests() {

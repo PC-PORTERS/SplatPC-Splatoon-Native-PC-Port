@@ -139,8 +139,13 @@ bool FriendsRelay::ensure_session() {
     }
     if (r.status == 426) { // the server only takes official, up-to-date game files
         const json error = r.body.value("error", json());
-        message_ = "Game files not recognised by the server. Update the game.";
-        detail_ = one_line(error.is_string() ? error.get<std::string>() : "").substr(0, 200);
+        const std::string text = one_line(error.is_string() ? error.get<std::string>() : "").substr(0, 200);
+        if (r.body.value("reason", json()) == "revision" && !text.empty()) {
+            message_ = text; // built from another game update: the server says which one it needs
+        } else {
+            message_ = "Game files not recognised by the server. Update the game.";
+            detail_ = text;
+        }
         refused_until_ = std::chrono::steady_clock::now() + refusal_pause_;
     } else {
         message_ = r.status == 0 ? "server unreachable" : "sign-in refused";

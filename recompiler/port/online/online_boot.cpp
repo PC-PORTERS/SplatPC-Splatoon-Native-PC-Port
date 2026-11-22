@@ -28,6 +28,11 @@ constexpr auto kInterval = std::chrono::seconds(5);
 constexpr int kTimeoutMs = 6000;
 constexpr int64_t kMaxSavedTokenAgeSec = 11 * 3600; // server TOKEN_TTL is 12h
 
+// What the server checks before it opens a session: the integrity proof and the game update.
+nlohmann::json client_proof(const Attestation& proof) {
+    return {{"version", proof.version}, {"code", proof.code}, {"revision", RBREW_GAME_REVISION}};
+}
+
 struct RelayState {
     std::mutex mutex;
     std::condition_variable wake;
@@ -126,8 +131,7 @@ void relay_thread(RelayState* state, std::string register_url, std::string serve
         }
     }
 
-    FriendsRelay relay(*transport, id.pid, id.password, pseudo, game_dir, friends_dir,
-                       {{"version", proof.version}, {"code", proof.code}});
+    FriendsRelay relay(*transport, id.pid, id.password, pseudo, game_dir, friends_dir, client_proof(proof));
     if (!initial_token.empty()) relay.set_initial_token(initial_token);
     relay.set_token_callback([game_dir, server, register_url, pseudo, pid = id.pid](const std::string& tok) {
         rbrew_online::save_session_token(
@@ -338,10 +342,9 @@ void start_interactive_login(const LoginFormValues& raw_form) {
         }
 
         const Attestation proof = attest(env_path("RBREW_INTEGRITY_ROOT", game_dir.parent_path()));
-        const nlohmann::json client_proof = {{"version", proof.version}, {"code", proof.code}};
         std::string token, err, detail;
         if (!perform_account_login(*transport, form.register_url, register_path, game_dir, id.pid, id.password,
-                                   form.pseudo, proof.version, client_proof, token, err, detail)) {
+                                   form.pseudo, proof.version, client_proof(proof), token, err, detail)) {
             fail(err, detail);
             return;
         }
