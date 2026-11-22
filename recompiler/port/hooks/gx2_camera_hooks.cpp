@@ -2,6 +2,8 @@
 // camera, free fly camera, fly spots, the spawn hack and the mouse aim (v288).
 #include "gx2_camera_hooks.h"
 #include "gx2_guest_memory.h"
+#include "camera_nan_guard.h"
+#include "player_nan_guard.h"
 #include "mouse_camera.h"
 #include "../os/gx2/gx2_render.h"
 #include "../runtime/port_settings.h"
@@ -12,9 +14,15 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
+#include <ctime>
+#include <filesystem>
+#include <fstream>
 #include <future>
+#include <iomanip>
 #include <mutex>
+#include <string>
 #include <utility>
 #include <vector>
 #if defined(HAVE_SDL2)
@@ -697,6 +705,222 @@ constexpr double kCameraTurn = kCameraPerMouse * 3.14159265358979 / 180.0;
 // Camera pitch = -7.5 + 67.5 * aim degrees (measured: +60 at the top stop, -75 at the bottom).
 constexpr float kAimPerMouseDegree = float(kCameraPerMouse / 67.5);
 
+// 02668434 is the per-frame update of the behind-the-player camera (r3 = camera, from player+0x8D0),
+// whatever drives it (stick, gyro, mouse). The guard checks the camera right after it, before the
+// view and the projection read it (camera_nan_guard.h).
+constexpr uint32_t kCameraUpdate = 0x02668434u;
+constexpr uint32_t kCameraBytes = 0x300;
+constexpr uint32_t kPlayerBytes = 0x1000;
+
+struct GuestWords {
+    uint8_t* mem;
+    uint32_t read32(uint32_t a) const { return rbrew_read32(mem, a); }
+    void write32(uint32_t a, uint32_t v) const { rbrew_write32(mem, a, v); }
+};
+
+bool switch_on(const char* name, bool fallback) {
+    const char* v = std::getenv(name);
+    return v && v[0] ? v[0] != '0' : fallback;
+}
+
+void dump_words(std::ofstream& out, const char* title, const std::vector<uint32_t>& words) {
+    out << title << '\n' << std::hex << std::setfill('0');
+    for (size_t i = 0; i < words.size(); ++i)
+        out << (i % 8 ? " " : (i ? "\n" : "")) << std::setw(4) << 4 * i << ':' << std::setw(8) << words[i];
+    out << std::dec << "\n\n";
+}
+
+std::vector<uint32_t> read_words(uint8_t* mem, uint32_t addr, uint32_t bytes) {
+    std::vector<uint32_t> words(bytes / 4);
+    for (uint32_t i = 0; i < words.size(); ++i) words[i] = rbrew_read32(mem, addr + 4 * i);
+    return words;
+}
+
+// Arguments of one camera update (the update itself reads r3 only; the rest says who called it).
+struct UpdateEntry {
+    uint32_t lr;
+    std::array<uint32_t, 8> r;
+    std::array<double, 8> f;
+    static UpdateEntry of(const CPUState& cpu) {
+        UpdateEntry e{cpu.lr, {}, {}};
+        for (int i = 0; i < 8; ++i) {
+            e.r[i] = cpu.r[3 + i];
+            e.f[i] = cpu.f[1 + i];
+        }
+        return e;
+    }
+};
+
+// An update that turns a finite camera non-finite: its inputs, for the root cause.
+void report_bad_update(const UpdateEntry& entry, uint32_t camera, const std::vector<uint32_t>& before,
+                       const std::vector<uint32_t>& player, uint8_t* mem) {
+    std::error_code error;
+    std::filesystem::create_directories("Diagnostics", error);
+    const std::time_t now = std::time(nullptr);
+    std::tm local{};
+#if defined(_WIN32)
+    localtime_s(&local, &now);
+#else
+    localtime_r(&now, &local);
+#endif
+    char name[64];
+    std::strftime(name, sizeof name, "Diagnostics/camera-nan-%Y%m%d-%H%M%S.txt", &local);
+    std::ofstream out(name);
+    out << "camera " << std::hex << camera << " player " << before[0] << " lr " << entry.lr << std::dec << '\n';
+    for (int i = 0; i < 8; ++i) out << 'r' << 3 + i << '=' << std::hex << entry.r[i] << std::dec << ' ';
+    out << '\n';
+    for (int i = 0; i < 8; ++i) out << 'f' << 1 + i << '=' << entry.f[i] << ' ';
+    out << "\n\n";
+    dump_words(out, "camera before the update", before);
+    dump_words(out, "camera after the update", read_words(mem, camera, kCameraBytes));
+    dump_words(out, "player before the update", player);
+    RBREW_LOG_WARN("camera", "non-finite camera update recorded in %s\n", name);
+}
+
+void camera_update(CPUState* cpu, uint32_t, HostFunc original) {
+    static rbrew_camera_nan_guard::Guard guard;
+    static const bool enabled = switch_on("RBREW_CAMERA_NAN_GUARD", true);
+    static bool reported = false; // one report per session
+    if (!enabled) return original(cpu);
+    const uint32_t camera = cpu->r[3];
+    UpdateEntry entry{};
+    std::vector<uint32_t> before, player;
+    if (!reported) {
+        entry = UpdateEntry::of(*cpu);
+        before = read_words(cpu->mem, camera, kCameraBytes);
+        if (before[0]) player = read_words(cpu->mem, before[0], kPlayerBytes);
+    }
+    original(cpu);
+    GuestWords words{cpu->mem};
+    if (const uint32_t repaired = guard.update(words, camera)) {
+        if (!reported && rbrew_camera_nan_guard::finite_fields(before)) {
+            report_bad_update(entry, camera, before, player, cpu->mem);
+            reported = true;
+        }
+        RBREW_LOG_WARN("camera", "camera %08x: %u non-finite fields repaired\n", camera, repaired);
+    }
+}
+
+// 0264FF04 updates one player (r3); 0265BE4C, called from inside it, steps one animation frame
+// controller (r3). See player_nan_guard.h.
+namespace png = rbrew_player_nan_guard;
+constexpr uint32_t kPlayerUpdate = 0x0264FF04u;
+constexpr uint32_t kFrameStep = 0x0265BE4Cu;
+
+bool player_guard_on() {
+    static const bool on = switch_on("RBREW_PLAYER_NAN_GUARD", true);
+    return on;
+}
+
+struct FrameRepairs {
+    uint32_t count = 0;
+    uint32_t last = 0; // the last controller repaired
+};
+FrameRepairs s_frame_repairs; // game thread only
+
+// Diagnostics/<kind>-<date>-<guest address>.txt (relative to the working directory, like the camera report).
+std::string diagnostics_file(const char* kind, uint32_t addr) {
+    std::error_code error;
+    std::filesystem::create_directories("Diagnostics", error);
+    const std::time_t now = std::time(nullptr);
+    std::tm local{};
+#if defined(_WIN32)
+    localtime_s(&local, &now);
+#else
+    localtime_r(&now, &local);
+#endif
+    char stamp[32], name[96];
+    std::strftime(stamp, sizeof stamp, "%Y%m%d-%H%M%S", &local);
+    std::snprintf(name, sizeof name, "Diagnostics/%s-%s-%08x.txt", kind, stamp, addr);
+    return name;
+}
+
+void frame_step(CPUState* cpu, uint32_t, HostFunc original) {
+    if (!player_guard_on()) return original(cpu);
+    // Release builds compile logging out: the first repair of a session, inside a player update or not, goes to a
+    // file so that a repair of a controller that is not a player's shows up after a match.
+    static bool reported = false;
+    GuestWords words{cpu->mem};
+    const uint32_t ctrl = cpu->r[3];
+    std::array<uint32_t, 16> before{};
+    if (!reported)
+        for (uint32_t i = 0; i < before.size(); ++i) before[i] = words.read32(ctrl + 4 * i);
+    const png::Frame state = png::check_frame(words, ctrl);
+    if (state != png::Frame::ok) {
+        ++s_frame_repairs.count;
+        s_frame_repairs.last = ctrl;
+        if (!reported) {
+            std::ofstream out(diagnostics_file("frame-nan", ctrl));
+            out << "frame controller " << std::hex << ctrl << (state == png::Frame::skip ? " skipped" : " repaired")
+                << " (lr " << uint32_t(cpu->lr) << ")\n"
+                << std::dec;
+            dump_words(out, "frame controller before the repair", std::vector<uint32_t>(before.begin(), before.end()));
+            reported = true;
+        }
+    }
+    if (state != png::Frame::skip) original(cpu);
+}
+
+// The first update of a session that left a player non-finite, or that needed a frame controller repair.
+void report_player(const char* what, const UpdateEntry& entry, uint32_t player, uint32_t frame_repairs,
+                   const std::array<uint32_t, png::kPlayerWords>* seen,
+                   const std::array<uint32_t, png::kPlayerWords>* restored, uint8_t* mem) {
+    const std::string name = diagnostics_file("player-nan", player);
+    std::ofstream out(name);
+    const uint32_t control = rbrew_read32(mem, player + png::kControl);
+    out << what << "\nplayer " << std::hex << player << ": " << png::role(control) << " (+0x50 = " << control
+        << ") index " << rbrew_read32(mem, player + png::kIndex) << " lr " << entry.lr << " frame controller "
+        << s_frame_repairs.last << std::dec << " (" << frame_repairs << " frame controller repairs in this update)\n";
+    for (int i = 0; i < 8; ++i) out << 'r' << 3 + i << '=' << std::hex << entry.r[i] << std::dec << ' ';
+    out << '\n';
+    for (int i = 0; i < 8; ++i) out << 'f' << 1 + i << '=' << entry.f[i] << ' ';
+    out << "\n\n";
+    if (seen && restored) {
+        out << "repaired words (offset: left by the game -> written back)\n" << std::hex << std::setfill('0');
+        for (uint32_t i = 0; i < png::kPlayerWords; ++i)
+            if (png::restores((*seen)[i], (*restored)[i]))
+                out << std::setw(4) << 4 * i << ": " << std::setw(8) << (*seen)[i] << " -> " << std::setw(8)
+                    << (*restored)[i] << '\n';
+        out << std::dec << '\n';
+        dump_words(out, "player as the game left it", std::vector<uint32_t>(seen->begin(), seen->end()));
+        dump_words(out, "player written back", std::vector<uint32_t>(restored->begin(), restored->end()));
+    } else {
+        dump_words(out, "player after the update", read_words(mem, player, png::kPlayerBytes));
+    }
+    if (s_frame_repairs.last) dump_words(out, "frame controller", read_words(mem, s_frame_repairs.last, 0x40));
+    RBREW_LOG_WARN("player", "non-finite player update recorded in %s\n", name.c_str());
+}
+
+void player_update(CPUState* cpu, uint32_t, HostFunc original) {
+    static png::PlayerGuard guard;
+    // One report of each kind per session for the local player, and one for the copies of other players.
+    static bool reported_player[2] = {}, reported_frame[2] = {};
+    static uint32_t repaired_updates = 0;
+    const uint32_t player = cpu->r[3];
+    if (!player_guard_on() || rbrew_read32(cpu->mem, player + 4) != png::kPlayerVtable) return original(cpu);
+    const UpdateEntry entry = UpdateEntry::of(*cpu);
+    const uint32_t frames_before = s_frame_repairs.count;
+    original(cpu);
+    const uint32_t frame_repairs = s_frame_repairs.count - frames_before;
+    const int copy = rbrew_read32(cpu->mem, player + png::kControl) != 0;
+    GuestWords words{cpu->mem};
+    if (const uint32_t repaired = guard.update(words, player)) {
+        if (!reported_player[copy]) {
+            report_player("player left non-finite by its update", entry, player, frame_repairs, &guard.seen(),
+                          &guard.restored(), cpu->mem);
+            reported_player[copy] = true;
+        }
+        // A copy fed NaN by every network packet is repaired every frame: log the first and then every 600th.
+        if (repaired_updates++ % 600 == 0)
+            RBREW_LOG_WARN("player", "player %08x: %u non-finite fields repaired (%u repaired updates)\n", player,
+                           repaired, repaired_updates);
+    } else if (frame_repairs && !reported_frame[copy]) {
+        report_player("frame controller repaired, player position finite", entry, player, frame_repairs, nullptr,
+                      nullptr, cpu->mem);
+        reported_frame[copy] = true;
+    }
+}
+
 void gyro_yaw_filter(CPUState* cpu, uint32_t, HostFunc original) {
     original(cpu);
     cpu->f[1] += double(yaw_queue().take()) * kCameraTurn;
@@ -720,6 +944,10 @@ void install() {
     if (!rbrew_set_guest_hook(kGyroYawFilter, gyro_yaw_filter) ||
         !rbrew_set_guest_hook(kGyroPitchRate, gyro_pitch_rate))
         RBREW_LOG_ERROR("mouse", "could not register the camera hooks\n");
+    if (!rbrew_set_guest_hook(kCameraUpdate, camera_update))
+        RBREW_LOG_ERROR("camera", "could not register the camera NaN guard\n");
+    if (!rbrew_set_guest_hook(kPlayerUpdate, player_update) || !rbrew_set_guest_hook(kFrameStep, frame_step))
+        RBREW_LOG_ERROR("player", "could not register the player NaN guard\n");
 }
 #else
 void install() {}
