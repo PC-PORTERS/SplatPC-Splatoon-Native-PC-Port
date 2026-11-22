@@ -384,7 +384,7 @@ static void ax_aux_callbacks() {
 }
 
 // GamePad (DRC 0) stereo of the last 96-frame block. With a sink (phone page) it goes only to the phone;
-// without one it is mixed into the PC output so the GamePad sound is not lost.
+// without one, gamepad_audio_pc=1 mixes it into the PC output so the GamePad sound is not lost.
 static std::atomic<void (*)(const float*, uint32_t)> s_pad_sink{nullptr};
 static float s_pad_frame[96 * 2];
 void snd_core_set_pad_sink(void (*sink)(const float*, uint32_t)) {
@@ -392,7 +392,8 @@ void snd_core_set_pad_sink(void (*sink)(const float*, uint32_t)) {
 }
 
 static void ax_final_mix_callbacks(float* output) {
-    constexpr bool want_pad = true;
+    const bool mix_pad = rbrew_settings::g_gamepad_audio_pc.load(std::memory_order_relaxed) && !s_pad_sink.load();
+    const bool want_pad = mix_pad || s_pad_sink.load();
     std::fill_n(s_pad_frame, 96 * 2, 0.0f);
     // snd_core.rpl 02005b44 / 020065xx: pointer array, u16 input channels,
     // sample count, device count, and output channels (12 bytes, big-endian).
@@ -464,7 +465,7 @@ static void ax_final_mix_callbacks(float* output) {
                 }
         }
     }
-    if (!s_pad_sink.load())
+    if (mix_pad)
         for (unsigned i = 0; i < 96 * 2; ++i) output[i] = std::clamp(output[i] + s_pad_frame[i], -1.0f, 1.0f);
 }
 

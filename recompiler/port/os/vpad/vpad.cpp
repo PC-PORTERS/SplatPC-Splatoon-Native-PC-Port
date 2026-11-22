@@ -32,6 +32,7 @@
 #include "../gx2/vk/gx2_imgui_overlay.h"
 #include "../gx2/gx2_env_light.h"
 #include "../../runtime/port_settings.h"
+#include "../../hooks/camera_follow.h"
 #include "../../hooks/mouse_camera.h"
 #include <algorithm>
 #include <fstream>
@@ -116,31 +117,6 @@ static constexpr float KBM_MOUSE_DEGREES = 0.06f;
 
 // True while the mouse, not a controller's right stick, is aiming.
 static bool s_mouse_aims = false;
-
-// The behind-the-player camera (GamePlayerBehindCamera) turns back behind the
-// player at 0.03 of the gap per frame: walking sideways swings the camera,
-// which helps on a controller and fights a mouse. That rate is the rodata
-// float 0x100E9C14 in 288, read by the camera update 026621E8 and four other
-// camera functions. Measured 2026-10-26 (scripted tutorial, camera matrix
-// trace): 2 s of strafing turned the camera +79.9 deg, +2.6 deg with the rate
-// at 1%; stick/gyro turning was identical. While the mouse aims the rate is
-// 1% of the original; the original returns as soon as a controller stick
-// aims. Never written unless the value found is one of the two, and only
-// for 288.
-static void set_camera_follow(uint8_t* mem, bool follow) {
-#if RBREW_GAME_REVISION == 288
-    constexpr uint32_t kRate = 0x100E9C14u;
-    constexpr float kOriginal = 0.03f, kMouse = 0.0003f;
-    static int state = -1;
-    if (!mem || state == int(follow)) return;
-    const float current = float(rbrew_read_f32(mem, kRate));
-    if (current == kOriginal || current == kMouse) rbrew_write_f32(mem, kRate, follow ? kOriginal : kMouse);
-    state = int(follow);
-#else
-    (void)mem;
-    (void)follow;
-#endif
-}
 
 // Keep the tutorial's working virtual-motion camera, driven by right stick
 // or mouse. Outside the tutorial, including Plaza, the active options follow
@@ -383,9 +359,10 @@ void vpad_update_motion(uint8_t* mem, uint32_t buf, float rx, float ry, float dt
     static unsigned trace_read = 0;
     ++trace_read;
     if (mouse_trace) { // every read, so reads that receive 0 right after a motion show up too
-        std::fprintf(mouse_trace,
-                     "read=%u dt=%.4f direct_yaw=%.3f mouse_yaw=%.3f mouse_pitch=%.3f yaw_rate=%.1f yaw=%.2f tutorial=%d\n",
-                     trace_read, dt, traced_mouse_yaw, mouse_yaw, mouse_pitch, yaw_rate, v.yaw, int(tutorial));
+        std::fprintf(
+            mouse_trace,
+            "read=%u dt=%.4f direct_yaw=%.3f mouse_yaw=%.3f mouse_pitch=%.3f yaw_rate=%.1f yaw=%.2f tutorial=%d\n",
+            trace_read, dt, traced_mouse_yaw, mouse_yaw, mouse_pitch, yaw_rate, v.yaw, int(tutorial));
         std::fflush(mouse_trace);
     }
     const float pitch = std::fmax(-kPitchLimit, std::fmin(kPitchLimit, v.pitch + pitch_rate * dt + mouse_pitch));
@@ -567,8 +544,8 @@ static void VPADRead(CPUState* cpu) {
 
         // Mouse relative motion → camera / aim; moving the mouse up looks up.
         // With motion aiming (the tutorial, or the game's motion controls on)
-        // it turns the virtual GamePad by a fixed angle per count; otherwise
-        // it is added to the right stick. A controller's own stick and gyro
+        // and mouse_pad_aim=1 it turns the virtual GamePad by a fixed angle per
+        // count; otherwise it is added to the right stick. A controller's own stick and gyro
         // are unchanged either way.
         int mdx = 0, mdy = 0;
         SDL_GetRelativeMouseState(&mdx, &mdy);
@@ -596,7 +573,7 @@ static void VPADRead(CPUState* cpu) {
             s_mouse_yaw += -float(mdx) * kMouseDegreesPerCount * mouse_scale;
             // Negative pitch looks up: mouse up (mdy < 0) must look up.
             s_mouse_pitch += float(mdy) * kMouseDegreesPerCount * mouse_scale;
-        } else if (motion_aim) {
+        } else if (motion_aim && rbrew_settings::g_mouse_pad_aim.load(std::memory_order_relaxed)) {
             mouse_yaw = -(float)mdx * KBM_MOUSE_DEGREES * mouse_scale;
             mouse_pitch = (float)mdy * KBM_MOUSE_DEGREES * mouse_scale; // negative pitch looks up
             if (mouse_variant() >= 4) { // also push the right stick, as if the mouse were a stick (60 reads/s)
@@ -790,7 +767,7 @@ static void VPADRead(CPUState* cpu) {
     write_float(MEM, buf + 0x14, rx);
     write_float(MEM, buf + 0x18, ry);
 
-    set_camera_follow(MEM, !s_mouse_aims);
+    rbrew_camera_follow::set(MEM, s_mouse_aims);
     vpad_update_motion(MEM, buf, rx, ry, motion_dt >= 0 ? motion_dt : motion_seconds(),
                        has_phys_gyro ? phys_gyro : nullptr, has_phys_accel ? phys_accel : nullptr, tutorial, mouse_yaw,
                        mouse_pitch);
@@ -834,21 +811,19 @@ static void VPADGetTPCalibratedPoint(CPUState* cpu) {
 // VPADControlMotor(chan, pattern, length): a bit pattern, one bit per 1/120 s
 // tick (bit 7 of the first byte first), up to 120 bits. The controller of
 // player 1 rumbles for the pattern's duration, at the strength of its share
-// of set bits. RBREW_RUMBLE=0 turns rumble off.
+// of set bits. Off unless rumble=1 in settings.ini; RBREW_RUMBLE=0/1 overrides it.
+// Off, both imports keep the blank stubs they have on main.
 static bool rumble_enabled() {
-    static const bool on = [] {
-        const char* v = std::getenv("RBREW_RUMBLE");
-        return !(v && v[0] == '0');
-    }();
-    return on;
+    const char* v = std::getenv("RBREW_RUMBLE");
+    if (v && (v[0] == '0' || v[0] == '1')) return v[0] == '1';
+    return rbrew_settings::g_rumble.load(std::memory_order_relaxed);
 }
 static void VPADControlMotor(CPUState* cpu) {
     RET = 0;
 #if defined(HAVE_SDL2)
     const uint32_t pattern = ARG1, bits = std::min<uint32_t>(ARG2 & 0xFFu, 120u);
     ControllerDevice* dev = get_controller(0);
-    if (!rumble_enabled() || !dev || !dev->gc || !bits || !rbrew_memory_accessible(MEM, pattern, (bits + 7) / 8))
-        return;
+    if (!dev || !dev->gc || !bits || !rbrew_memory_accessible(MEM, pattern, (bits + 7) / 8)) return;
     uint32_t on = 0;
     for (uint32_t i = 0; i < bits; ++i) on += (MEM[pattern + i / 8] >> (7 - i % 8)) & 1u;
     const Uint16 strength = Uint16(0xFFFFu * on / bits);
@@ -867,8 +842,10 @@ static void VPADStopMotor(CPUState* cpu) {
 void vpad_register(CPUState* cpu) {
 #define REG(name) rbrew_register_func(cpu, ADDR_##name, name)
     REG(VPADRead);
-    REG(VPADControlMotor);
-    REG(VPADStopMotor);
+    if (rumble_enabled()) {
+        REG(VPADControlMotor);
+        REG(VPADStopMotor);
+    }
     REG(VPADGetTPCalibratedPoint);
     REG(VPADSetGyroDirection);
 #undef REG

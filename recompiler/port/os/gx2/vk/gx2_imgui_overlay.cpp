@@ -1183,7 +1183,9 @@ bool menu_event(const SDL_Event& event) {
         if (!s_capture_active.load(std::memory_order_relaxed)) set_menu_open(!menu_open());
         return true; // in capture mode the render thread cancels it from the queued copy
     }
-    if (event.type == SDL_KEYDOWN && !event.key.repeat && event.key.keysym.scancode == SDL_SCANCODE_F4) {
+    // F4: the friends page, online only (offline the key stays free, as on main).
+    if (event.type == SDL_KEYDOWN && !event.key.repeat && event.key.keysym.scancode == SDL_SCANCODE_F4 &&
+        rbrew_online::config().online) {
         if (!s_capture_active.load(std::memory_order_relaxed)) {
             if (menu_open())
                 s_friends_toggle.fetch_add(1, std::memory_order_relaxed);

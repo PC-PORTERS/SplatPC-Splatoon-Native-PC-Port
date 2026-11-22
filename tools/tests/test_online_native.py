@@ -1,8 +1,8 @@
 """The game's own online code (recompiler/port/online, Windows) must give exactly what the Python tools give:
 the same integrity proof as scripts/integrity.py and the same Game/boss bytes as tools/boss/make_*.py.
     py -3.12 -m unittest tools.tests.test_online_native -v
-Needs gambit_online_tests.exe (ninja -C build/game-v288-release gambit_online_tests); GAMBIT_ONLINE_TESTS may
-point to another copy. Skipped when it is absent.
+Needs gambit_online_tests.exe, built only with -DRBREW_BUILD_TESTS=ON (ninja -C <that build> gambit_online_tests);
+GAMBIT_ONLINE_TESTS points to it when it is not in build/game-v288-release. Skipped when it is absent.
 """
 import datetime
 import http.server

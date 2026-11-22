@@ -40,5 +40,7 @@ constexpr uint32_t RBREW_ARENA_END = RBREW_SHARED_DATA_BASE + RBREW_SHARED_DATA_
 // running past the top of the space, faults instead of reaching host memory.
 // Guest addresses are byte offsets from the aperture base; there is no
 // translation stage.
-constexpr uint64_t RBREW_GUEST_APERTURE_SIZE = 0x100000000ull + 0x100000ull;
+constexpr uint64_t RBREW_GUEST_APERTURE_SIZE = 0x100000000ull + 0x10000ull;
+// With the guard on, 1 MiB past the top so a long access from bad network data still faults.
+constexpr uint64_t RBREW_GUEST_GUARDED_APERTURE_SIZE = 0x100000000ull + 0x100000ull;
 static_assert(RBREW_ARENA_END <= 0x100000000ull);

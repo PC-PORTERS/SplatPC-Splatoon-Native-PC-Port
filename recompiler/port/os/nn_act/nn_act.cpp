@@ -22,8 +22,8 @@ std::atomic<uint32_t> g_initialize_count{0};
 // Mii name: the player's pseudo (settings.ini pseudo=, F2) or "default".
 std::u16string get_active_mii_name();
 std::u16string mii_name() {
-    const std::string pseudo = rbrew_online::pseudo();
-    if (pseudo.empty()) return get_active_mii_name(); // no online pseudo: player_name / RBREW_PLAYER_NAME
+    const std::string pseudo = rbrew_online::config().online ? rbrew_online::pseudo() : std::string();
+    if (pseudo.empty()) return get_active_mii_name(); // offline or no pseudo: player_name / RBREW_PLAYER_NAME
     return rbrew_online::mii_name(pseudo, u"default");
 }
 constexpr char kCountry[] = "NN"; // Cemu: country index 0 has no table entry
@@ -261,7 +261,8 @@ void rbrew_act_reset_for_tests() {
 #define ACT_REG(fn, mangled) rbrew_register_func(cpu, ADDR_##mangled, fn)
 void nn_act_register(CPUState* cpu) {
 #ifdef ADDR_GetUuidEx__Q2_2nn3actFP7ACTUuidUc
-    rbrew_register_func(cpu, ADDR_GetUuidEx__Q2_2nn3actFP7ACTUuidUc, GetUuidEx);
+    if (rbrew_online::config().online) // offline: the blank stub, as on main
+        rbrew_register_func(cpu, ADDR_GetUuidEx__Q2_2nn3actFP7ACTUuidUc, GetUuidEx);
 #endif
     ACT_REG(Initialize, Initialize__Q2_2nn3actFv);
     ACT_REG(Finalize, Finalize__Q2_2nn3actFv);

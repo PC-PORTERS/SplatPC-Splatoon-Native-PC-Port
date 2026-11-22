@@ -355,11 +355,13 @@ endif()
 set(GAMBIT_GENERATED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../Gambit" CACHE PATH
     "Directory containing RebrewU-generated Gambit C++")
 # Unit tests, and the commands the Python cross-checks run (tools/tests/test_online_native.py).
-add_executable(gambit_online_tests ../tests/test_online_native.cpp)
-target_include_directories(gambit_online_tests PRIVATE ${RBREW_NLOHMANN_DIR} ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(gambit_online_tests PRIVATE gambit_online)
-if(MSVC)
-    target_compile_options(gambit_online_tests PRIVATE /utf-8)
+if(RBREW_BUILD_TESTS)
+    add_executable(gambit_online_tests ../tests/test_online_native.cpp)
+    target_include_directories(gambit_online_tests PRIVATE ${RBREW_NLOHMANN_DIR} ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(gambit_online_tests PRIVATE gambit_online)
+    if(MSVC)
+        target_compile_options(gambit_online_tests PRIVATE /utf-8)
+    endif()
 endif()
 
 set(RBREW_GAME_DEFAULT OFF)

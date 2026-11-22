@@ -81,8 +81,8 @@ static void update_window_title() {
     char title_buf[128];
     const char* mode = g_screen_mode == ScreenMode::TV ? "TV" : "Gamepad";
     if (s_pad_window) mode = g_screen_mode == ScreenMode::TV ? "TV (mouse aims)" : "TV (mouse on GamePad window)";
-    std::snprintf(title_buf, sizeof(title_buf), "Splatoon | %s | Vulkan [F3=overlay | Tab=%s | F4=social]%s", mode,
-                  s_pad_window ? "mouse" : "view",
+    std::snprintf(title_buf, sizeof(title_buf), "Splatoon | %s | Vulkan [F3=overlay | Tab=%s | %s]%s", mode,
+                  s_pad_window ? "mouse" : "view", gx2env::online_mode() ? "F4=social" : "F11=window",
                   rbrew_camtrace::active() ? "  >>> REC camera (F10 to stop) <<<" : "");
     SDL_SetWindowTitle(s_window, title_buf);
     if (s_pad_window)
@@ -429,8 +429,8 @@ static bool gx2_platform_open_window() {
     // swapchain are created by gx2_render_init for this window; the present
     // mode avoids a second refresh wait (see gx2_vk.cpp create_swapchain).
     // Borderless fullscreen: do not minimize on focus loss (that caused the black flash and the
-    // delay when alt-tabbing back).
-    SDL_SetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0");
+    // delay when alt-tabbing back). Only with the borderless setting on, otherwise as on main.
+    if (rbrew_settings::get().borderless) SDL_SetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0");
     SDL_DisplayMode desktop{};
     if (SDL_GetDesktopDisplayMode(0, &desktop) != 0 || desktop.w <= 0 || desktop.h <= 0) return false;
     s_window = SDL_CreateWindow(
@@ -1205,7 +1205,7 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
         while (SDL_PollEvent(&ev)) {
             const Uint32 from = event_window(ev);
             // With two windows SDL sends no SDL_QUIT for the main one: its close ends the game.
-            if (ev.type == SDL_WINDOWEVENT && ev.window.event == SDL_WINDOWEVENT_CLOSE &&
+            if (s_pad_window && ev.type == SDL_WINDOWEVENT && ev.window.event == SDL_WINDOWEVENT_CLOSE &&
                 from == SDL_GetWindowID(s_window))
                 gx2_close_requested();
             // The GamePad window: closing it turns the option off; clicks touch the GamePad screen
@@ -1278,7 +1278,7 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
                 } else if (ev.key.keysym.scancode == SDL_SCANCODE_F8) {
                     SplatoonDiagnostics::ToggleManualRecord();
                     controller_log("F8 pressed: Manual recording toggled\n");
-                } else if (ev.key.keysym.scancode == SDL_SCANCODE_F10) {
+                } else if (ev.key.keysym.scancode == SDL_SCANCODE_F10 && rbrew_camtrace::enabled()) {
                     rbrew_camtrace::toggle(); // camera trace: Diagnostics\camtrace-*.csv
                     controller_log("F10 pressed: camera trace %s\n", rbrew_camtrace::active() ? "on" : "off");
                 } else if (ev.key.keysym.scancode == SDL_SCANCODE_F9) {

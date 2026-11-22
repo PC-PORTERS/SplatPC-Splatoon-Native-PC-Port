@@ -13,6 +13,7 @@
 #include <charconv>
 #include <stdexcept>
 #include <limits>
+#include <mutex>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -252,20 +253,45 @@ inline bool is_session_offline() {
     return runtime_offline_flag().load(std::memory_order_relaxed);
 }
 
-// Current online configuration (read on each call; settings change rarely).
+// Current online configuration.
 struct Config {
     bool online = false;
     std::string host;
     uint16_t port = 0;
 };
 inline const Identity& identity();
-inline Config config() {
+// Reads the environment and settings.ini (uncached; config() keeps the result until the settings change).
+inline Config read_config() {
     Config c;
-    if (is_session_offline()) return c;
+    // RBREW_OFFLINE=1: offline whatever settings.ini or RBREW_ONLINE_SERVER names.
+    if (const char* off = std::getenv("RBREW_OFFLINE"); off && off[0] == '1') return c;
     const std::string server = rbrew_online_cfg::resolved("RBREW_ONLINE_SERVER", "online_server", "");
     c.online = !server.empty() && parse_server(server, c.host, c.port);
     if (c.online && !valid(identity())) c.online = false; // failed persistence stays offline, with no invented account
     return c;
+}
+inline std::atomic<unsigned>& config_generation() {
+    static std::atomic<unsigned> generation{0};
+    return generation;
+}
+// The login screen calls this after writing online_server= and friends to settings.ini.
+inline void config_changed() {
+    config_generation().fetch_add(1, std::memory_order_release);
+}
+// Called from network and render code many times a frame: settings.ini is read again only after
+// config_changed(). "Play offline" (set_session_offline) wins over the file.
+inline Config config() {
+    if (is_session_offline()) return {};
+    static std::mutex mutex;
+    static Config cached;
+    static unsigned seen = ~0u;
+    const unsigned generation = config_generation().load(std::memory_order_acquire);
+    std::lock_guard lock(mutex);
+    if (seen != generation) {
+        cached = read_config();
+        seen = generation;
+    }
+    return cached;
 }
 inline std::string pseudo() {
     return rbrew_online_cfg::resolved("RBREW_PSEUDO", "pseudo", "");

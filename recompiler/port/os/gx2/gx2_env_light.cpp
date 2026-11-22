@@ -1028,7 +1028,6 @@ void frame(uint8_t* mem, uint64_t swap_count) {
     camera.swap_count = swap_count;
     camera.world_frames = world_frames;
     camera.camera_scene = camera_scene || rbrew_camtrace::active(); // F10 trace: every scene (matches too)
-    camera.camera_scene = camera_scene;
     camera.shaders_on = on;
     camera.world = world;
     camera.plaza = plaza;

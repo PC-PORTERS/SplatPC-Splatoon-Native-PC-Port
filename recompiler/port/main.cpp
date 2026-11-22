@@ -488,7 +488,7 @@ int main(int argc, char** argv) {
     const char* guard_env = getenv("RBREW_GUEST_GUARD");
     g_guest_guard = guard_env && guard_env[0] == '1';
     RBREW_LOG_INFO("MEM", "Guest address guard: %s\n", g_guest_guard ? "on" : "off");
-    const size_t arena_sz = size_t(RBREW_GUEST_APERTURE_SIZE);
+    const size_t arena_sz = size_t(g_guest_guard ? RBREW_GUEST_GUARDED_APERTURE_SIZE : RBREW_GUEST_APERTURE_SIZE);
     uint8_t* arena = alloc_arena(arena_sz);
     if (!arena) {
         RBREW_LOG_ERROR("gambit", "Failed to allocate %zu MB guest arena\n", arena_sz >> 20);
@@ -569,7 +569,11 @@ int main(int argc, char** argv) {
         // These match the selected local reference profile, independently of
         // title region. Neither the provider nor guest code depends on Cemu.
         RbrewUcSystemProfile uc_profile{1, 0};
-        if (const std::string value = rbrew_online_cfg::resolved("RBREW_CONSOLE_LANGUAGE", "language", "1");
+        // language= of settings.ini (written by the online login) counts in online mode only.
+        const char* language_env = getenv("RBREW_CONSOLE_LANGUAGE");
+        if (const std::string value = rbrew_online::config().online
+                                          ? rbrew_online_cfg::resolved("RBREW_CONSOLE_LANGUAGE", "language", "1")
+                                          : std::string(language_env ? language_env : "");
             !value.empty())
             uc_profile.language = rbrew_parse_native_uc_scalar(value.c_str(), 11);
         if (const char* value = getenv("RBREW_COUNTRY_REGISTRATION"); value && *value)

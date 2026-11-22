@@ -1,5 +1,7 @@
 #include "port_settings.h"
 
+#include "online_identity.h"
+
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
@@ -109,6 +111,9 @@ void publish(const Values& v) {
     g_gamepad_window.store(v.gamepad_window, std::memory_order_relaxed);
     g_phone_gamepad.store(v.phone_gamepad, std::memory_order_relaxed);
     g_phone_port.store(v.phone_port, std::memory_order_relaxed);
+    g_gamepad_audio_pc.store(v.gamepad_audio_pc, std::memory_order_relaxed);
+    g_mouse_pad_aim.store(v.mouse_pad_aim, std::memory_order_relaxed);
+    g_rumble.store(v.rumble, std::memory_order_relaxed);
     g_gyro.store(v.gyro, std::memory_order_relaxed);
     g_gyro_invert_pitch.store(v.gyro_invert_pitch, std::memory_order_relaxed);
     g_gyro_scale.store(v.gyro_sensitivity / 100.0f, std::memory_order_relaxed);
@@ -297,12 +302,14 @@ void write(const Values& v) {
         << "plaza_60fps=" << v.plaza_60fps << "\n"
         << "frame_rate=" << v.frame_rate << "\n"
         << "gsync=" << v.gsync << "\n"
-        << "fullscreen=" << v.fullscreen << "\n"
-        << "borderless=" << v.borderless << "\n"
-        << "gamepad_window=" << v.gamepad_window << "\n"
-        << "phone_gamepad=" << v.phone_gamepad << "\n"
-        << "phone_port=" << v.phone_port << "\n"
-        << "fps_overlay=" << v.fps_overlay << "\n"
+        << "fullscreen=" << v.fullscreen << "\n";
+    // Window and phone options appear only once set, so a default file stays as on main.
+    const Values defaults;
+    if (v.borderless != defaults.borderless) out << "borderless=" << v.borderless << "\n";
+    if (v.gamepad_window != defaults.gamepad_window) out << "gamepad_window=" << v.gamepad_window << "\n";
+    if (v.phone_gamepad != defaults.phone_gamepad) out << "phone_gamepad=" << v.phone_gamepad << "\n";
+    if (v.phone_port != defaults.phone_port) out << "phone_port=" << v.phone_port << "\n";
+    out << "fps_overlay=" << v.fps_overlay << "\n"
         << "simple_overlay=" << v.simple_overlay << "\n"
         << "confirm_quit=" << v.confirm_quit << "\n"
         << "gyro=" << v.gyro << "\n"
@@ -360,6 +367,9 @@ void write(const Values& v) {
 void load() {
     std::lock_guard lock(s_lock);
     Values v;
+    // Online play keeps the 0.1.5 comfort options unless the file sets them. The menu never writes them
+    // (write() keeps them as foreign lines), so an online session cannot turn them on for offline play.
+    v.gamepad_audio_pc = v.mouse_pad_aim = v.rumble = rbrew_online::config().online;
     bool saw_frame_rate = false;
     int bindings_version = 1;
     std::ifstream in(file_path());
@@ -390,6 +400,12 @@ void load() {
             v.phone_gamepad = number != 0;
         else if (key == "phone_port")
             v.phone_port = (number >= 1024 && number <= 65535) ? number : 8771;
+        else if (key == "gamepad_audio_pc")
+            v.gamepad_audio_pc = number != 0;
+        else if (key == "mouse_pad_aim")
+            v.mouse_pad_aim = number != 0;
+        else if (key == "rumble")
+            v.rumble = number != 0;
         else if (key == "fps_overlay")
             v.fps_overlay = number != 0;
         else if (key == "simple_overlay")

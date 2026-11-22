@@ -28,6 +28,23 @@ int main() {
               "identity is created once, then stable");
         std::filesystem::remove(file);
 
+        // RBREW_OFFLINE wins over any server (returns before the identity file is touched).
+#if defined(_WIN32)
+        _putenv_s("RBREW_ONLINE_SERVER", "127.0.0.1:60000");
+        _putenv_s("RBREW_OFFLINE", "1");
+#else
+        setenv("RBREW_ONLINE_SERVER", "127.0.0.1:60000", 1);
+        setenv("RBREW_OFFLINE", "1", 1);
+#endif
+        check(!rbrew_online::read_config().online, "RBREW_OFFLINE=1 keeps the game offline");
+#if defined(_WIN32)
+        _putenv_s("RBREW_ONLINE_SERVER", "");
+        _putenv_s("RBREW_OFFLINE", "");
+#else
+        unsetenv("RBREW_ONLINE_SERVER");
+        unsetenv("RBREW_OFFLINE");
+#endif
+
         std::string host;
         uint16_t port = 0;
         check(rbrew_online::parse_server("127.0.0.1:60000", host, port) && host == "127.0.0.1" && port == 60000,

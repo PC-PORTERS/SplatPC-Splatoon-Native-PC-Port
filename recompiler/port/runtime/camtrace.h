@@ -91,6 +91,15 @@ inline void stop_locked(State& s) {
     s.changed.store(-1, std::memory_order_relaxed);
 }
 
+// RBREW_CAMTRACE=1 (diagnostic, off by default) arms the F10 key.
+inline bool enabled() {
+    static const bool on = [] {
+        const char* v = std::getenv("RBREW_CAMTRACE");
+        return v && v[0] == '1';
+    }();
+    return on;
+}
+
 // F10 (window thread): start or stop.
 inline void toggle() {
     State& s = state();

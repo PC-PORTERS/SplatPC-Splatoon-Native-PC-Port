@@ -353,6 +353,7 @@ void start_interactive_login(const LoginFormValues& raw_form) {
         if (!form.nncs1.empty()) updates["online_nncs1"] = form.nncs1;
         if (!form.nncs2.empty()) updates["online_nncs2"] = form.nncs2;
         rbrew_online_cfg::update_settings(updates, settings_file);
+        rbrew_online::config_changed();
 
         rbrew_online::save_session_token(rbrew_online::SessionToken{token, form.server, form.register_url, id.pid,
                                                                     form.pseudo, int64_t(std::time(nullptr))},
