@@ -59,6 +59,11 @@ enum class FileResult { Unchanged, Updated, Failed };
 // The entire original payload is preserved apart from the five setting bytes
 // and the dependent four-byte checksum. No new/blank save is manufactured.
 inline FileResult apply_save_file(const std::filesystem::path& path) noexcept {
+#if RBREW_GAME_REVISION == 288
+    // Save-layout and live-control overrides are only validated for the base.
+    (void)path;
+    return FileResult::Unchanged;
+#endif
     try {
         std::error_code error;
         if (!std::filesystem::exists(path, error)) return error ? FileResult::Failed : FileResult::Unchanged;
@@ -105,11 +110,21 @@ inline FileResult apply_save_file(const std::filesystem::path& path) noexcept {
 // through *(0x101C0F28) + 0x18. The game's enum names identify kind 6 as
 // Tutorial, kind 5 as TutForShow and kind 3 as Plaza (101C1F48).
 // Return unknown while scene initialization/teardown is in progress.
+// Revision 288: the same three getters sit at 028C67EC/028C67FC/028C680C
+// (+0x15C/+0x164/+0x168 of *(0x101E6770)), and the same lookup at the caller
+// of 028C67EC that bounds the ID by 0x40 reads *(0x101DCED0) + 0x18
+// (matched instruction for instruction in the generated code, 2026-10-26).
+// Read-only: the live-control overrides below stay disabled for 288.
 inline int active_scene_type(uint8_t* mem, int* id = nullptr) {
+#if RBREW_GAME_REVISION == 288
+    constexpr uint32_t kSceneManager = 0x101E6770u, kSceneTypes = 0x101DCED0u;
+#else
+    constexpr uint32_t kSceneManager = 0x101C9578u, kSceneTypes = 0x101C0F28u;
+#endif
     if (id) *id = -1;
     if (!mem) return -1;
-    const uint32_t scene_manager = rbrew_read32(mem, 0x101C9578u);
-    const uint32_t scene_types = rbrew_read32(mem, 0x101C0F28u);
+    const uint32_t scene_manager = rbrew_read32(mem, kSceneManager);
+    const uint32_t scene_types = rbrew_read32(mem, kSceneTypes);
     if (!scene_manager || !scene_types || uint64_t(scene_manager) + 0x160 > WIIU_MEM_SIZE ||
         uint64_t(scene_types) + 0x118 > WIIU_MEM_SIZE || !rbrew_memory_accessible(mem, scene_manager + 0x15C, 4) ||
         !rbrew_memory_accessible(mem, scene_types + 0x18, 0x100))
@@ -123,6 +138,12 @@ inline int active_scene_type(uint8_t* mem, int* id = nullptr) {
 }
 
 inline void apply_live(uint8_t* mem) {
+#if RBREW_GAME_REVISION == 288
+    // The save and control manager addresses below are base ones: on 288 they
+    // point at other data, and patch_image would write into it every 100 ms.
+    (void)mem;
+    return;
+#endif
     if (!mem) return;
     // Original 020355C0 copies the eight-byte GamePad option into +0x17C.
     // Change only its float and gyro byte, preserving both reverse settings.
