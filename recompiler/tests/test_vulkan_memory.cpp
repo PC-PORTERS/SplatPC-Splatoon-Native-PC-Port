@@ -2,8 +2,10 @@
 // No guest code, game files, saves or shader caches are used.
 #include "os/gx2/vk/gx2_vk_memory.h"
 #include "rebrewu/logger.hpp"
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <optional>
 #include <stdexcept>
 #include <string_view>
 #include <vector>
@@ -182,16 +184,7 @@ void allocator() {
             "device loss was retried as memory pressure");
     forced_error = VK_SUCCESS;
 
-    // A failed pool block must still try a fitting allocation in the fast heap.
-    requirements.size = 4096;
-    maximum_request = 4096;
-    attempted_types.clear();
-    a = allocate(requirements, MemoryUse::Upload, true);
     const auto upload_types = memory_detail::memory_types(memory, ~0u, MemoryUse::Upload);
-    require(bool(a) && a.block < 0 && a.memory_type == upload_types.indices[0], "exact-size recovery failed");
-    require(attempted_types.size() == 2, "expected pool failure then exact-size success");
-    free_now(a);
-    maximum_request = VK_WHOLE_SIZE;
     map_failures = 1;
     requirements.size = 20ull << 20;
     attempted_types.clear();
@@ -226,8 +219,112 @@ void allocator() {
     std::puts("allocator: placement, OOM recovery, map recovery, fatal errors and cache synchronization passed");
 }
 
+// A real driver can legitimately have no memory left in a small host-visible heap (other
+// processes). Probe it with the driver's own entry point so such a type is skipped, not blamed.
+bool driver_has_room(PFN_vkAllocateMemory driver_allocate, uint32_t type, VkDeviceSize size) {
+    VkMemoryAllocateInfo info{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    info.allocationSize = size;
+    info.memoryTypeIndex = type;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    if (driver_allocate(device(), &info, nullptr, &memory) != VK_SUCCESS) return false;
+    vkFreeMemory(device(), memory, nullptr);
+    return true;
+}
+
+// Pool blocks refused by a full heap are retried at half size down to 4 MiB, so the number of
+// vkAllocateMemory calls spent on a type before the resource is placed is exact.
+size_t refused_blocks(const VkPhysicalDeviceMemoryProperties& memory, uint32_t type, VkDeviceSize resource) {
+    size_t count = 0;
+    const auto heap = memory.memoryHeaps[memory.memoryTypes[type].heapIndex].size;
+    for (VkDeviceSize block = std::min<VkDeviceSize>(64ull << 20, heap); resource <= block && block >= (4ull << 20);
+         block /= 2)
+        ++count;
+    return count;
+}
+
+void pool_block_recovery() {
+    const auto set_up = [](auto&& body) {
+        Device device_guard; // fresh per-type block limits for each case
+        Hooks hooks;
+        body(memory_properties());
+        maximum_request = VK_WHOLE_SIZE;
+    };
+    // A resource of 4 MiB or more whose pool block was refused is placed at its exact size in the
+    // fast heap: halved block attempts, then one exact-size success on the same type.
+    set_up([](const VkPhysicalDeviceMemoryProperties& memory) {
+        const auto types = memory_detail::memory_types(memory, ~0u, MemoryUse::Upload);
+        const auto before = allocated_bytes();
+        VkMemoryRequirements requirements{5ull << 20, 256, ~0u};
+        if (!driver_has_room(original_allocate, types.indices[0], requirements.size)) {
+            std::printf("exact-size recovery skipped: type %u has no free memory on this machine\n", types.indices[0]);
+            return;
+        }
+        maximum_request = requirements.size;
+        attempted_types.clear();
+        auto a = allocate(requirements, MemoryUse::Upload, true);
+        require(bool(a), "exact-size recovery found no memory");
+        require(a.block < 0 && a.memory_type == types.indices[0], "exact-size recovery left the fast heap");
+        require(attempted_types.size() == refused_blocks(memory, types.indices[0], requirements.size) + 1,
+                "expected halved pool blocks then one exact-size success");
+        for (const auto type : attempted_types) require(type == types.indices[0], "large resource left the fast heap");
+        free_now(a);
+        require(allocated_bytes() == before, "exact-size recovery leaked");
+    });
+    // A small resource gives up on a heap that cannot hold a 4 MiB block and is pooled in the next
+    // suitable type; the refusal is remembered, so the next one costs a single allocation.
+    set_up([](const VkPhysicalDeviceMemoryProperties& memory) {
+        const auto types = memory_detail::memory_types(memory, ~0u, MemoryUse::Upload);
+        const auto before = allocated_bytes();
+        VkMemoryRequirements requirements{4096, 256, ~0u};
+        maximum_request = requirements.size;
+        size_t expected = 1;
+        for (uint32_t i = 0; i < types.count; ++i)
+            expected += refused_blocks(memory, types.indices[i], requirements.size);
+        attempted_types.clear();
+        auto first = allocate(requirements, MemoryUse::Upload, true);
+        require(bool(first) && first.block < 0 && first.memory_type == types.indices[types.count - 1],
+                "small resource did not reach the last suitable type");
+        require(attempted_types.size() == expected, "expected halved blocks on every type then one exact-size success");
+        attempted_types.clear();
+        auto second = allocate(requirements, MemoryUse::Upload, true);
+        require(bool(second) && second.memory_type == first.memory_type, "second small resource moved type");
+        require(attempted_types.size() == 1, "refused block size was not remembered");
+        free_now(first);
+        free_now(second);
+        require(allocated_bytes() == before, "small resource recovery leaked");
+    });
+    // A refusal that was only transient is forgotten after kBlockRetryMisses pool misses: the next
+    // small resource gets a pool block in the fast type again.
+    set_up([](const VkPhysicalDeviceMemoryProperties& memory) {
+        // Restrict the resource to the first upload type the driver can really fill with a block.
+        const auto types = memory_detail::memory_types(memory, ~0u, MemoryUse::Upload);
+        uint32_t fast = ~0u;
+        for (uint32_t i = 0; i < types.count && fast == ~0u; ++i)
+            if (driver_has_room(original_allocate, types.indices[i], 64ull << 20)) fast = types.indices[i];
+        if (fast == ~0u) {
+            std::puts("refusal expiry skipped: no upload type has free memory on this machine");
+            return;
+        }
+        VkMemoryRequirements requirements{4096, 256, 1u << fast};
+        maximum_request = requirements.size;
+        auto a = allocate(requirements, MemoryUse::Upload, true); // remembers the refusal
+        require(bool(a), "small resource found no memory");
+        free_now(a);
+        maximum_request = VK_WHOLE_SIZE; // the heap has room again
+        for (uint32_t miss = 1; miss < memory_detail::kBlockRetryMisses; ++miss) {
+            a = allocate(requirements, MemoryUse::Upload, true);
+            require(bool(a) && a.block < 0, "refused block size was forgotten too early");
+            free_now(a);
+        }
+        a = allocate(requirements, MemoryUse::Upload, true);
+        require(bool(a) && a.block >= 0 && a.memory_type == fast, "transient refusal was never forgotten");
+        free_now(a);
+    });
+    std::puts("pool blocks: halving, next-type pooling, refusal memory and expiry passed");
+}
+
 void transfers() {
-    Device device_guard;
+    std::optional<Device> device_guard(std::in_place);
     // Exercise every driver-supported mapped type, including non-coherent memory
     // when present, instead of only the default preferred allocation.
     VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
@@ -241,6 +338,11 @@ void transfers() {
         vkGetBufferMemoryRequirements(device(), source, &requirements);
         requirements.memoryTypeBits &= 1u << type;
         if (!memory_detail::memory_types(memory, requirements.memoryTypeBits, MemoryUse::Upload).count) {
+            vkDestroyBuffer(device(), source, nullptr);
+            continue;
+        }
+        if (!driver_has_room(vkAllocateMemory, type, requirements.size)) {
+            std::printf("mapped type %u skipped: no free memory on this machine\n", type);
             vkDestroyBuffer(device(), source, nullptr);
             continue;
         }
@@ -325,6 +427,10 @@ void transfers() {
         std::puts("optimal image in system memory: injected local OOM, binding, GPU clear and exact readback passed");
     } else
         std::puts("optimal image: driver exposes local/UMA memory only for this resource");
+    // The allocator remembers a refused block size per memory type, so the local refusals injected
+    // above would send this image to system memory. Start from a fresh device to check real placement.
+    device_guard.reset();
+    device_guard.emplace();
     Image image;
     require(create_image(image, desc), "optimal image allocation failed");
     require(image.memory.properties & local, "system memory was forced while local memory was available");
@@ -357,9 +463,10 @@ int main(int argc, char** argv) {
         const std::string_view mode = argv[1];
         if (mode == "policy")
             policy();
-        else if (mode == "allocator")
+        else if (mode == "allocator") {
             allocator();
-        else if (mode == "transfers")
+            pool_block_recovery();
+        } else if (mode == "transfers")
             transfers();
         else
             throw std::runtime_error("unknown memory test");

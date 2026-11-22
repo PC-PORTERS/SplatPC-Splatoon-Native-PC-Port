@@ -40,6 +40,10 @@ inline Types memory_types(const VkPhysicalDeviceMemoryProperties& memory, uint32
     return result;
 }
 
+// A refused pool block size is remembered per memory type; after this many pool misses on that
+// type it is forgotten, so a refusal that was only transient cannot last.
+constexpr uint32_t kBlockRetryMisses = 512;
+
 inline VkDeviceSize align_up(VkDeviceSize value, VkDeviceSize alignment) {
     return (value + alignment - 1) / alignment * alignment;
 }
