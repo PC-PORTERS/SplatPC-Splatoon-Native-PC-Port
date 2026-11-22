@@ -14,6 +14,8 @@
 #include "gx2_weather.h"
 #include "gx2_texture_pack.h"
 #include "vk/gx2_vk_capture.h"
+#include "vk/gx2_net_capture.h"
+#include "../../runtime/coop_views.h"
 #include "gx2_detile.h"
 #include "gx2_endian.h"
 #include "gx2_surface.h"
@@ -48,6 +50,8 @@ size_t gx2r_vertex_cache_entries(); // gx2_render_vk_draw.cpp
 size_t gx2r_native_query_count();
 std::pair<uint64_t, uint64_t> gx2_dl_recording_counts(); // gx2_display_list.cpp
 std::array<uint64_t, 9> gx2_dl_maintenance_counts();
+// The second screen's scan source of the last copy (co-op: player 2's view post-processing).
+uint32_t g_scan_drc_source_id = 0;
 
 namespace gx2r {
 State& state() {
@@ -2835,7 +2839,10 @@ void gx2_render_copy_to_scan(uint32_t cb_addr, uint32_t scan_target, uint8_t* me
     }
     ColorTarget& scan = it->second;
     const bool gamepad = scan_target != 0 && scan_target != 1;
-    if (!gamepad) S.scan_tv_source_id = scan.id;
+    if (!gamepad)
+        S.scan_tv_source_id = scan.id;
+    else
+        g_scan_drc_source_id = scan.id;
     gx2vk::Image* image = &scan.image;
     if (S.scan_formats[gamepad] & 0x400u) {
         // GPU blits with FRAMEBUFFER_SRGB into an SRGB8_ALPHA8 texture: the
@@ -3224,6 +3231,10 @@ void gx2_render_present(void* sdl_window, bool gamepad_mode) {
     static const bool dump_gamepad = std::getenv("RBREW_FRAME_DUMP_GAMEPAD") != nullptr;
     if (dump_gamepad && S.scan_image[1] && *S.scan_image[1] && S.scan_w[1] && S.scan_h[1])
         dump_frame(*S.scan_image[1], S.scan_w[1], S.scan_h[1], "gamepad");
+    // The guest watches the TV, or the second screen (its own view) in co-op.
+    const unsigned stream = rbrew_coop::two_views() ? 1 : 0;
+    if (S.scan_image[stream] && *S.scan_image[stream])
+        gx2_net_capture(*S.scan_image[stream], S.scan_w[stream], S.scan_h[stream]);
     // 120 FPS (gx2_frame_interp.h): this frame is held and presented after
     // the in-between frame the render thread draws next.
     if (gx2vk::has_surface() && gx2interp::frame_complete(index)) return;

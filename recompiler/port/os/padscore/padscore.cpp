@@ -2,7 +2,9 @@
 // KPADInitEx, KPADReadEx, WPADProbe, etc. for Local Multiplayer / Battle Dojo
 
 #include "../os_common.h"
-#include "../vpad/game_controllers.h"
+#include "pro_pad.h"
+#include "../../runtime/native_control_defaults.h"
+#include "../../runtime/coop_views.h"
 #include <algorithm>
 
 static void KPADInit(CPUState* cpu) {
@@ -15,21 +17,39 @@ static void KPADShutdown(CPUState* cpu) {
     (void)cpu;
 }
 
+// Player 2: the online guest while one is connected, else the second local controller.
+// The plaza and Octo Valley (scene kinds 2 and 3) without a second view have no
+// second player, but the game still reads this channel there: the guest's stick
+// would steer the host's Inkling.
+static bool read_player2(uint8_t* mem, rbrew_net::ProPad& pad) {
+    const int kind = rbrew_control_defaults::active_scene_type(mem);
+    const bool hub = (kind == 2 || kind == 3) && !rbrew_coop::two_views();
+    if (rbrew_net::host_remote_pad(pad)) {
+        if (!hub) return true;
+        pad = rbrew_net::ProPad{};
+        return false;
+    }
+#if defined(HAVE_SDL2)
+    ControllerDevice* dev = get_controller(1);
+    if (dev && dev->gc && SDL_GameControllerGetAttached(dev->gc)) {
+        pad = pro_pad_from_controller(dev->gc);
+        return true;
+    }
+#endif
+    return false;
+}
+
 // WPADProbe(chan, type*) → 0 (connected) or -1 (not connected)
 static void WPADProbe(CPUState* cpu) {
     uint32_t chan = ARG0;
     uint32_t type_ptr = ARG1;
-    if (chan == 0) {
-#if defined(HAVE_SDL2)
-        ControllerDevice* dev = get_controller(1); // Player 2 Pro Controller
-        if (dev && dev->gc && SDL_GameControllerGetAttached(dev->gc)) {
-            if (type_ptr && rbrew_memory_accessible(MEM, type_ptr, 4)) {
-                rbrew_write32(MEM, type_ptr, 31u); // WPAD_EXT_PRO_CONTROLLER
-            }
-            RET = 0; // WPAD_ERR_NONE (connected!)
-            return;
+    rbrew_net::ProPad pad;
+    if (chan == 0 && read_player2(MEM, pad)) {
+        if (type_ptr && rbrew_memory_accessible(MEM, type_ptr, 4)) {
+            rbrew_write32(MEM, type_ptr, 31u); // WPAD_EXT_PRO_CONTROLLER
         }
-#endif
+        RET = 0; // WPAD_ERR_NONE (connected!)
+        return;
     }
     if (type_ptr && rbrew_memory_accessible(MEM, type_ptr, 4)) {
         rbrew_write32(MEM, type_ptr, 0u);
@@ -38,12 +58,20 @@ static void WPADProbe(CPUState* cpu) {
 }
 
 // KPADReadEx(chan, buffer, count) → samplesRead
+// KPADError, written through KPADReadEx's fourth argument.
+constexpr int32_t kKpadOk = 0, kKpadInvalidController = -2;
+
 static void KPADReadEx(CPUState* cpu) {
     uint32_t chan = ARG0;
     uint32_t buf = ARG1;
     uint32_t count = ARG2;
+    const uint32_t error_ptr = ARG3;
+    const auto set_error = [&](int32_t error) {
+        if (error_ptr && rbrew_memory_accessible(MEM, error_ptr, 4)) rbrew_write32(MEM, error_ptr, uint32_t(error));
+    };
 
     if (!buf || count == 0 || !rbrew_memory_accessible(MEM, buf, 0xF0)) {
+        set_error(kKpadInvalidController);
         RET = 0;
         return;
     }
@@ -51,57 +79,16 @@ static void KPADReadEx(CPUState* cpu) {
     if (chan != 0) {
         // Battle Dojo uses WPAD / KPAD channel 0 for Player 2
         for (uint32_t i = 0; i < 0xF0; i += 4) rbrew_write32(MEM, buf + i, 0u);
+        set_error(kKpadInvalidController);
         RET = 0;
         return;
     }
 
-#if defined(HAVE_SDL2)
-    ControllerDevice* dev = get_controller(1); // Player 2 Pro Controller
-    if (dev && dev->gc && SDL_GameControllerGetAttached(dev->gc)) {
-        SDL_GameController* gc = dev->gc;
-        auto btn = [&](SDL_GameControllerButton b) { return SDL_GameControllerGetButton(gc, b) != 0; };
-
+    rbrew_net::ProPad pad;
+    if (read_player2(MEM, pad)) {
         for (uint32_t i = 0; i < 0xF0; i += 4) rbrew_write32(MEM, buf + i, 0u);
-
-        uint32_t pro_hold = 0;
-        if (btn(SDL_CONTROLLER_BUTTON_DPAD_UP)) pro_hold |= 0x00000001u;       // UP
-        if (btn(SDL_CONTROLLER_BUTTON_DPAD_LEFT)) pro_hold |= 0x00000002u;     // LEFT
-        if (btn(SDL_CONTROLLER_BUTTON_DPAD_DOWN)) pro_hold |= 0x00004000u;     // DOWN
-        if (btn(SDL_CONTROLLER_BUTTON_DPAD_RIGHT)) pro_hold |= 0x00008000u;    // RIGHT
-        if (btn(SDL_CONTROLLER_BUTTON_Y)) pro_hold |= 0x00000008u;             // X
-        if (btn(SDL_CONTROLLER_BUTTON_B)) pro_hold |= 0x00000010u;             // A
-        if (btn(SDL_CONTROLLER_BUTTON_X)) pro_hold |= 0x00000020u;             // Y
-        if (btn(SDL_CONTROLLER_BUTTON_A)) pro_hold |= 0x00000040u;             // B
-        if (btn(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER)) pro_hold |= 0x00000200u; // R
-        if (btn(SDL_CONTROLLER_BUTTON_START)) pro_hold |= 0x00000400u;         // PLUS
-        if (btn(SDL_CONTROLLER_BUTTON_GUIDE)) pro_hold |= 0x00000800u;         // HOME
-        if (btn(SDL_CONTROLLER_BUTTON_BACK)) pro_hold |= 0x00001000u;          // MINUS
-        if (btn(SDL_CONTROLLER_BUTTON_LEFTSHOULDER)) pro_hold |= 0x00002000u;  // L
-        if (btn(SDL_CONTROLLER_BUTTON_RIGHTSTICK)) pro_hold |= 0x01000000u;    // STICK_R
-        if (btn(SDL_CONTROLLER_BUTTON_LEFTSTICK)) pro_hold |= 0x02000000u;     // STICK_L
-
-        int16_t lt_raw = SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_TRIGGERLEFT);
-        int16_t rt_raw = SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
-        if (lt_raw > 16384) pro_hold |= 0x00000080u; // ZL
-        if (rt_raw > 16384) pro_hold |= 0x00000004u; // ZR
-
-        float lx = SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_LEFTX) / 32767.0f;
-        float ly = -SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_LEFTY) / 32767.0f;
-        float rx = SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_RIGHTX) / 32767.0f;
-        float ry = -SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_RIGHTY) / 32767.0f;
-        shape_stick(lx, ly);
-        shape_stick(rx, ry);
-
-        // Stick direction emulation
-        constexpr float kThreshold = 0.5f;
-        if (rx <= -kThreshold) pro_hold |= 0x00020000u;
-        if (rx >= kThreshold) pro_hold |= 0x00080000u;
-        if (ry >= kThreshold) pro_hold |= 0x00010000u;
-        if (ry <= -kThreshold) pro_hold |= 0x00040000u;
-        if (lx <= -kThreshold) pro_hold |= 0x00200000u;
-        if (lx >= kThreshold) pro_hold |= 0x00800000u;
-        if (ly >= kThreshold) pro_hold |= 0x00100000u;
-        if (ly <= -kThreshold) pro_hold |= 0x00400000u;
+        const uint32_t pro_hold = pro_pad_hold_with_sticks(pad);
+        const float lx = pad.lx, ly = pad.ly, rx = pad.rx, ry = pad.ry;
 
         static uint32_t s_p2_prev_hold = 0;
         uint32_t pro_trigger = pro_hold & ~s_p2_prev_hold;
@@ -117,7 +104,7 @@ static void KPADReadEx(CPUState* cpu) {
         rbrew_write8(MEM, buf + 0x5C, 31u); // extensionType = WPAD_EXT_PRO_CONTROLLER
         rbrew_write8(MEM, buf + 0x5D, 0u);  // error = 0
         rbrew_write8(MEM, buf + 0x5E, 1u);  // posValid = 1
-        rbrew_write8(MEM, buf + 0x5F, 0u);  // format = 0
+        rbrew_write8(MEM, buf + 0x5F, 22u); // format = WPAD_FMT_PRO_CONTROLLER
 
         // Pro controller structure at offset +0x60
         rbrew_write32(MEM, buf + 0x60, pro_hold);
@@ -133,13 +120,14 @@ static void KPADReadEx(CPUState* cpu) {
         rbrew_write32(MEM, buf + 0x7C, 0u);
         rbrew_write32(MEM, buf + 0x80, 0u);
 
+        set_error(kKpadOk);
         RET = 1; // 1 sample read
         return;
     }
-#endif
 
     // Not connected: clear first entry
     for (uint32_t i = 0; i < 0xF0; i += 4) rbrew_write32(MEM, buf + i, 0u);
+    set_error(kKpadInvalidController);
     RET = 0;
 }
 

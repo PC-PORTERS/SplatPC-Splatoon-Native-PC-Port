@@ -1,6 +1,7 @@
 #include "port_settings.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -112,6 +113,7 @@ void publish(const Values& v) {
     g_mouse_scale.store(v.mouse_sensitivity / 100.0f, std::memory_order_relaxed);
     g_volume.store(v.volume / 100.0f, std::memory_order_relaxed);
     g_confirm_quit.store(v.confirm_quit, std::memory_order_relaxed);
+    g_coop_story.store(v.coop_story, std::memory_order_relaxed);
     for (int i = 0; i < kActionCount; ++i) {
         g_keys[i].store(v.keys[i], std::memory_order_relaxed);
         g_pad[i].store(v.pad[i], std::memory_order_relaxed);
@@ -144,6 +146,11 @@ void normalize(Values& v) {
     v.highlight_softness = std::clamp(v.highlight_softness, 0, 100);
     v.sharpness = std::clamp(v.sharpness, 0, 200);
     v.clarity = std::clamp(v.clarity, 0, 200);
+    v.net_port = std::clamp(v.net_port, 1024, 65535);
+    v.net_kbps = std::clamp(v.net_kbps, 1000, 50000);
+    std::erase_if(v.net_join,
+                  [](char c) { return !std::isalnum(static_cast<unsigned char>(c)) && !std::strchr(".-:", c); });
+    if (v.net_join.size() > 253) v.net_join.clear();
     if (v.shader_quality != kShadersOff) {
         v.frame_rate = 60;
         v.plaza_60fps = true;
@@ -265,6 +272,11 @@ void write(const Values& v) {
         << "film_look=" << v.film_look << "\n"
         << "camera_motion=" << v.camera_motion << "\n"
         << "cinema_mode=" << v.cinema_mode << "\n"
+        << "net_port=" << v.net_port << "\n"
+        << "net_upnp=" << v.net_upnp << "\n"
+        << "net_kbps=" << v.net_kbps << "\n"
+        << "net_join=" << v.net_join << "\n"
+        << "coop_story=" << v.coop_story << "\n"
         << "bindings=2\n";
     for (unsigned i = 0; i < v.looks.size(); ++i)
         if (v.looks[i].saved) out << "look_" << i + 1 << '=' << encode_look(v.looks[i]) << '\n';
@@ -391,6 +403,16 @@ void load() {
             v.camera_motion = number != 0;
         else if (key == "cinema_mode")
             v.cinema_mode = number != 0;
+        else if (key == "net_port")
+            v.net_port = number;
+        else if (key == "net_upnp")
+            v.net_upnp = number != 0;
+        else if (key == "net_kbps")
+            v.net_kbps = number;
+        else if (key == "net_join")
+            v.net_join = value;
+        else if (key == "coop_story")
+            v.coop_story = number != 0;
         else if (key == "bindings")
             bindings_version = number;
         else

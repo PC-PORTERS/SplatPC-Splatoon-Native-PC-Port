@@ -2108,7 +2108,7 @@ hash = 0xBEFA713AAEC41D35
 
 [hooks]
 # Guest function entries wrapped so the port can attach opt-in host hooks.
-hash = 0x01614EDD2ED623B7
+hash = 0xC15D81739C10B748
 0x0242A8F8 = hook  # plaza frame-rate sync
 0x0264FF04 = hook  # per-frame update of one player (non-finite player repair after it)
 0x0265BE4C = hook  # animation frame controller step (non-finite frame repair before it)
@@ -2116,6 +2116,22 @@ hash = 0x01614EDD2ED623B7
 0x02661878 = hook  # gyro yaw filter of the player camera (mouse yaw added after it)
 0x02662044 = hook  # gyro pitch easing rate of the player camera (mouse pitch added around it)
 0x02668434 = hook  # per-frame update of the player camera (non-finite camera repair after it)
+0x0265A730 = hook  # co-op: player controller binding name (collects the scene's player objects)
+0x023FED60 = hook  # co-op: scene player setup (two players in story levels and Octo Valley)
+0x026BA97C = hook  # co-op: "is two-player Dojo match" check
+0x026BA904 = hook  # co-op: second "is two-player Dojo match" check, Battle Dojo P1/P2 labels
+0x0289F358 = hook  # co-op: create render layer (finds the TV and second-screen 3D layers)
+0x02A3F070 = hook  # co-op: attach to render layer (second screen draws the TV's 3D object)
+0x029E7B00 = hook  # co-op: environment cube map render per view (skips the second view's empty one)
+0x029E9608 = hook  # co-op: environment cube map face update per view
+0x0240B07C = hook  # co-op: start/respawn point table (player 2's start point)
+0x023FE9C8 = hook  # co-op: scene base ctor (two views and cameras)
+0x023FF448 = hook  # co-op: scene controller focus (player 2's controller on view 1)
+0x02652E84 = hook  # co-op: player release after the level start (also player 2)
+0x02A96208 = hook  # co-op: Layer3D cube map init (TV's HDR cube map config for the second view)
+0x02783D90 = hook  # co-op: layout display targets (player 2's own HUD, no GamePad layouts)
+0x0248B5E8 = hook  # co-op: Msn amiiboTimer ctor (level-wide story HUD on both screens)
+0x023FCBBC = hook  # co-op: story HUD feed each frame (second pass for player 2's HUD)
 
 [patches]
 # 0xADDR = instruction, applied before recompilation.

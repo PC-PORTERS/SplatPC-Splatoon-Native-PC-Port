@@ -31,8 +31,10 @@
 #include "../gx2/vk/gx2_imgui_overlay.h"
 #include "../gx2/gx2_env_light.h"
 #include "../../runtime/port_settings.h"
+#include "../../runtime/coop_views.h"
 #include "../../hooks/mouse_camera.h"
 #include <atomic>
+
 #include <cstdlib>
 #include <chrono>
 #include <cmath>
@@ -200,6 +202,8 @@ static std::mutex s_motion_lock;
 static VirtualMotion s_motion;
 static constexpr float kPi = 3.14159265358979f;
 static constexpr float kYawRate = 240.0f, kPitchRate = 150.0f, kPitchLimit = 80.0f; // degrees(/s)
+static constexpr float kRestPitch = -32.4f;     // degrees: level (0 deg) camera at rest
+static constexpr float kDojoRestPitch = -52.4f; // Battle Dojo shifts the GamePad centre by +20 deg
 // Mouse aiming like a PC game ("Mouse aim: Direct"): each frame's mouse
 // movement in degrees turns the virtual GamePad, which the game's motion
 // aiming follows 1:1 - no stick speed limit, no dead zone.
@@ -275,7 +279,12 @@ void vpad_update_motion(uint8_t* mem, uint32_t buf, float rx, float ry, float dt
     const float pitch = std::fmax(-kPitchLimit, std::fmin(kPitchLimit, v.pitch + pitch_rate * dt));
     const float applied_pitch_rate = dt > 0 ? (pitch - v.pitch) / dt : 0.0f;
     v.pitch = pitch;
-    const Mat3 r = mat_mul(mat_mul(rotation_y(v.yaw * kPi / 180), v.base), rotation_x(v.pitch * kPi / 180));
+    // The game reads an upright pad as aiming at the floor; the virtual pad rests
+    // level for the camera while replays keep the upright pad they were recorded with.
+    const float rest_pitch =
+        rbrew_benchmark::replaying() ? 0.0f : (rbrew_coop::dojo_match() ? kDojoRestPitch : kRestPitch);
+    const Mat3 r =
+        mat_mul(mat_mul(rotation_y(v.yaw * kPi / 180), v.base), rotation_x((v.pitch + rest_pitch) * kPi / 180));
     // World angular velocity: yaw about world Y plus pitch about the pad's X axis.
     const Mat3 yawed = mat_mul(rotation_y(v.yaw * kPi / 180), v.base);
     float world[3];
@@ -339,6 +348,7 @@ static void VPADRead(CPUState* cpu) {
 
     if (errp) rbrew_write32(MEM, errp, 0u); // VPAD_READ_SUCCESS
     vpad_apply_motion_policy(MEM);
+    rbrew_coop::update_views(MEM);
 
     if (!buf || count == 0 || !rbrew_memory_accessible(MEM, buf, kVpadStatusSize)) {
         RET = 0;
@@ -399,10 +409,10 @@ static void VPADRead(CPUState* cpu) {
     }
 
     // -----------------------------------------------------------------------
-    // Keyboard + mouse input (Splatoon layout, active in TV view)
+    // Keyboard + mouse input (Splatoon layout, active in TV view or Dojo)
     // KB+M additively overlays controller: pressing a key overrides that axis.
     // -----------------------------------------------------------------------
-    if (g_screen_mode == ScreenMode::TV) {
+    if (g_screen_mode == ScreenMode::TV || rbrew_coop::dojo_match()) {
         const uint8_t* keys = SDL_GetKeyboardState(nullptr);
 
         // Bindings from the ESC menu's keyboard page (port_settings.h):
@@ -438,6 +448,9 @@ static void VPADRead(CPUState* cpu) {
         // mouse up looks up.
         int mdx = 0, mdy = 0;
         SDL_GetRelativeMouseState(&mdx, &mdy);
+        // A replay carries the recorded camera input; a live mouse would turn the camera
+        // and send the recorded walk elsewhere (mouse movement does not end a replay).
+        if (rbrew_benchmark::replaying()) mdx = mdy = 0;
         // Free fly camera (cinema / hacks page, F7): mouse looks, WASD
         // moves, Space up, Ctrl down, Shift fast; the game gets a neutral pad.
         if (gx2env::fly_camera()) {
@@ -603,7 +616,12 @@ static void VPADRead(CPUState* cpu) {
             rx = pad.rx;
             ry = pad.ry;
             std::copy_n(pad.gyro, 3, phys_gyro);
-            has_phys_gyro = has_phys_gyro || replayed;
+            // RBREW_REPLAY_GYRO=0: replay as recorded without a motion sensor (keyboard/mouse sessions).
+            static const bool replay_gyro = [] {
+                const char* v = std::getenv("RBREW_REPLAY_GYRO");
+                return !(v && v[0] == '0');
+            }();
+            has_phys_gyro = has_phys_gyro || (replayed && replay_gyro);
             has_phys_accel = false;
             live_touch = false;
             auto_touched = pad.touched != 0;

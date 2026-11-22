@@ -555,7 +555,7 @@ struct GuestHookEntry {
     uint32_t address;
     RbrewGuestHook hook;
 };
-constexpr unsigned kMaxGuestHooks = 32;
+constexpr unsigned kMaxGuestHooks = 64; // co-op adds about 20 game hooks
 GuestHookEntry s_guest_hooks[kMaxGuestHooks];
 std::atomic<unsigned> s_guest_hook_count{0};
 } // namespace

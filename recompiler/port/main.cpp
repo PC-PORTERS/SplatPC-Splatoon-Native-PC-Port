@@ -15,6 +15,7 @@
 #include "runtime/discord_rpc.h"
 #include "runtime/splatoon_diagnostics.h"
 #include "runtime/port_settings.h"
+#include "runtime/netplay.h"
 #include "os/erreula/erreula.h"
 #include "os/coreinit/coreinit_overlay.h"
 #include "os/coreinit/coreinit_system_settings.h"
@@ -347,6 +348,7 @@ void Gambit_game_register(CPUState* cpu); // registers all recompiled game funct
 #endif
 #include "os/gx2/gx2_env_light.h"
 void player_anim_register();               // idle look-around and opt-in (RBREW_ANIM_LOG) animation trace
+void coop_install();                       // hooks/coop.cpp
 void branch_tables_install(CPUState* cpu); // branch_tables.cpp
 void broadcast_guard_install();            // broadcast_guard.cpp
 void coreinit_memory_init(uint8_t* mem);
@@ -410,6 +412,9 @@ int main(int argc, char** argv) {
 #endif
     // ESC-menu options (settings.ini); start-only values reach the environment here.
     rbrew_settings::load();
+    // Online guest: show the host's stream and send this player's input; no game boot.
+    if (const std::string join = rbrew_net::join_address(argc, argv); !join.empty()) return rbrew_net::run_guest(join);
+    rbrew_net::host_start_from_env();
     rbrew::discord_rpc_init();
     RBREW_LOG_INFO("BOOT", "Splatoon launch runtime; RPX header entry=0x%08X\n", rebrewu_generated::Gambit_entry_point);
     RBREW_LOG_INFO("FS", "RBREW_CONTENT_DIR=%s\n",
@@ -548,6 +553,7 @@ int main(int argc, char** argv) {
     branch_tables_install(&cpu_reg); // link branch-table case blocks (see hooks/branch_tables.cpp)
     broadcast_guard_install();       // 0285C3D0 broadcast loop guard
     player_anim_register();
+    coop_install();
     gx2env::register_hooks(); // game camera hooks (hooks/gx2_camera_hooks.h)
     erreula_register(&cpu_reg);
 

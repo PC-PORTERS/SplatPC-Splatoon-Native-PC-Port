@@ -38,6 +38,8 @@
 // ---------------------------------------------------------------------------
 // miniaudio — optional header-only back-end
 // ---------------------------------------------------------------------------
+#include "../../runtime/netplay.h"
+
 #if defined(HAVE_MINIAUDIO)
 #define MINIAUDIO_IMPLEMENTATION
 #include "miniaudio.h"
@@ -502,6 +504,7 @@ static bool s_device_open = false;
 static std::atomic<uint64_t> s_device_frames{0}, s_device_signal_frames{0};
 static void ax_audio_callback(ma_device*, void* output, const void*, ma_uint32 frames) {
     snd_core_render_frames(static_cast<float*>(output), frames);
+    rbrew_net::host_submit_audio(static_cast<const float*>(output), frames); // online guest, before volume
     s_device_frames.fetch_add(frames, std::memory_order_relaxed);
     const auto* samples = static_cast<const float*>(output);
     for (uint32_t n = 0; n < frames; ++n)

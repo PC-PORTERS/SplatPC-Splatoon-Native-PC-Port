@@ -54,7 +54,14 @@ class RevisionManifestTests(unittest.TestCase):
         self.assertGreater(text.count('= corroborate'), 900)
         self.assertEqual(text.count('= force'), 33)
         hooks = text.split('\n[hooks]', 1)[1].split('\n[', 1)[0]
-        self.assertEqual(sorted(re.findall(r'^(0x[0-9A-F]+) = hook', hooks, re.M)), ['0x0242A8F8', '0x0264FF04', '0x0265BE4C', '0x02661878', '0x02662044', '0x02668434', '0x0285C3D0'])
+        expected_hooks = [
+            '0x023FCBBC', '0x023FE9C8', '0x023FED60', '0x023FF448', '0x0240B07C',
+            '0x0242A8F8', '0x0248B5E8', '0x0264FF04', '0x02652E84', '0x0265A730',
+            '0x0265BE4C', '0x02661878', '0x02662044', '0x02668434', '0x026BA904',
+            '0x026BA97C', '0x02783D90', '0x0285C3D0', '0x0289F358', '0x029E7B00',
+            '0x029E9608', '0x02A3F070', '0x02A96208',
+        ]
+        self.assertEqual(sorted(re.findall(r'^(0x[0-9A-F]+) = hook', hooks, re.M)), expected_hooks)
 
 
 if __name__ == '__main__':

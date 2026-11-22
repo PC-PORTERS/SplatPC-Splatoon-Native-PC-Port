@@ -31,6 +31,8 @@
 #include "../../hooks/plaza_frame_rate.h"
 #endif
 #include "../../runtime/native_control_defaults.h"
+#include "../../runtime/coop_views.h"
+#include "../../runtime/netplay_connect.h"
 #include "../../runtime/discord_rpc.h"
 #include "../nn_nfp/nn_nfp.h"
 #include <cstdlib>
@@ -70,8 +72,11 @@ static constexpr int DRC_H = 480;
 static void update_window_title() {
     if (!s_window) return;
     char title_buf[128];
-    std::snprintf(title_buf, sizeof(title_buf), "Splatoon | %s | Vulkan [F3=overlay | Tab=view | F11=window]",
-                  g_screen_mode == ScreenMode::TV ? "TV" : "Gamepad");
+    if (rbrew_coop::two_views() || (rbrew_coop::dojo_match() && rbrew_coop::second_player_present()))
+        std::snprintf(title_buf, sizeof(title_buf), "Splatoon (P1) | Vulkan [F3=overlay | Tab=view | F11=window]");
+    else
+        std::snprintf(title_buf, sizeof(title_buf), "Splatoon | %s | Vulkan [F3=overlay | Tab=view | F11=window]",
+                      g_screen_mode == ScreenMode::TV ? "TV" : "Gamepad");
     SDL_SetWindowTitle(s_window, title_buf);
 }
 
@@ -85,15 +90,24 @@ static bool imgui_wants_cursor() {
     }();
     return gx2_imgui::menu_open() || (overlay_cursor && gx2_imgui::visible());
 }
+static bool s_dojo_auto_switched = false;
+
+static bool wants_relative_mouse() {
+    return (g_screen_mode == ScreenMode::TV || rbrew_coop::dojo_match()) && !imgui_wants_cursor();
+}
+static bool wants_touch_mouse() {
+    return g_screen_mode == ScreenMode::Gamepad && !rbrew_coop::dojo_match();
+}
 static void sync_overlay_mouse_mode() {
-    if (g_screen_mode == ScreenMode::TV) SDL_SetRelativeMouseMode(imgui_wants_cursor() ? SDL_FALSE : SDL_TRUE);
+    SDL_SetRelativeMouseMode(wants_relative_mouse() ? SDL_TRUE : SDL_FALSE);
 }
 
 // Switch between TV and Gamepad view, adjusting mouse capture accordingly
 static void toggle_screen_mode() {
+    s_dojo_auto_switched = false;
     if (g_screen_mode == ScreenMode::TV) {
         g_screen_mode = ScreenMode::Gamepad;
-        SDL_SetRelativeMouseMode(SDL_FALSE); // free the cursor for touch sim
+        sync_overlay_mouse_mode(); // free cursor for touch sim, unless in Battle Dojo
         g_touch_state = {false, 0, 0};
     } else {
         g_screen_mode = ScreenMode::TV;
@@ -101,6 +115,36 @@ static void toggle_screen_mode() {
         g_touch_state = {false, 0, 0};
     }
     update_window_title();
+}
+
+static void sync_dojo_screen_mode() {
+    static bool s_prev_dojo = false;
+    static bool s_prev_coop = false;
+    const bool in_dojo = rbrew_coop::dojo_match();
+    const bool in_coop = rbrew_coop::two_views() || (in_dojo && rbrew_coop::second_player_present());
+    if (in_coop != s_prev_coop) {
+        s_prev_coop = in_coop;
+        update_window_title();
+    }
+    if (in_dojo == s_prev_dojo) return;
+    s_prev_dojo = in_dojo;
+    if (in_dojo) {
+        if (g_screen_mode == ScreenMode::TV && rbrew_coop::second_player_present()) {
+            g_screen_mode = ScreenMode::Gamepad;
+            g_touch_state = {false, 0, 0};
+            s_dojo_auto_switched = true;
+            update_window_title();
+        }
+        sync_overlay_mouse_mode();
+    } else {
+        if (s_dojo_auto_switched && g_screen_mode == ScreenMode::Gamepad) {
+            g_screen_mode = ScreenMode::TV;
+            g_touch_state = {false, 0, 0};
+            update_window_title();
+        }
+        s_dojo_auto_switched = false;
+        sync_overlay_mouse_mode();
+    }
 }
 
 static bool window_fullscreen() {
@@ -154,6 +198,7 @@ void gx2_render_wait_cache_writes(uint32_t timeout_ms);
 [[noreturn]] static void gx2_close_requested() {
     RBREW_LOG_INFO("gx2", "Window close requested\n");
     gx2_render_wait_cache_writes(2000);
+    rbrew_net::router_shutdown(); // atexit never runs after TerminateProcess
     std::fflush(nullptr);
     TXDIAG(txdiag::finish());
 #if defined(_WIN32)
@@ -968,20 +1013,20 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
             case SDL_JOYDEVICEREMOVED: on_controller_device_removed(ev.jdevice.which); break;
 
             case SDL_MOUSEBUTTONDOWN:
-                if (g_screen_mode == ScreenMode::Gamepad && ev.button.button == SDL_BUTTON_LEFT) {
+                if (wants_touch_mouse() && ev.button.button == SDL_BUTTON_LEFT) {
                     map_mouse_to_touch(ev.button.x, ev.button.y);
                     g_touch_state.touched = true;
                 }
                 break;
 
             case SDL_MOUSEBUTTONUP:
-                if (g_screen_mode == ScreenMode::Gamepad && ev.button.button == SDL_BUTTON_LEFT) {
+                if (ev.button.button == SDL_BUTTON_LEFT && (wants_touch_mouse() || g_touch_state.touched)) {
                     g_touch_state.touched = false;
                 }
                 break;
 
             case SDL_MOUSEMOTION:
-                if (g_screen_mode == ScreenMode::Gamepad && g_touch_state.touched) {
+                if (wants_touch_mouse() && g_touch_state.touched) {
                     map_mouse_to_touch(ev.motion.x, ev.motion.y);
                 }
                 break;
@@ -989,6 +1034,8 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
             default: break;
             }
         }
+
+        sync_dojo_screen_mode();
 
         // Blit game FBO to window and swap (events stay on this thread)
         bool gamepad = (g_screen_mode == ScreenMode::Gamepad);

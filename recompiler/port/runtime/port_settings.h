@@ -107,6 +107,11 @@ struct Values {
     int white_balance = 0;      // -50 cool .. +50 warm
     int sway_strength = 100;    // percent of the cinema camera sway
     bool cinema_mode = false;   // no HUD in the plaza, only the picture
+    int net_port = 52815;       // online co-op: TCP port the host listens on
+    bool net_upnp = true;       // open that port on the router automatically
+    int net_kbps = 10000;       // video stream to the guest
+    std::string net_join;       // last address joined
+    bool coop_story = true;     // two-player Story Mode co-op when P2 is connected
     int keys[kActionCount];     // keyboard/mouse binding per action
     int pad[kActionCount];      // controller binding per action
     Values() { default_bindings(keys, pad); }
@@ -140,6 +145,7 @@ inline std::atomic<float> g_mouse_scale{1.0f};
 inline std::atomic<bool> g_mouse_direct{true};
 inline std::atomic<float> g_volume{1.0f};
 inline std::atomic<bool> g_confirm_quit{true};
+inline std::atomic<bool> g_coop_story{true};
 inline std::atomic<int> g_shader_quality{kShadersOff}; // load() publishes the player's selection
 inline std::atomic<int> g_keys[kActionCount];
 inline std::atomic<int> g_pad[kActionCount];

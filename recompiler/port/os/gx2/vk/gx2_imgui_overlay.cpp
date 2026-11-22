@@ -7,14 +7,17 @@
 // (mutex-protected), so either thread may persist them.
 #include "gx2_imgui_overlay.h"
 #include "gx2_graphics_menu.h"
+#include "gx2_online_menu.h"
 
 #include "rebrewu/logger.hpp"
 #include "gx2_vk.h"
 #include "gx2_vk_shader.h"
 
+#include "../../../runtime/netplay_connect.h"
 #include "../../runtime/port_settings.h"
 #include "../../runtime/splatoon_diagnostics.h"
 #include "../../nn_nfp/nn_nfp.h"
+#include "../gx2_env_light.h"
 #include "../gx2_perf.h"
 
 #include <imgui.h>
@@ -91,7 +94,7 @@ void update_shader_activity() {
     s_shader_compiling = ImGui::GetTime() - s_shader_last_change < 0.75;
 }
 
-enum class MenuPage { Main, Keyboard, Controller, Amiibo };
+enum class MenuPage { Main, Keyboard, Controller, Amiibo, Online, Tools };
 MenuPage s_menu_page = MenuPage::Main;
 gx2_graphics_menu::Page s_graphics_page = gx2_graphics_menu::Page::None; // graphics/weather/camera/cinema page
 bool s_prev_menu_open = false;
@@ -642,6 +645,53 @@ void build_amiibo_page() {
     if (ImGui::Button("Back", ImVec2(width, 0))) set_menu_open(false);
 }
 
+void build_tools_page() {
+    ImGui::SeparatorText("Multiplayer");
+    if (ImGui::Button("Online co-op & port forwarding")) s_menu_page = MenuPage::Online;
+    if (const char* online = gx2_online_menu::status_line(); *online) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.35f, 0.95f, 0.45f, 1.0f), "(%s)", online);
+    }
+
+    ImGui::SeparatorText("Camera & capture");
+    if (ImGui::Button("Take photo (F12)")) gx2env::request(gx2env::Request::Photo, 0);
+    bool fly = gx2env::fly_camera();
+    if (ImGui::Checkbox("Free fly camera (F7)", &fly)) gx2env::request(gx2env::Request::FlyCamera, fly ? 1 : 0);
+
+    ImGui::SeparatorText("Overlays & diagnostics");
+    auto v = rs::get();
+    bool dirty = false;
+    bool overlay = visible();
+    if (ImGui::Checkbox("Performance & debug overlay (F3)", &overlay)) {
+        set_visible(overlay);
+        v.fps_overlay = overlay;
+        dirty = true;
+    }
+    bool simple = simple_overlay();
+    if (ImGui::Checkbox("Simple FPS overlay", &simple)) {
+        set_simple_overlay(simple);
+        v.simple_overlay = simple;
+        dirty = true;
+    }
+    if (dirty) rs::set(v);
+    if (ImGui::Button("Save diagnostic snapshot (F9)")) diag::ManualCapture();
+    ImGui::SameLine();
+    if (ImGui::Button(diag::IsManualRecording() ? "Stop recording (F8)" : "Start extended recording (F8)"))
+        diag::ToggleManualRecord();
+
+    ImGui::SeparatorText("Folders");
+    if (ImGui::Button("Game folder")) rbrew_net::open_folder(".");
+    ImGui::SameLine();
+    if (ImGui::Button("Screenshots")) rbrew_net::open_folder("Screenshots");
+    ImGui::SameLine();
+    if (ImGui::Button("Diagnostics")) rbrew_net::open_folder("Diagnostics");
+    ImGui::SameLine();
+    if (ImGui::Button("amiibo")) rbrew_net::open_folder("amiibo");
+
+    ImGui::Separator();
+    if (ImGui::Button("Back")) s_menu_page = MenuPage::Main;
+}
+
 void build_settings_window() {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     const ImVec2 center(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
@@ -654,6 +704,8 @@ void build_settings_window() {
                         : s_menu_page == MenuPage::Main                  ? "Settings"
                         : s_menu_page == MenuPage::Keyboard              ? "Keyboard & mouse controls"
                         : s_menu_page == MenuPage::Amiibo                ? "amiibo"
+                        : s_menu_page == MenuPage::Online                ? "Online co-op"
+                        : s_menu_page == MenuPage::Tools                 ? "Tools"
                                                                          : "Controller controls";
     const std::string window = std::string(title) + "###settings";
     if (!ImGui::Begin(window.c_str(), &open)) {
@@ -672,6 +724,20 @@ void build_settings_window() {
         if (!open) set_menu_open(false);
         return;
     }
+    if (s_menu_page == MenuPage::Online) {
+        const auto result = gx2_online_menu::build_page();
+        if (result == gx2_online_menu::Result::Back) s_menu_page = MenuPage::Main;
+        if (result == gx2_online_menu::Result::Quit) s_quit_requested.store(true, std::memory_order_relaxed);
+        ImGui::End();
+        if (!open) set_menu_open(false);
+        return;
+    }
+    if (s_menu_page == MenuPage::Tools) {
+        build_tools_page();
+        ImGui::End();
+        if (!open) set_menu_open(false);
+        return;
+    }
     if (s_menu_page != MenuPage::Main) {
         build_controls_page(s_menu_page);
         ImGui::End();
@@ -681,6 +747,14 @@ void build_settings_window() {
     auto v = rs::get();
     bool dirty = false;
     if (ImGui::Button("Resume")) set_menu_open(false);
+    ImGui::SameLine();
+    if (ImGui::Button("Online co-op")) s_menu_page = MenuPage::Online;
+    ImGui::SameLine();
+    if (ImGui::Button("Tools")) s_menu_page = MenuPage::Tools;
+    if (const char* online = gx2_online_menu::status_line(); *online) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.35f, 0.95f, 0.45f, 1.0f), "(%s)", online);
+    }
     if (rbrew_nfp::searching()) {
         ImGui::SameLine();
         if (ImGui::Button("Scan amiibo")) s_menu_page = MenuPage::Amiibo;
