@@ -9,6 +9,7 @@
 // pseudo is only a display name, also used as the Mii name in game).
 #include "online_settings.h"
 #include <algorithm>
+#include <atomic>
 #include <charconv>
 #include <stdexcept>
 #include <limits>
@@ -226,6 +227,31 @@ inline void fill_nex_token(uint8_t* out, std::string_view token, std::string_vie
     out[kPortOffset + 1] = uint8_t(port);
 }
 
+inline constexpr std::string_view kPublicServer = "173.249.46.125:60000";
+inline constexpr std::string_view kPublicNncs1 = "173.249.46.125";
+inline constexpr std::string_view kPublicNncs2 = "13.140.129.165";
+inline constexpr std::string_view kPublicRegister = "https://splatoonline.duckdns.org/register";
+
+struct SessionToken {
+    std::string token;
+    std::string server;
+    std::string register_url;
+    uint32_t pid = 0;
+    std::string pseudo;
+    int64_t saved_at = 0;
+};
+
+inline std::atomic<bool>& runtime_offline_flag() {
+    static std::atomic<bool> flag{false};
+    return flag;
+}
+inline void set_session_offline(bool offline) {
+    runtime_offline_flag().store(offline, std::memory_order_relaxed);
+}
+inline bool is_session_offline() {
+    return runtime_offline_flag().load(std::memory_order_relaxed);
+}
+
 // Current online configuration (read on each call; settings change rarely).
 struct Config {
     bool online = false;
@@ -235,6 +261,7 @@ struct Config {
 inline const Identity& identity();
 inline Config config() {
     Config c;
+    if (is_session_offline()) return c;
     const std::string server = rbrew_online_cfg::resolved("RBREW_ONLINE_SERVER", "online_server", "");
     c.online = !server.empty() && parse_server(server, c.host, c.port);
     if (c.online && !valid(identity())) c.online = false; // failed persistence stays offline, with no invented account
@@ -242,6 +269,108 @@ inline Config config() {
 }
 inline std::string pseudo() {
     return rbrew_online_cfg::resolved("RBREW_PSEUDO", "pseudo", "");
+}
+inline std::string resolve_register_url(const Config& cfg) {
+    if (const char* env = std::getenv("RBREW_SOCIAL_URL"); env && *env) return env;
+    const std::string configured = rbrew_online_cfg::resolved("RBREW_ONLINE_REGISTER", "online_register", "");
+    if (!configured.empty()) return configured;
+    if (!cfg.online) return {};
+    const std::string server = cfg.host + ":" + std::to_string(cfg.port);
+    const std::filesystem::path scripts_dir = rbrew_online_cfg::settings_path().parent_path().parent_path() / "scripts";
+    for (const char* name : {"server.txt", "server.public.txt"}) {
+        std::ifstream in(scripts_dir / name);
+        if (!in) continue;
+        const auto kv = rbrew_online_cfg::parse(in);
+        const auto srv = kv.find("server");
+        const auto reg = kv.find("register");
+        if (srv != kv.end() && srv->second == server && reg != kv.end() && !reg->second.empty()) return reg->second;
+    }
+    if (server == kPublicServer) return std::string(kPublicRegister);
+    return {};
+}
+inline std::string resolve_dns_override(const Config& cfg) {
+    if (const char* env = std::getenv("RBREW_DNS_OVERRIDE"); env && *env) return env;
+    if (!cfg.online) return {};
+    std::string nncs1 = rbrew_online_cfg::resolved("RBREW_ONLINE_NNCS1", "online_nncs1", "");
+    std::string nncs2 = rbrew_online_cfg::resolved("RBREW_ONLINE_NNCS2", "online_nncs2", "");
+    if (nncs1.empty() || nncs2.empty()) {
+        if (cfg.host == "173.249.46.125") {
+            if (nncs1.empty()) nncs1 = std::string(kPublicNncs1);
+            if (nncs2.empty()) nncs2 = std::string(kPublicNncs2);
+        } else if (cfg.host == "127.0.0.1") {
+            if (nncs1.empty()) nncs1 = "127.0.0.1";
+            if (nncs2.empty()) nncs2 = "127.0.0.2";
+        } else {
+            if (nncs1.empty()) nncs1 = cfg.host;
+            if (nncs2.empty()) nncs2 = cfg.host;
+        }
+    }
+    return "nncs1.app.nintendowifi.net=" + nncs1 + ",nncs2.app.nintendowifi.net=" + nncs2;
+}
+inline std::filesystem::path friends_dir() {
+    if (const char* env = std::getenv("RBREW_FRIENDS_DIR"); env && *env) return std::filesystem::path(env);
+    if (!config().online) return {};
+    return rbrew_online_cfg::settings_path().parent_path() / "friends";
+}
+inline std::filesystem::path session_token_path() {
+    return rbrew_online_cfg::settings_path().parent_path() / "online_session.ini";
+}
+inline std::optional<SessionToken> load_session_token(const std::filesystem::path& file = session_token_path()) {
+    std::ifstream in(file);
+    if (!in) return std::nullopt;
+    SessionToken s;
+    for (const auto& [k, v] : rbrew_online_cfg::parse(in)) {
+        if (k == "token")
+            s.token = v;
+        else if (k == "server")
+            s.server = v;
+        else if (k == "register")
+            s.register_url = v;
+        else if (k == "pseudo")
+            s.pseudo = v;
+        else if (k == "pid") {
+            uint32_t n = 0;
+            const auto r = std::from_chars(v.data(), v.data() + v.size(), n, 16);
+            if (!v.empty() && r.ec == std::errc{} && r.ptr == v.data() + v.size()) s.pid = n;
+        } else if (k == "saved_at") {
+            int64_t ts = 0;
+            const auto r = std::from_chars(v.data(), v.data() + v.size(), ts);
+            if (!v.empty() && r.ec == std::errc{} && r.ptr == v.data() + v.size()) s.saved_at = ts;
+        }
+    }
+    if (s.token.empty() || !s.pid) return std::nullopt;
+    return s;
+}
+inline bool save_session_token(const SessionToken& s, const std::filesystem::path& file = session_token_path()) {
+    if (s.token.empty() || !s.pid) return false;
+    char pid_buf[16];
+    std::snprintf(pid_buf, sizeof pid_buf, "%08x", s.pid);
+    std::error_code ec;
+    if (!file.parent_path().empty()) std::filesystem::create_directories(file.parent_path(), ec);
+    std::filesystem::path tmp = file;
+    tmp += ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        if (!out) return false;
+        out << "# Splatoon PC saved online session token. Keep this file private.\n"
+            << "token=" << s.token << "\n"
+            << "server=" << s.server << "\n"
+            << "register=" << s.register_url << "\n"
+            << "pid=" << pid_buf << "\n"
+            << "pseudo=" << s.pseudo << "\n"
+            << "saved_at=" << s.saved_at << "\n";
+        if (!out.flush()) return false;
+    }
+    std::filesystem::rename(tmp, file, ec);
+    if (ec) {
+        std::filesystem::remove(tmp, ec);
+        return false;
+    }
+    return true;
+}
+inline void clear_session_token(const std::filesystem::path& file = session_token_path()) {
+    std::error_code ec;
+    std::filesystem::remove(file, ec);
 }
 inline const Identity& identity() {
     static const Identity id = [] {

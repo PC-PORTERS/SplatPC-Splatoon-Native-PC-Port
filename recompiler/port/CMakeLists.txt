@@ -222,6 +222,36 @@ if(RBREW_PLT_GENERATED)
         VERBATIM)
 endif()
 
+# Native online mode (Windows and Linux): SpotPass files, interactive login, saved tokens,
+# and friends relay built directly into the game (online/online_boot.h).
+set(RBREW_NLOHMANN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party")
+if(NOT EXISTS "${RBREW_NLOHMANN_DIR}/nlohmann/json.hpp")
+    # Same header and hash as the recompiler (recompiler/CMakeLists.txt).
+    file(DOWNLOAD https://github.com/nlohmann/json/releases/download/v3.11.3/json.hpp
+         "${RBREW_NLOHMANN_DIR}/nlohmann/json.hpp"
+         EXPECTED_HASH SHA256=9bea4c8066ef4a1c206b2be5a36302f8926f7fdc6087af5d20b417d0cf103ea6)
+endif()
+add_library(gambit_online STATIC
+    online/boss_schedule.cpp
+    online/byaml.cpp
+    online/friends_relay.cpp
+    online/hashing.cpp
+    online/integrity_proof.cpp
+    online/online_boot.cpp
+    online/online_login.cpp
+    online/py_random.cpp
+    online/social_http.cpp
+)
+target_include_directories(gambit_online PRIVATE ${RBREW_NLOHMANN_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+if(WIN32)
+    target_link_libraries(gambit_online PUBLIC winhttp bcrypt)
+else()
+    target_link_libraries(gambit_online PUBLIC CURL::libcurl)
+endif()
+if(MSVC)
+    target_compile_options(gambit_online PRIVATE /utf-8)
+endif()
+
 file(GLOB_RECURSE GAMBIT_RUNTIME_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/os/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/hooks/*.cpp"
@@ -251,6 +281,7 @@ target_compile_definitions(gambit_runtime PUBLIC HAVE_SDL2)
 option(RBREW_DIAGNOSTIC_RUNTIME "Keep diagnostics in the runtime for a one-off diagnostic copy" OFF)
 if(NOT RBREW_DIAGNOSTIC_RUNTIME)
     target_compile_definitions(gambit_runtime PRIVATE RBREW_DISABLE_LOGGING)
+    target_compile_definitions(gambit_online PRIVATE RBREW_DISABLE_LOGGING)
     target_compile_definitions(cemu_shader PRIVATE RBREW_DISABLE_LOGGING)
     set_property(SOURCE main.cpp APPEND PROPERTY COMPILE_DEFINITIONS RBREW_DISABLE_LOGGING)
 endif()
@@ -293,6 +324,7 @@ endif()
 
 target_link_libraries(gambit_runtime PUBLIC
     cemu_shader
+    gambit_online
     ${SDL2_LIBRARIES}
 
     CURL::libcurl
@@ -322,41 +354,12 @@ endif()
 
 set(GAMBIT_GENERATED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../Gambit" CACHE PATH
     "Directory containing RebrewU-generated Gambit C++")
-# Online mode without Python on Windows: SpotPass files and the friends relay, built into the game
-# (online/online_boot.h). Its own library, so nlohmann/json reaches these files only.
-if(WIN32)
-    set(RBREW_NLOHMANN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party")
-    if(NOT EXISTS "${RBREW_NLOHMANN_DIR}/nlohmann/json.hpp")
-        # Same header and hash as the recompiler (recompiler/CMakeLists.txt).
-        file(DOWNLOAD https://github.com/nlohmann/json/releases/download/v3.11.3/json.hpp
-             "${RBREW_NLOHMANN_DIR}/nlohmann/json.hpp"
-             EXPECTED_HASH SHA256=9bea4c8066ef4a1c206b2be5a36302f8926f7fdc6087af5d20b417d0cf103ea6)
-    endif()
-    add_library(gambit_online STATIC
-        online/boss_schedule.cpp
-        online/byaml.cpp
-        online/friends_relay.cpp
-        online/hashing.cpp
-        online/integrity_proof.cpp
-        online/online_boot.cpp
-        online/py_random.cpp
-        online/social_http.cpp
-    )
-    target_include_directories(gambit_online PRIVATE ${RBREW_NLOHMANN_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
-    target_link_libraries(gambit_online PUBLIC winhttp bcrypt)
-    if(MSVC)
-        target_compile_options(gambit_online PRIVATE /utf-8)
-    endif()
-    if(NOT RBREW_DIAGNOSTIC_RUNTIME)
-        target_compile_definitions(gambit_online PRIVATE RBREW_DISABLE_LOGGING)
-    endif()
-    # Unit tests, and the commands the Python cross-checks run (tools/tests/test_online_native.py).
-    add_executable(gambit_online_tests ../tests/test_online_native.cpp)
-    target_include_directories(gambit_online_tests PRIVATE ${RBREW_NLOHMANN_DIR} ${CMAKE_CURRENT_SOURCE_DIR})
-    target_link_libraries(gambit_online_tests PRIVATE gambit_online)
-    if(MSVC)
-        target_compile_options(gambit_online_tests PRIVATE /utf-8)
-    endif()
+# Unit tests, and the commands the Python cross-checks run (tools/tests/test_online_native.py).
+add_executable(gambit_online_tests ../tests/test_online_native.cpp)
+target_include_directories(gambit_online_tests PRIVATE ${RBREW_NLOHMANN_DIR} ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(gambit_online_tests PRIVATE gambit_online)
+if(MSVC)
+    target_compile_options(gambit_online_tests PRIVATE /utf-8)
 endif()
 
 set(RBREW_GAME_DEFAULT OFF)
@@ -722,6 +725,7 @@ if(RBREW_BUILD_TESTS)
     add_executable(gambit_online_identity_tests ../tests/test_online_identity.cpp)
     target_include_directories(gambit_online_identity_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
     add_test(NAME online_identity COMMAND gambit_online_identity_tests)
+    add_test(NAME online_native COMMAND gambit_online_tests)
 endif()
 
 # The developer test sources are not part of the public tree.

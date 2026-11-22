@@ -13,9 +13,7 @@
 #include "runtime/rebrewu_runtime.h"
 #include "runtime/host_process.h"
 #include "runtime/discord_rpc.h"
-#if defined(_WIN32)
 #include "online/online_boot.h"
-#endif
 #include "runtime/splatoon_diagnostics.h"
 #include "runtime/port_settings.h"
 #include "runtime/online_settings.h"
@@ -52,7 +50,8 @@ static uint8_t* alloc_arena(size_t sz) {
     // Write watch lets the renderer skip guest pages the CPU did not write
     // since it last copied them (gx2_write_watch.h).
     if (!g_guest_guard)
-        return static_cast<uint8_t*>(VirtualAlloc(nullptr, sz, MEM_RESERVE | MEM_COMMIT | MEM_WRITE_WATCH, PAGE_READWRITE));
+        return static_cast<uint8_t*>(
+            VirtualAlloc(nullptr, sz, MEM_RESERVE | MEM_COMMIT | MEM_WRITE_WATCH, PAGE_READWRITE));
     auto p = static_cast<uint8_t*>(VirtualAlloc(nullptr, sz, MEM_RESERVE | MEM_WRITE_WATCH, PAGE_NOACCESS));
     if (p && (!VirtualAlloc(p, RBREW_APPLICATION_ARENA_END, MEM_COMMIT, PAGE_READWRITE) ||
               !VirtualAlloc(p + RBREW_FG_FREE_BASE, RBREW_FG_FREE_SIZE, MEM_COMMIT, PAGE_READWRITE) ||
@@ -470,9 +469,7 @@ int main(int argc, char** argv) {
     // ESC-menu options (settings.ini); start-only values reach the environment here.
     rbrew_settings::load();
     rbrew::discord_rpc_init();
-#if defined(_WIN32)
-    rbrew_native::online_boot(); // SpotPass files and friends relay: online play without Python
-#endif
+    rbrew_native::online_boot(); // SpotPass files and saved-token relay: native on Windows and Linux
     RBREW_LOG_INFO("BOOT", "Splatoon launch runtime; RPX header entry=0x%08X\n", rebrewu_generated::Gambit_entry_point);
     RBREW_LOG_INFO("FS", "RBREW_CONTENT_DIR=%s\n",
                    getenv("RBREW_CONTENT_DIR") ? getenv("RBREW_CONTENT_DIR") : "./content");
@@ -790,9 +787,7 @@ int main(int argc, char** argv) {
     // Arena and dispatch are process-owned: guest workers may still reference
     // them until process termination. Do not free them underneath live workers.
     rbrew::discord_rpc_shutdown();
-#if defined(_WIN32)
     rbrew_native::online_shutdown();
-#endif
     return result;
 }
 

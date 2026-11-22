@@ -69,6 +69,26 @@ int main() {
         check(token[0x1FF] == 'x' && token[0x200] == 0 && token[0x243] == 'p' && token[0x244] == 0 &&
                   token[0x256] == '5' && token[0x257] == 0,
               "long fields are truncated and stay NUL-terminated");
+        rbrew_online::Config pub{true, "173.249.46.125", 60000};
+        check(rbrew_online::resolve_dns_override(pub) ==
+                  "nncs1.app.nintendowifi.net=173.249.46.125,nncs2.app.nintendowifi.net=13.140.129.165",
+              "public server default NNCS override");
+        check(rbrew_online::resolve_register_url(pub) == "https://splatoonline.duckdns.org/register",
+              "public server default register URL");
+
+        const auto sess_file = std::filesystem::temp_directory_path() / "rbrew_session_test.ini";
+        std::filesystem::remove(sess_file);
+        rbrew_online::SessionToken tok{
+            "tok_abc", "173.249.46.125:60000", "https://splatoonline.duckdns.org/register", 0x12345678, "Tototcs",
+            1700000000};
+        check(rbrew_online::save_session_token(tok, sess_file), "save session token");
+        const auto loaded_tok = rbrew_online::load_session_token(sess_file);
+        check(loaded_tok && loaded_tok->token == "tok_abc" && loaded_tok->pid == 0x12345678 &&
+                  loaded_tok->pseudo == "Tototcs" && loaded_tok->saved_at == 1700000000,
+              "session token round trip");
+        rbrew_online::clear_session_token(sess_file);
+        check(!rbrew_online::load_session_token(sess_file).has_value(), "cleared session token");
+
         std::puts("online identity: identity file, server, pseudo and NEX token layout passed");
         return 0;
     } catch (const std::exception& e) {

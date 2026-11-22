@@ -93,10 +93,11 @@ static const rbrew_net::Policy& net_policy() {
         uint32_t server = 0;
         const bool online = config.online && rbrew_net::Policy::parse_ipv4(config.host, server) &&
                             !rbrew_net::Policy::is_loopback(server);
+        const std::string dns_override = rbrew_online::resolve_dns_override(config);
         std::vector<uint32_t> announced;
         if (online) {
             announced.push_back(server);
-            rbrew_net::Policy overrides(std::getenv("RBREW_DNS_OVERRIDE"));
+            rbrew_net::Policy overrides(dns_override.c_str());
             for (uint32_t address : overrides.addresses())
                 if (!rbrew_net::Policy::is_loopback(address)) announced.push_back(address);
             if (const char* list = std::getenv("RBREW_PEERS")) {
@@ -111,7 +112,7 @@ static const rbrew_net::Policy& net_policy() {
                 }
             }
         }
-        return rbrew_net::Policy(std::getenv("RBREW_DNS_OVERRIDE"), online, rbrew_net::steady_seconds, announced);
+        return rbrew_net::Policy(dns_override.c_str(), online, rbrew_net::steady_seconds, announced);
     }();
     return policy;
 }

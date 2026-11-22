@@ -1,14 +1,15 @@
-// Online mode without Python (recompiler/port/online): unit tests, and two commands for the Python cross-checks
+// Native online mode (recompiler/port/online): unit tests, and commands for Python cross-checks
 // (tools/tests/test_online_native.py):
 //     gambit_online_tests                      unit tests
 //     gambit_online_tests attest <root> <out>  writes {"version", "code"} of <root> to <out>
 //     gambit_online_tests boss <dir> <now>     writes the SpotPass files of <dir> for the ISO date <now>
-//     gambit_online_tests relay-once <url> <game dir> <pid hex> <password>   one relay cycle over WinHTTP
+//     gambit_online_tests relay-once <url> <game dir> <pid hex> <password>   one relay cycle over HTTP
 #include "online/boss_schedule.h"
 #include "online/byaml.h"
 #include "online/friends_relay.h"
 #include "online/hashing.h"
 #include "online/integrity_proof.h"
+#include "online/online_login.h"
 #include "online/py_random.h"
 #include "rebrewu/logger.hpp"
 
@@ -111,6 +112,14 @@ public:
         queue.pop_front();
         return r;
     }
+    Reply request(const std::string& method, const std::string& abs_path, const json* body) override {
+        sent.emplace_back(method + " " + abs_path, body ? *body : json());
+        auto& queue = replies[method + " " + abs_path];
+        if (queue.empty()) return Reply{200, json::object()};
+        Reply r = queue.front();
+        queue.pop_front();
+        return r;
+    }
     int count(const std::string& route) const {
         int n = 0;
         for (const auto& s : sent) n += s.first == route;
@@ -192,6 +201,58 @@ void test_schedule_errors() {
     check(data["DateTime"] == "2026-11-10T12:00:00Z" && data["Phases"].size() == 84, "now: current 4 h phase, 14 days");
 }
 
+void test_login_and_url_split() {
+    std::string base, path;
+    check(split_url("https://splatoonline.duckdns.org/register", base, path) &&
+              base == "https://splatoonline.duckdns.org" && path == "/register",
+          "split https URL with path");
+    check(split_url("http://127.0.0.1:60002", base, path) && base == "http://127.0.0.1:60002" && path == "/",
+          "split http URL without path");
+    check(!split_url("ftp://example.com/a", base, path), "reject non-http URL");
+
+    check(parse_semver("0.2") == parse_semver("v0.2.0"), "0.2 equals 0.2.0");
+
+    FakeTransport srv;
+    std::string err, detail, token;
+    srv.replies["GET /health"] = {
+        Reply{200, {{"min_client_version", "0.1.5"}, {"integrity_mode", "enforce"}, {"latest_version", "0.2.0"}}}};
+    check(!check_server_version(srv, "/health", "0.1.5", err) && err.find("0.2.0") != std::string::npos,
+          "enforce mode requires latest_version");
+
+    srv.replies["GET /health"] = {Reply{200, {{"min_client_version", "0.1.5"}, {"integrity_mode", "log"}}}};
+    check(check_server_version(srv, "/health", "0.1.5", err) && err.empty(), "matching version passes");
+
+    const fs::path game = scratch("login");
+    srv.replies["POST /register"] = {Reply{409, json::object()}, Reply{200, json::object()}};
+    check(!ensure_registered(srv, "https://example.com/register", "/register", game, 0x10000001, "SecretPass123456",
+                             err) &&
+              err.find("online_identity.ini") != std::string::npos,
+          "409 conflict reports identity mismatch");
+    check(ensure_registered(srv, "https://example.com/register", "/register", game, 0x10000001, "SecretPass123456",
+                            err) &&
+              err.empty(),
+          "200 writes registration marker");
+    check(read(game / "online_registered.txt") == "https://example.com/register\n", "marker file written");
+    const size_t before = srv.sent.size();
+    check(ensure_registered(srv, "https://example.com/register", "/register", game, 0x10000001, "SecretPass123456",
+                            err) &&
+              srv.sent.size() == before,
+          "registered marker skips repeated POST /register");
+
+    // Full interactive login sequence returning session token
+    srv.replies["GET /health"] = {Reply{200, {{"min_client_version", "0.1.5"}}}};
+    srv.replies["pseudo"] = {Reply{409, json::object()}, Reply{200, {{"pseudo", "Inkling"}}}};
+    srv.replies["session"] = {Reply{200, {{"token", "tok_saved_123"}}}};
+    check(!perform_account_login(srv, "https://example.com/register", "/register", game, 0x10000001, "SecretPass123456",
+                                 "Taken", "0.1.5", {{"version", "0.1.5"}, {"code", "ab"}}, token, err, detail) &&
+              err.find("already taken") != std::string::npos,
+          "409 pseudo reports taken");
+    check(perform_account_login(srv, "https://example.com/register", "/register", game, 0x10000001, "SecretPass123456",
+                                "Inkling", "0.1.5", {{"version", "0.1.5"}, {"code", "ab"}}, token, err, detail) &&
+              token == "tok_saved_123",
+          "full login sequence acquires token");
+}
+
 int run_tests() {
     test_python_random();
     test_byaml();
@@ -199,6 +260,7 @@ int run_tests() {
     test_attestation();
     test_relay();
     test_schedule_errors();
+    test_login_and_url_split();
     if (s_failures) return 1;
     RBREW_LOG_INFO("online_tests", "all online tests passed\n");
     return 0;
@@ -213,8 +275,8 @@ int main(int argc, char** argv) {
             write(fs::path(argv[3]), json({{"version", proof.version}, {"code", proof.code}}).dump());
             return 0;
         }
-        if (argc == 6 && std::string(argv[1]) == "relay-once") { // <url> <game dir> <pid hex> <password>, over WinHTTP
-            const auto transport = make_winhttp_transport(argv[2], 6000);
+        if (argc == 6 && std::string(argv[1]) == "relay-once") { // <url> <game dir> <pid hex> <password>, over HTTP
+            const auto transport = make_http_transport(argv[2], 6000);
             if (!transport) return 4;
             const fs::path game(argv[3]);
             FriendsRelay relay(*transport, uint32_t(std::stoul(argv[4], nullptr, 16)), argv[5], "Ana", game,

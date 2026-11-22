@@ -115,7 +115,7 @@ std::u16string display_name(const Friend& f) {
 void GetFriendList(CPUState* cpu) {
     const uint32_t out = ARG0, count_out = ARG1, offset = ARG2, max = ARG3;
     uint32_t n = 0, index = 0;
-    if (guest_ok(cpu, out, 4ull * max))
+    if (rbrew_online::config().online && guest_ok(cpu, out, 4ull * max))
         for (const auto& [pid, f] : friends())
             if (index++ >= offset && n < max) rbrew_write32(MEM, out + 4 * n++, pid);
     if (guest_ok(cpu, count_out, 4)) rbrew_write32(MEM, count_out, n);
@@ -168,8 +168,9 @@ void UpdateGameMode(CPUState* cpu) {
 } // namespace
 
 void fp_lab_register(CPUState* cpu) {
-    const char* dir = std::getenv("RBREW_FRIENDS_DIR");
-    if (!dir || !*dir || !rbrew_online::config().online) return;
+    if (!rbrew_online::config().online) return;
+    const fs::path dir = rbrew_online::friends_dir();
+    if (dir.empty()) return;
     s_dir = dir;
     std::error_code ec;
     fs::create_directories(s_dir, ec);
@@ -182,5 +183,5 @@ void fp_lab_register(CPUState* cpu) {
     rbrew_register_func(cpu, ADDR_GetFriendApprovalTime__Q2_2nn2fpFPQ3_2nn2fp8DateTimePCUiUi, GetFriendApprovalTime);
     rbrew_register_func(cpu, ADDR_GetFriendPresence__Q2_2nn2fpFPQ3_2nn2fp14FriendPresencePCUiUi, GetFriendPresence);
     rbrew_register_func(cpu, ADDR_UpdateGameMode__Q2_2nn2fpFPCQ3_2nn2fp8GameModePCwUi, UpdateGameMode);
-    RBREW_LOG_INFO("fp_lab", "friends folder %s, pid %08x\n", dir, rbrew_online::identity().pid);
+    RBREW_LOG_INFO("fp_lab", "friends folder %s, pid %08x\n", s_dir.string().c_str(), rbrew_online::identity().pid);
 }

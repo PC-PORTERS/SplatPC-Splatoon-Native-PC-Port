@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <string>
 #include <utility>
@@ -26,6 +27,10 @@ class FriendsRelay {
 public:
     FriendsRelay(Transport& transport, uint32_t pid, std::string password, std::string pseudo,
                  std::filesystem::path game_dir, std::filesystem::path friends_dir, nlohmann::json client);
+
+    void set_initial_token(std::string token) { token_ = std::move(token); }
+    void set_token_callback(std::function<void(const std::string&)> cb) { on_token_ = std::move(cb); }
+    const std::string& token() const { return token_; }
 
     void claim_pseudo(); // a pseudo taken by another account shows in state.res
     void step();         // one cycle; never throws
@@ -62,6 +67,7 @@ private:
     std::chrono::steady_clock::time_point refused_until_{};
     std::map<std::string, std::pair<std::string, std::string>> online_; // pid -> (name, mode), last good heartbeat
     Friends requests_;                                                  // friend requests received, not answered yet
+    std::function<void(const std::string&)> on_token_;
 };
 
 // Text helpers shared with the tests.

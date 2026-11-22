@@ -5,8 +5,12 @@
 #include <cstdio>
 #include <fstream>
 #include <iterator>
-#include <process.h>
 #include <regex>
+#if defined(_WIN32)
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
@@ -74,7 +78,12 @@ std::map<std::string, std::string> read_kv(const fs::path& path) {
 
 void write_atomic(const fs::path& path, const std::string& text) {
     fs::path temporary = path;
-    temporary += "." + std::to_string(_getpid()) + ".tmp";
+#if defined(_WIN32)
+    const int pid = _getpid();
+#else
+    const int pid = int(getpid());
+#endif
+    temporary += "." + std::to_string(pid) + ".tmp";
     {
         std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
         out << text;
@@ -125,6 +134,7 @@ bool FriendsRelay::ensure_session() {
     const json token = r.body.value("token", json());
     if (r.status == 200 && token.is_string() && !token.get<std::string>().empty()) {
         token_ = token.get<std::string>();
+        if (on_token_) on_token_(token_);
         return true;
     }
     if (r.status == 426) { // the server only takes official, up-to-date game files

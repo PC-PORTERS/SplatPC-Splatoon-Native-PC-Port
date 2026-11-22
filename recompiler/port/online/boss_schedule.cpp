@@ -11,9 +11,13 @@
 #include <fstream>
 #include <iterator>
 #include <map>
-#include <process.h>
 #include <set>
 #include <stdexcept>
+#if defined(_WIN32)
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace fs = std::filesystem;
 
@@ -171,7 +175,12 @@ std::string color(const Plan& text) {
 
 // The temporary name carries the process id: two games started together (test launchers) share Game/boss.
 bool write_file(const fs::path& path, fs::path temporary, const std::string& content) {
-    temporary += "." + std::to_string(_getpid());
+#if defined(_WIN32)
+    const int pid = _getpid();
+#else
+    const int pid = int(getpid());
+#endif
+    temporary += "." + std::to_string(pid);
     std::error_code ec;
     fs::create_directories(path.parent_path(), ec);
     {

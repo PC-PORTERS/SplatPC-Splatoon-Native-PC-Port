@@ -1,5 +1,6 @@
-// online_settings.h - read-only access to settings.ini (next to the
-// executable) for the keys of the online mode: online_server= and pseudo=.
+// online_settings.h - read/write access to settings.ini (next to the
+// executable) for the keys of the online mode: online_server=,
+// online_nncs1=, online_nncs2=, online_register=, pseudo=, and player_name=.
 //
 // Precedence: environment variable > settings.ini > default. The ESC menu
 // (port_settings.cpp) owns the file and preserves keys it does not know, so
@@ -11,11 +12,15 @@
 #include <map>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #if defined(_WIN32)
 // Same declaration as <windows.h>, so this header does not pull it in.
 extern "C" __declspec(dllimport) unsigned long __stdcall GetModuleFileNameW(struct HINSTANCE__*, wchar_t*,
                                                                             unsigned long);
+extern "C" __declspec(dllimport) unsigned long __stdcall GetCurrentProcessId();
+#else
+#include <unistd.h>
 #endif
 
 namespace rbrew_online_cfg {
@@ -45,6 +50,17 @@ inline std::filesystem::path settings_path() {
     wchar_t buf[1024];
     const unsigned long n = GetModuleFileNameW(nullptr, buf, 1024);
     if (n && n < 1024) return std::filesystem::path(buf).parent_path() / L"settings.ini";
+#else
+    char buf[4096];
+    const ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n > 0) {
+        buf[n] = '\0';
+        const auto exe_settings = std::filesystem::path(buf).parent_path() / "settings.ini";
+        std::error_code ec;
+        if (std::filesystem::exists(exe_settings, ec)) return exe_settings;
+        if (std::filesystem::exists("settings.ini", ec)) return "settings.ini";
+        return exe_settings;
+    }
 #endif
     return "settings.ini";
 }
@@ -59,6 +75,53 @@ inline std::string resolved(const char* env, const std::string& key, const std::
         if (it != file.end() && !it->second.empty()) return it->second;
     }
     return fallback;
+}
+// Updates or appends specific keys in settings.ini while preserving all other lines and comments.
+inline bool update_settings(const Values& updates, const std::filesystem::path& path = settings_path()) {
+    std::vector<std::string> lines;
+    std::map<std::string, bool> seen;
+    {
+        std::ifstream in(path, std::ios::binary);
+        std::string line;
+        while (std::getline(in, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            const std::string t = trim(line);
+            const size_t eq = t.find('=');
+            if (!t.empty() && t[0] != '#' && eq != std::string::npos) {
+                const std::string key = trim(t.substr(0, eq));
+                const auto it = updates.find(key);
+                if (it != updates.end()) {
+                    lines.push_back(key + "=" + it->second);
+                    seen[key] = true;
+                    continue;
+                }
+            }
+            lines.push_back(line);
+        }
+    }
+    for (const auto& [k, v] : updates) {
+        if (!seen[k]) lines.push_back(k + "=" + v);
+    }
+    std::error_code ec;
+    if (!path.parent_path().empty()) std::filesystem::create_directories(path.parent_path(), ec);
+    std::filesystem::path tmp = path;
+#if defined(_WIN32)
+    tmp += "." + std::to_string(GetCurrentProcessId()) + ".tmp";
+#else
+    tmp += "." + std::to_string(getpid()) + ".tmp";
+#endif
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        if (!out) return false;
+        for (const auto& l : lines) out << l << '\n';
+        if (!out.flush()) return false;
+    }
+    std::filesystem::rename(tmp, path, ec);
+    if (ec) {
+        std::filesystem::remove(tmp, ec);
+        return false;
+    }
+    return true;
 }
 
 } // namespace rbrew_online_cfg

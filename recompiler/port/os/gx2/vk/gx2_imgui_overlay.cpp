@@ -15,9 +15,9 @@
 #include "../../runtime/port_settings.h"
 #include "../../runtime/splatoon_diagnostics.h"
 #include "../../runtime/online_identity.h"
+#include "../../online/online_boot.h"
 #include "../../nn_nfp/nn_nfp.h"
 #include "../gx2_perf.h"
-#include "../../runtime/online_identity.h"
 #include <fstream>
 #include <sstream>
 
@@ -69,8 +69,9 @@ std::atomic<bool> s_quit_confirm_requested{false};
 std::atomic<bool> s_quit_confirm_open{false};
 std::atomic<bool> s_quit_opened_from_gameplay{false};
 std::atomic<bool> s_cancel_quit_confirm{false};
-std::atomic<bool> s_capture_active{false};   // render thread waits for a rebinding input
-std::atomic<bool> s_amiibo_requested{false}; // open the menu on the amiibo picker
+std::atomic<bool> s_capture_active{false};     // render thread waits for a rebinding input
+std::atomic<bool> s_amiibo_requested{false};   // open the menu on the amiibo picker
+std::atomic<bool> s_startup_login_open{false}; // startup ImGui Online Account Login modal
 
 std::mutex s_event_lock;
 std::vector<SDL_Event> s_events;
@@ -101,7 +102,7 @@ void update_shader_activity() {
     s_shader_compiling = ImGui::GetTime() - s_shader_last_change < 0.75;
 }
 
-enum class MenuPage { Main, Display, Keyboard, Controller, Friends, Amiibo };
+enum class MenuPage { Main, Display, Keyboard, Controller, Friends, OnlineLogin, Amiibo };
 // F4 (GX2 thread) asks for the Friends page: when the menu is closed it opens on that page; when it is open the
 // render thread switches to it (or closes the menu when already there).
 std::atomic<bool> s_friends_request{false};
@@ -598,11 +599,7 @@ char s_input[16] = "";
 bool s_focus_input = true;
 
 fs::path dir() {
-    static const fs::path path = [] {
-        const char* value = std::getenv("RBREW_FRIENDS_DIR");
-        return value && *value ? fs::path(value) : fs::path();
-    }();
-    return path;
+    return rbrew_online::friends_dir();
 }
 
 bool read_file(const fs::path& path, std::string& text) {
@@ -670,13 +667,17 @@ void send(const char* file, const std::string& pseudo) {
 }
 
 void build_page() {
-    if (dir().empty()) {
-        ImGui::TextWrapped("Friends need online play: start the game with PLAY (not 'Play offline').");
+    const auto online_cfg = rbrew_online::config();
+    if (!online_cfg.online || dir().empty()) {
+        ImGui::TextWrapped("Online mode is off. Log in to an online account or enable Online in SplatPC Builder.");
+        if (ImGui::Button("Online Login / Account")) s_menu_page = MenuPage::OnlineLogin;
+        ImGui::SameLine();
         if (ImGui::Button("Back")) s_menu_page = MenuPage::Main;
         return;
     }
     refresh();
-    ImGui::TextDisabled("Your pseudo: %s", rbrew_online::pseudo().c_str());
+    ImGui::TextDisabled("Pseudo: %s   |   PID: %08x   |   Server: %s:%u", rbrew_online::pseudo().c_str(),
+                        rbrew_online::identity().pid, online_cfg.host.c_str(), unsigned(online_cfg.port));
     ImGui::TextWrapped(
         "Type a friend's pseudo and press Enter: they get a request and must accept it. You then see each other "
         "in the game's friend list and can join each other's rooms.");
@@ -735,9 +736,115 @@ void build_page() {
     ImGui::Separator();
     if (ImGui::Button("Back")) s_menu_page = MenuPage::Main;
     ImGui::SameLine();
+    if (ImGui::Button("Account / Tokens")) s_menu_page = MenuPage::OnlineLogin;
+    ImGui::SameLine();
     ImGui::TextDisabled("F4 / Esc: close");
 }
 } // namespace friends_ui
+
+namespace online_login_ui {
+bool s_initialized = false;
+bool s_login_submitted = false;
+char s_pseudo[16] = "";
+char s_server[64] = "";
+char s_register_url[256] = "";
+char s_nncs1[32] = "";
+char s_nncs2[32] = "";
+
+void copy_field(char* dst, size_t cap, const std::string& src) {
+    if (!cap) return;
+    const size_t n = std::min(src.size(), cap - 1);
+    std::memcpy(dst, src.data(), n);
+    dst[n] = '\0';
+}
+
+void ensure_loaded() {
+    if (s_initialized) return;
+    const auto f = rbrew_native::current_login_form();
+    copy_field(s_pseudo, sizeof s_pseudo, f.pseudo);
+    copy_field(s_server, sizeof s_server, f.server);
+    copy_field(s_register_url, sizeof s_register_url, f.register_url);
+    copy_field(s_nncs1, sizeof s_nncs1, f.nncs1);
+    copy_field(s_nncs2, sizeof s_nncs2, f.nncs2);
+    s_initialized = true;
+}
+
+void draw_form_body(bool startup_mode) {
+    ensure_loaded();
+    const auto st = rbrew_native::login_status();
+
+    ImGui::TextWrapped(
+        "Sign in to the SplatPC community server. Your identity and session token are saved next to the game.");
+    ImGui::Separator();
+
+    ImGui::BeginDisabled(st.connecting);
+    ImGui::InputText("Pseudo", s_pseudo, sizeof s_pseudo);
+    ImGui::TextDisabled("2 to 10 characters: letters, digits, space, _ - .");
+    ImGui::InputText("Server (IP:Port)", s_server, sizeof s_server);
+    ImGui::InputText("Register URL", s_register_url, sizeof s_register_url);
+    if (ImGui::CollapsingHeader("Advanced (NNCS1 / NNCS2)")) {
+        ImGui::InputText("NNCS1 IP", s_nncs1, sizeof s_nncs1);
+        ImGui::InputText("NNCS2 IP", s_nncs2, sizeof s_nncs2);
+    }
+    ImGui::EndDisabled();
+
+    ImGui::Separator();
+    if (st.has_identity)
+        ImGui::Text("Identity (online_identity.ini): PID %08x", st.pid);
+    else
+        ImGui::TextDisabled("Identity (online_identity.ini): auto-created on connect");
+    ImGui::Text("Registration (online_registered.txt): %s", st.has_registered ? "Saved" : "Not registered yet");
+    ImGui::Text("Session Token (online_session.ini): %s", st.has_saved_token ? "Saved" : "None");
+
+    if (!st.message.empty()) {
+        ImVec4 col = ImVec4(0.4f, 1.0f, 0.5f, 1.0f);
+        if (st.connecting)
+            col = ImVec4(1.0f, 0.85f, 0.35f, 1.0f);
+        else if (st.has_error)
+            col = ImVec4(1.0f, 0.45f, 0.45f, 1.0f);
+        ImGui::Separator();
+        ImGui::TextColored(col, "%s", st.message.c_str());
+        if (!st.detail.empty()) ImGui::TextWrapped("%s", st.detail.c_str());
+    }
+
+    ImGui::Separator();
+    ImGui::BeginDisabled(st.connecting);
+    if (ImGui::Button(st.connecting ? "Connecting..." : "Connect & Save Tokens")) {
+        s_login_submitted = true;
+        rbrew_native::start_interactive_login({s_pseudo, s_server, s_register_url, s_nncs1, s_nncs2});
+    }
+    ImGui::SameLine();
+    if (startup_mode) {
+        if (ImGui::Button("Play Offline")) {
+            rbrew_online::set_session_offline(true);
+            s_startup_login_open.store(false, std::memory_order_relaxed);
+        }
+    } else {
+        if (ImGui::Button("Back")) s_menu_page = MenuPage::Main;
+    }
+    if (st.has_saved_token || st.has_registered) {
+        ImGui::SameLine();
+        if (ImGui::Button("Clear Saved Tokens")) rbrew_native::clear_saved_tokens();
+    }
+    ImGui::EndDisabled();
+
+    if (startup_mode && s_login_submitted && !st.connecting && st.logged_in && !st.has_error) {
+        s_login_submitted = false;
+        s_startup_login_open.store(false, std::memory_order_relaxed);
+    }
+}
+
+void build_startup_window() {
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(500.0f, 0.0f), ImGuiCond_Always);
+    if (ImGui::Begin("Splatoon Online - Account Login", nullptr,
+                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_AlwaysAutoResize)) {
+        draw_form_body(true);
+    }
+    ImGui::End();
+}
+} // namespace online_login_ui
 
 // The emulated GamePad touchpoint: a file browser for amiibo dumps (.bin).
 // The chosen dump is placed on the touchpoint and the game reads it through
@@ -838,6 +945,7 @@ const char* menu_title(MenuPage page) {
     case MenuPage::Keyboard: return "Mouse & keyboard";
     case MenuPage::Controller: return "Controller";
     case MenuPage::Friends: return "Friends";
+    case MenuPage::OnlineLogin: return "Online Account";
     case MenuPage::Amiibo: return "amiibo";
     default: return "Settings";
     }
@@ -928,6 +1036,12 @@ void build_settings_window() {
         if (!open) set_menu_open(false);
         return;
     }
+    if (s_menu_page == MenuPage::OnlineLogin) {
+        online_login_ui::draw_form_body(false);
+        ImGui::End();
+        if (!open) set_menu_open(false);
+        return;
+    }
     if (s_menu_page == MenuPage::Amiibo) {
         build_amiibo_page();
         ImGui::End();
@@ -956,6 +1070,8 @@ void build_settings_window() {
             friends_ui::s_focus_input = true;
         }
     }
+    ImGui::SameLine();
+    if (ImGui::Button("Online Account")) s_menu_page = MenuPage::OnlineLogin;
     if (rbrew_nfp::searching()) {
         ImGui::SameLine();
         if (ImGui::Button("Scan amiibo")) s_menu_page = MenuPage::Amiibo;
@@ -1104,6 +1220,14 @@ void open_amiibo_picker() {
     set_menu_open(true);
 }
 
+void open_startup_login() {
+    s_startup_login_open.store(true, std::memory_order_relaxed);
+}
+
+bool startup_login_active() {
+    return s_startup_login_open.load(std::memory_order_relaxed);
+}
+
 void open_quit_confirmation() {
     if (!rs::g_confirm_quit.load(std::memory_order_relaxed)) {
         s_quit_requested.store(true, std::memory_order_relaxed);
@@ -1204,9 +1328,10 @@ bool ensure_ready(SDL_Window* window, VkInstance instance, VkPhysicalDevice phys
 
 ImDrawData* begin_frame(VkExtent2D extent) {
     if (!s_ready) return nullptr;
-    const bool show_menu = menu_open();
+    const bool show_login = startup_login_active();
+    const bool show_menu = !show_login && menu_open();
     const bool show_simple = simple_overlay();
-    if (!visible() && !show_menu && !show_simple) {
+    if (!visible() && !show_menu && !show_simple && !show_login) {
         s_capture_active.store(false, std::memory_order_relaxed);
         return nullptr;
     }
@@ -1265,7 +1390,10 @@ ImDrawData* begin_frame(VkExtent2D extent) {
     }
     update_shader_activity();
     s_focused_action = -1;
-    if (show_menu && !s_quit_opened_from_gameplay.load(std::memory_order_relaxed)) build_settings_window();
+    if (show_login)
+        online_login_ui::build_startup_window();
+    else if (show_menu && !s_quit_opened_from_gameplay.load(std::memory_order_relaxed))
+        build_settings_window();
     build_quit_confirmation_popup();
     // Phase scopes (gx2_perf.h) record while this window is visible; off they
     // cost one relaxed load per scope. An RBREW_PERF file keeps them anyway.

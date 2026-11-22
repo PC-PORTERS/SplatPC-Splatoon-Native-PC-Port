@@ -34,6 +34,9 @@ bool menu_open();
 // Opens the menu on the amiibo picker (GX2 thread, when the game starts NFC
 // detection). Esc/B/Back returns to the game's own "touch amiibo" screen.
 void open_amiibo_picker();
+// Startup / in-game Online Account Login dialog (ImGui).
+void open_startup_login();
+bool startup_login_active();
 // Opens the quit confirmation popup (and the menu if closed).
 void open_quit_confirmation();
 bool is_quit_confirmation_open();
