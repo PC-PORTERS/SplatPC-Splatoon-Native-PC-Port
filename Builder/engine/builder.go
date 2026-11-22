@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -131,6 +130,7 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 	log("Selecting manifest for Gambit.rpx...")
 	cmdSelect := python.Command(ctx, filepath.Join(recompilerDir, "tools", "plt_resolver.py"),
 		"select", "--rpx", rpxPath, "--manifest-dir", manifestDir)
+	cmdSelect.Env = prereq.ToolEnv(os.Environ())
 	selectOut, err := cmdSelect.Output()
 	if err != nil {
 		failDone(fmt.Errorf("unsupported game version or manifest selection failed: %w", err))
@@ -165,93 +165,26 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 		return
 	}
 
-	// STEP 3: SDL2 & glslang dependencies
+	// STEP 3 & 4: Graphics & native dependencies
 	progress(3, "Graphics Libraries", "Downloading and building SDL2 and glslang", 0.25)
 	log("=== Step 3/8: SDL2 & glslang Dependencies ===")
-	sdlZip := filepath.Join(downloadsDir, "SDL2-2.32.10.zip")
-	glslangTar := filepath.Join(downloadsDir, "glslang-16.4.0.tar.gz")
-
-	if _, err := os.Stat(sdlZip); err != nil {
-		log("Downloading SDL2...")
-		if err := downloadFile("https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-2.32.10.zip", sdlZip); err != nil {
-			failDone(err)
-			return
-		}
-	}
-	if _, err := os.Stat(glslangTar); err != nil {
-		log("Downloading glslang...")
-		if err := downloadFile("https://github.com/KhronosGroup/glslang/archive/refs/tags/16.4.0.tar.gz", glslangTar); err != nil {
-			failDone(err)
-			return
-		}
-	}
-
-	sdlSource := filepath.Join(downloadsDir, "SDL2-2.32.10")
-	if _, err := os.Stat(sdlSource); err != nil {
-		log("Extracting SDL2...")
-		cmdExtract := python.Command(ctx, "-c", "import zipfile, sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])", sdlZip, downloadsDir)
-		if err := runCmdWithLog(cmdExtract, log); err != nil {
-			failDone(fmt.Errorf("extracting SDL2: %w", err))
-			return
-		}
-	}
-
-	cmakePath, _ := exec.LookPath("cmake")
-	cmdBuildDeps := python.Command(ctx, filepath.Join(recompilerDir, "tools", "build_vulkan_dependencies.py"),
-		"--sdl-source", sdlSource,
-		"--glslang-archive", glslangTar,
-		"--build-root", filepath.Join(buildDir, "deps-build"),
-		"--prefix", depsDir,
-		"--generator", cmake.generator,
-		"--cmake", cmakePath,
-		"--cache-dir", filepath.Join(buildDir, "cache", "deps"),
-	)
-	if err := runCmdWithLog(cmdBuildDeps, log); err != nil {
-		failDone(fmt.Errorf("building Vulkan dependencies: %w", err))
-		return
-	}
-
-	// STEP 4: Native libraries. Windows has no system Vulkan-Headers, zlib or
-	// curl, so the Builder provides them there.
-	progress(4, "Native Libraries", "Setting up volk and the libraries the game links", 0.35)
-	log("=== Step 4/8: Native Libraries ===")
-	var libs bundledLibraries
-	if runtime.GOOS == "windows" {
-		if libs, err = installVulkanHeaders(deps); err != nil {
-			failDone(err)
-			return
-		}
-	}
-	volkDir, volkPrefix, err := locateVolk(deps, volkDependency(libs.vulkanHeaders))
-	if err != nil {
+	if err := buildVulkanGraphicsDeps(ctx, buildDir, downloadsDir, depsDir, recompilerDir, cmake, python, log); err != nil {
 		failDone(err)
 		return
 	}
-	log("Volk ready: %s (prefix: %s)", volkDir, volkPrefix)
-	if runtime.GOOS == "windows" {
-		if err := installZlibAndCurl(deps, &libs); err != nil {
-			failDone(err)
-			return
-		}
+
+	progress(4, "Native Libraries", "Setting up volk and the libraries the game links", 0.35)
+	log("=== Step 4/8: Native Libraries ===")
+	libs, volkDir, volkPrefix, err := prepareNativeDependencies(deps, recompilerDir, log)
+	if err != nil {
+		failDone(err)
+		return
 	}
 
 	// STEP 5: Build RebrewU recompiler
 	progress(5, "RebrewU Recompiler", "Building the RebrewU recompiler executable", 0.45)
 	log("=== Step 5/8: RebrewU Recompiler ===")
-	rebrewuBuild := filepath.Join(buildDir, "rebrewu")
-	rebrewuDefines := append([]string{"-DREBREWU_BUILD_TESTS=OFF"}, libs.zlibDefines...)
-	cmdRebrewuCfg := proc.CommandContext(ctx, "cmake", cmake.configureArgs(recompilerDir, rebrewuBuild, rebrewuDefines...)...)
-	if err := runCmdWithLog(cmdRebrewuCfg, log); err != nil {
-		failDone(fmt.Errorf("CMake configuration of RebrewU failed: %w", err))
-		return
-	}
-	cmdRebrewuBuild := proc.CommandContext(ctx, "cmake", cmake.buildArgs(rebrewuBuild, "rebrewu")...)
-	if err := runCmdWithLog(cmdRebrewuBuild, log); err != nil {
-		failDone(fmt.Errorf("compiling RebrewU: %w", err))
-		return
-	}
-
-	rebrewuExe, err := builtExecutable(filepath.Join(rebrewuBuild, "bin"), "rebrewu")
+	rebrewuExe, err := buildRebrewu(ctx, recompilerDir, buildDir, cmake, libs, log)
 	if err != nil {
 		failDone(err)
 		return
@@ -278,38 +211,26 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 	progress(7, "Compiling Splatoon", fmt.Sprintf("C++ compilation with %d parallel jobs", cfg.ParallelJobs), 0.70)
 	log("=== Step 7/8: Compiling Native Game (%d jobs) ===", cfg.ParallelJobs)
 	gameBuild := filepath.Join(buildDir, "game")
-	sdl2Dir, ok := findConfigDir(filepath.Join(depsDir, "sdl2-vulkan"), "SDL2Config.cmake")
-	if !ok {
-		sdl2Dir = filepath.Join(depsDir, "sdl2-vulkan", "lib", "cmake", "SDL2")
-	}
-	glslangDir, ok := findConfigDir(filepath.Join(depsDir, "glslang-vulkan"), "glslang-config.cmake", "glslangConfig.cmake")
-	if !ok {
-		glslangDir = filepath.Join(depsDir, "glslang-vulkan", "lib", "cmake", "glslang")
-	}
-
-	prefixPath := strings.Join(append([]string{volkPrefix}, libs.prefixes...), ";")
-	gameDefines := append([]string{
-		"-DRBREW_GRAPHICS_BACKEND=Vulkan",
+	gameDefines := append(portBaseDefines(depsDir, volkDir, volkPrefix, libs),
 		fmt.Sprintf("-DRBREW_GAME_REVISION=%s", gameRevision),
 		fmt.Sprintf("-DRBREW_RPX=%s", rpxPath),
 		fmt.Sprintf("-DGAMBIT_GENERATED_DIR=%s", generatedDir),
-		fmt.Sprintf("-DSDL2_DIR=%s", sdl2Dir),
-		fmt.Sprintf("-Dglslang_DIR=%s", glslangDir),
-		fmt.Sprintf("-Dvolk_DIR=%s", volkDir),
-		fmt.Sprintf("-DCMAKE_PREFIX_PATH=%s", prefixPath),
 		"-DRBREW_BUILD_GAME=ON",
 		"-DRBREW_ENABLE_COVERAGE=OFF",
 		"-DRBREW_ENABLE_PPC_FALLBACK=OFF",
 		"-DRBREW_DIAGNOSTIC_RUNTIME=OFF",
 		"-DRBREW_TEXTURE_DIAGNOSTICS=OFF",
-	}, libs.gameDefines...)
-	cmdGameCfg := proc.CommandContext(ctx, "cmake", cmake.configureArgs(filepath.Join(recompilerDir, "port"), gameBuild, gameDefines...)...)
+	)
+	if cmake.isWindowsMinGW() {
+		gameDefines = append(gameDefines, "-DCMAKE_EXE_LINKER_FLAGS=-static")
+	}
+	cmdGameCfg := proc.CommandContext(ctx, cmake.exe, cmake.configureArgs(filepath.Join(recompilerDir, "port"), gameBuild, gameDefines...)...)
 	if err := runCmdWithLog(cmdGameCfg, log); err != nil {
 		failDone(fmt.Errorf("CMake configuration of the game failed: %w", err))
 		return
 	}
 
-	cmdGameBuild := proc.CommandContext(ctx, "cmake", cmake.buildArgs(gameBuild, "Gambit")...)
+	cmdGameBuild := proc.CommandContext(ctx, cmake.exe, cmake.buildArgs(gameBuild, "Gambit")...)
 	if err := runCmdWithLog(cmdGameBuild, log); err != nil {
 		failDone(fmt.Errorf("compiling Splatoon executable: %w", err))
 		return
@@ -364,10 +285,194 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 		}
 	}
 
+	if cfg.CleanupDepsAfterBuild {
+		log("=== Post-Build Cleanup: Removing dependencies & build cache ===")
+		if _, cleanAfterErr := CleanupAfterBuild(repoRoot, cfg.OutputDir, true, log); cleanAfterErr != nil {
+			log("Warning: post-build cleanup finished with errors: %v", cleanAfterErr)
+		}
+	}
+
 	elapsed := time.Since(startTime)
 	progress(totalSteps, "Build Complete!", fmt.Sprintf("Game ready in %.1f seconds", elapsed.Seconds()), 1.0)
 	log("=== Success! The game is ready in %s ===", cfg.OutputDir)
 	cb.OnDone(true, nil, elapsed, appImagePath)
+}
+
+// RunRuntimeBuild downloads and builds all native dependencies, the RebrewU
+// recompiler, and the port runtime (plus CTest regression tests when
+// buildTests is true) without needing a game dump.
+func RunRuntimeBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, buildTests bool, sink func(string)) error {
+	buildDir := filepath.Join(repoRoot, "build")
+	downloadsDir := filepath.Join(buildDir, "downloads")
+	depsDir := filepath.Join(buildDir, "deps")
+	recompilerDir := filepath.Join(repoRoot, "recompiler")
+
+	_ = os.MkdirAll(downloadsDir, 0755)
+	_ = os.MkdirAll(depsDir, 0755)
+
+	buildLog := openBuildLog(filepath.Join(buildDir, "build.log"), sink)
+	defer buildLog.close()
+	log := buildLog.printf
+
+	python, pythonVersion, ok := prereq.FindPython()
+	if !ok {
+		return fmt.Errorf("Python 3 was not found")
+	}
+	log("Python: %s (%s)", strings.Join(python, " "), pythonVersion)
+
+	cmake := newCMakeProject(cfg.ParallelJobs)
+	log("CMake: %s (%s)", cmake.exe, cmake.generator)
+
+	deps := dependencyBuilder{
+		ctx:        ctx,
+		cmake:      cmake,
+		buildDir:   buildDir,
+		downloads:  downloadsDir,
+		prefixRoot: depsDir,
+		log:        log,
+	}
+
+	if err := buildVulkanGraphicsDeps(ctx, buildDir, downloadsDir, depsDir, recompilerDir, cmake, python, log); err != nil {
+		return err
+	}
+	libs, volkDir, volkPrefix, err := prepareNativeDependencies(deps, recompilerDir, log)
+	if err != nil {
+		return err
+	}
+	if _, err := buildRebrewu(ctx, recompilerDir, buildDir, cmake, libs, log); err != nil {
+		return err
+	}
+
+	portBuild := filepath.Join(buildDir, "port")
+	testsFlag := "OFF"
+	if buildTests {
+		testsFlag = "ON"
+	}
+	portDefines := append(portBaseDefines(depsDir, volkDir, volkPrefix, libs),
+		"-DRBREW_BUILD_GAME=OFF",
+		"-DRBREW_BUILD_TESTS="+testsFlag,
+	)
+	if cmake.isWindowsMinGW() {
+		portDefines = append(portDefines, "-DCMAKE_EXE_LINKER_FLAGS=-static")
+	}
+	cmdPortCfg := proc.CommandContext(ctx, cmake.exe, cmake.configureArgs(filepath.Join(recompilerDir, "port"), portBuild, portDefines...)...)
+	if err := runCmdWithLog(cmdPortCfg, log); err != nil {
+		return fmt.Errorf("CMake configuration of port runtime failed: %w", err)
+	}
+	cmdPortBuild := proc.CommandContext(ctx, cmake.exe, cmake.buildArgs(portBuild, "")...)
+	if err := runCmdWithLog(cmdPortBuild, log); err != nil {
+		return fmt.Errorf("compiling port runtime: %w", err)
+	}
+	log("Runtime and dependencies built successfully in %s.", buildDir)
+	return nil
+}
+
+func buildVulkanGraphicsDeps(ctx context.Context, buildDir, downloadsDir, depsDir, recompilerDir string, cmake cmakeProject, python prereq.Python, log logFunc) error {
+	sdlZip := filepath.Join(downloadsDir, "SDL2-2.32.10.zip")
+	glslangTar := filepath.Join(downloadsDir, "glslang-16.4.0.tar.gz")
+
+	if _, err := os.Stat(sdlZip); err != nil {
+		log("Downloading SDL2...")
+		if err := downloadFile("https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-2.32.10.zip", sdlZip); err != nil {
+			return err
+		}
+	}
+	if _, err := os.Stat(glslangTar); err != nil {
+		log("Downloading glslang...")
+		if err := downloadFile("https://github.com/KhronosGroup/glslang/archive/refs/tags/16.4.0.tar.gz", glslangTar); err != nil {
+			return err
+		}
+	}
+
+	sdlSource := filepath.Join(downloadsDir, "SDL2-2.32.10")
+	if _, err := os.Stat(sdlSource); err != nil {
+		log("Extracting SDL2...")
+		cmdExtract := python.Command(ctx, "-c", "import zipfile, sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])", sdlZip, downloadsDir)
+		if err := runCmdWithLog(cmdExtract, log); err != nil {
+			return fmt.Errorf("extracting SDL2: %w", err)
+		}
+	}
+
+	cmdBuildDeps := python.Command(ctx, filepath.Join(recompilerDir, "tools", "build_vulkan_dependencies.py"),
+		"--sdl-source", sdlSource,
+		"--glslang-archive", glslangTar,
+		"--build-root", filepath.Join(buildDir, "deps-build"),
+		"--prefix", depsDir,
+		"--generator", cmake.generator,
+		"--cmake", cmake.exe,
+		"--jobs", fmt.Sprintf("%d", max(1, cmake.jobs)),
+		"--cache-dir", filepath.Join(buildDir, "cache", "deps"),
+	)
+	if err := runCmdWithLog(cmdBuildDeps, log); err != nil {
+		return fmt.Errorf("building Vulkan dependencies: %w", err)
+	}
+	return nil
+}
+
+func prepareNativeDependencies(deps dependencyBuilder, recompilerDir string, log logFunc) (bundledLibraries, string, string, error) {
+	var libs bundledLibraries
+	var err error
+	userspaceCC := prereq.UsingUserspaceCompiler()
+	if runtime.GOOS == "windows" || userspaceCC || !prereq.HasSystemVulkan() {
+		if libs, err = installVulkanHeaders(deps); err != nil {
+			return bundledLibraries{}, "", "", err
+		}
+	}
+	volkDir, volkPrefix, err := locateVolk(deps, volkDependency(libs.vulkanHeaders))
+	if err != nil {
+		return bundledLibraries{}, "", "", err
+	}
+	log("Volk ready: %s (prefix: %s)", volkDir, volkPrefix)
+	if runtime.GOOS == "windows" || userspaceCC || !prereq.HasSystemZlib() {
+		if err := installZlib(deps, &libs); err != nil {
+			return bundledLibraries{}, "", "", err
+		}
+	}
+	if runtime.GOOS == "windows" || userspaceCC || !prereq.HasSystemCurl() {
+		if err := installCurl(deps, &libs); err != nil {
+			return bundledLibraries{}, "", "", err
+		}
+	}
+	if err := prepareHeaderDependencies(deps, recompilerDir, &libs); err != nil {
+		return bundledLibraries{}, "", "", err
+	}
+	return libs, volkDir, volkPrefix, nil
+}
+
+func buildRebrewu(ctx context.Context, recompilerDir, buildDir string, cmake cmakeProject, libs bundledLibraries, log logFunc) (string, error) {
+	rebrewuBuild := filepath.Join(buildDir, "rebrewu")
+	rebrewuDefines := append([]string{"-DREBREWU_BUILD_TESTS=OFF"}, libs.zlibDefines...)
+	if cmake.isWindowsMinGW() {
+		rebrewuDefines = append(rebrewuDefines, "-DCMAKE_EXE_LINKER_FLAGS=-static")
+	}
+	cmdRebrewuCfg := proc.CommandContext(ctx, cmake.exe, cmake.configureArgs(recompilerDir, rebrewuBuild, rebrewuDefines...)...)
+	if err := runCmdWithLog(cmdRebrewuCfg, log); err != nil {
+		return "", fmt.Errorf("CMake configuration of RebrewU failed: %w", err)
+	}
+	cmdRebrewuBuild := proc.CommandContext(ctx, cmake.exe, cmake.buildArgs(rebrewuBuild, "rebrewu")...)
+	if err := runCmdWithLog(cmdRebrewuBuild, log); err != nil {
+		return "", fmt.Errorf("compiling RebrewU: %w", err)
+	}
+	return builtExecutable(filepath.Join(rebrewuBuild, "bin"), "rebrewu")
+}
+
+func portBaseDefines(depsDir, volkDir, volkPrefix string, libs bundledLibraries) []string {
+	sdl2Dir, ok := findConfigDir(filepath.Join(depsDir, "sdl2-vulkan"), "SDL2Config.cmake")
+	if !ok {
+		sdl2Dir = filepath.Join(depsDir, "sdl2-vulkan", "lib", "cmake", "SDL2")
+	}
+	glslangDir, ok := findConfigDir(filepath.Join(depsDir, "glslang-vulkan"), "glslang-config.cmake", "glslangConfig.cmake")
+	if !ok {
+		glslangDir = filepath.Join(depsDir, "glslang-vulkan", "lib", "cmake", "glslang")
+	}
+	prefixPath := strings.Join(append([]string{volkPrefix}, libs.prefixes...), ";")
+	return append([]string{
+		"-DRBREW_GRAPHICS_BACKEND=Vulkan",
+		fmt.Sprintf("-DSDL2_DIR=%s", sdl2Dir),
+		fmt.Sprintf("-Dglslang_DIR=%s", glslangDir),
+		fmt.Sprintf("-Dvolk_DIR=%s", volkDir),
+		fmt.Sprintf("-DCMAKE_PREFIX_PATH=%s", prefixPath),
+	}, libs.gameDefines...)
 }
 
 // findConfigDir returns the directory under root holding one of the CMake

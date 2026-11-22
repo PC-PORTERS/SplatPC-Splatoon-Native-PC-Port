@@ -6,6 +6,7 @@
 #include "os/stubs/stubs_addrs.h"
 #include "rebrewu/logger.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <vector>
 

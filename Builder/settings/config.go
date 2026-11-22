@@ -64,8 +64,9 @@ type Configuration struct {
 	DetectedGPUName  string
 
 	// Step 3: Build jobs
-	ParallelJobs int
-	CleanBuild   bool
+	ParallelJobs          int
+	CleanBuild            bool
+	CleanupDepsAfterBuild bool
 }
 
 func DefaultConfiguration(repoRoot string) Configuration {

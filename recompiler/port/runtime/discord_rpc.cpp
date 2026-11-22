@@ -2,6 +2,7 @@
 #include "native_control_defaults.h"
 #include "rebrewu/logger.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
