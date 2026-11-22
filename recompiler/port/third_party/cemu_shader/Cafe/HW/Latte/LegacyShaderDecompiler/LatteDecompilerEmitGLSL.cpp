@@ -3897,6 +3897,7 @@ void LatteDecompiler_emitGLSLShader(LatteDecompilerShaderContext* shaderContext,
 	// start of main
 	src->add("void main()" _CRLF);
 	src->add("{" _CRLF);
+    LatteDecompiler::_emitVSExportDefaults(shaderContext);
 	// variable definition
 	if (shaderContext->typeTracker.useArrayGPRs == false)
 	{

@@ -44,12 +44,28 @@ class UpdateCombinatorTests(unittest.TestCase):
             self.assertFalse((ROOT / name).exists(), name)
         self.assertFalse((SCRIPTS / 'splatoon_login.py').exists())
         self.assertFalse((SCRIPTS / 'friends_relay.py').exists())
+    def test_legacy_setup_and_hd_scripts_are_removed(self):
+        self.assertEqual(list(SCRIPTS.glob('*.ps1')), [])
+        for name in ('Setup.bat', 'setup.sh', 'build.sh', 'HD-Textures.bat', 'HD-Textures.sh', 'scripts/Setup.ps1'):
+            self.assertFalse((ROOT / name).exists(), f'{name} should have been removed')
+
+    def test_builder_and_combinator_do_not_reference_legacy_scripts(self):
+        embedded = text(ROOT / 'Builder/embedded/embedded.go')
+        self.assertNotIn('setup.sh', embedded)
+        bundler = text(SCRIPTS / 'bundle_builder_assets.py')
+        self.assertNotIn('setup.sh', bundler)
+        self.assertNotIn('build.sh', bundler)
+        combinator = text(TOOL)
+        self.assertNotIn('Setup.bat', combinator)
+        self.assertNotIn('setup.sh', combinator)
 
     def test_readme_and_docs_describe_the_merged_rom(self):
         readme = text(ROOT / 'README.md')
         self.assertIn('update_combinator.py', readme)
         self.assertIn('Update-combinator', readme)
         self.assertNotIn('Install-Update.ps1', readme)
+        self.assertNotIn('Setup.bat', readme)
+        self.assertNotIn('setup.sh', readme)
         for doc in (ROOT / 'docs').glob('*.md'):
             self.assertNotIn('Install-Update.ps1', text(doc), doc.name)
 

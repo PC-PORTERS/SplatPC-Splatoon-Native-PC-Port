@@ -170,6 +170,7 @@ constexpr unsigned kProfileDepth = 12;
 // Up to kProfileDepth Gambit return addresses (RVAs) from a resumed thread's context.
 // Its stack may change underneath: faults end the walk instead of the game.
 static unsigned profile_unwind(CONTEXT walk, uintptr_t exe, uintptr_t exe_end, uintptr_t (&chain)[kProfileDepth]) {
+#if defined(_MSC_VER)
     unsigned found = 0;
     __try {
         for (int depth = 0; depth < 64 && walk.Rip && found < kProfileDepth; ++depth) {
@@ -187,6 +188,13 @@ static unsigned profile_unwind(CONTEXT walk, uintptr_t exe, uintptr_t exe_end, u
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {}
     return found;
+#else
+    (void)walk;
+    (void)exe;
+    (void)exe_end;
+    (void)chain;
+    return 0;
+#endif
 }
 // Samples every other thread for `seconds` and writes the stack counts.
 static void profile_threads(unsigned seconds, const std::string& path) {

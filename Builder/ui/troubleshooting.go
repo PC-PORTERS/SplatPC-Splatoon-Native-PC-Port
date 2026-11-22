@@ -21,11 +21,10 @@ func troubleshootingTopics(logPath string) []troubleshootingTopic {
 	topics := []troubleshootingTopic{
 		{"The build failed", "Everything the build printed is in this file:\n\n`" + logPath + "`\n\n" +
 			"**Copy Logs** on the build page copies the same output. Attach it when you open an issue on GitHib."},
-		{"Tools are missing", "The **Prerequisites** page lists what is missing and the commands that install exactly that on this PC.\n\n" +
-			"- Click **Install missing tools**. A window opens and installs them, allow the permission prompt or type your password on Linux.\n" +
-			"- Windows: close the Builder and start it again afterwards, so it finds the new programs.\n" +
-			"- Linux: click **Re-check system**.\n" +
-			"- No button: your Linux distribution is unknown to the Builder. Install the listed packages with your package manager."},
+		{"Tools are missing", "The **Prerequisites** page lists what is missing.\n\n" +
+			"- Click **Download & Install Dependencies (100% Userspace)** to download CMake, Python, Ninja, the C++ toolchain, and AppImageTool directly from official sources into your user cache — no root or administrator password needed.\n" +
+			"- After the build finishes, you can delete all downloaded dependencies and build files from the final **Play** page (or automatically via Step 3) to reclaim disk space.\n" +
+			"- Alternatively, you can still use **Run in Terminal (System)** or your distribution's package manager."},
 		{"\"Visual Studio is not installed\" although it is", "The Builder needs the **C++** part of Visual Studio. " +
 			"Open the **Visual Studio Installer**, click **Modify** and tick **Desktop development with C++**. " +
 			"**Install missing tools** does this for you when it finds a Visual Studio without C++."},
@@ -48,7 +47,7 @@ func troubleshootingTopics(logPath string) []troubleshootingTopic {
 		{"\"No dumped textures found\" (HD textures)", "The upscaler works on textures the game recorded while you played. " +
 			"Turn on HD texturing, play for a while (plaza, Octo Valley, a few stages), close the game, then click **Upscale Dumped Textures**."},
 		{"My installed game is not detected", "The Builder looks in the folder of its last successful build and in its default `Game` folder. " +
-			"A game built into another folder is found once the Builder has built into that folder."},
+			"A game built into another folder (or from an older setup) is found once the Builder has built into that folder."},
 	}
 	if runtime.GOOS != "windows" {
 		// The Visual Studio and winget topics only apply to Windows
@@ -65,7 +64,7 @@ func (w *Wizard) showTroubleshooting() {
 		body.Wrapping = fyne.TextWrapWord
 		accordion.Append(widget.NewAccordionItem(t.title, body))
 	}
-	intro := wrappedLabel("Click a problem to see how to fix it. If nothing helps, open an issue on GitHub and attach the build log.")
+	intro := wrappedLabel("Click a problem to see how to fix it. If nothing helps, ask on Discord or open an issue on GitHub and attach the build log.")
 	content := container.NewBorder(intro, nil, nil, nil, container.NewVScroll(accordion))
 
 	d := dialog.NewCustom("Troubleshooting", "Close", content, w.window)

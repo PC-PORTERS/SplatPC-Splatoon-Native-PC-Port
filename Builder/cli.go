@@ -28,6 +28,10 @@ const (
 // runPrepare builds the port without a window, for the launcher's setup
 // screen: it prints progress lines as it goes and returns the exit code.
 func runPrepare(repoRoot string, standalone bool, gamePath string) int {
+	return runPrepareWithOptions(repoRoot, standalone, gamePath, false, false)
+}
+
+func runPrepareWithOptions(repoRoot string, standalone bool, gamePath string, autoDeps, cleanupDeps bool) int {
 	fmt.Println("progress 0.00 Checking your copy of the game")
 	if gamePath == "" {
 		fmt.Fprintln(os.Stderr, "No game folder given; pass --game <path>.")
@@ -46,7 +50,18 @@ func runPrepare(repoRoot string, standalone bool, gamePath string) int {
 		return exitUnsupportedROM
 	}
 
-	if report := prereq.RunChecks(); !report.AllRequiredMet {
+	report := prereq.RunChecks()
+	if !report.AllRequiredMet && autoDeps && len(report.MissingDownloadable) > 0 {
+		fmt.Println("progress 0.02 Downloading missing dependencies in userspace")
+		if err := prereq.InstallUserspaceTools(context.Background(), report.MissingDownloadable, func(format string, args ...interface{}) {
+			fmt.Printf(format+"\n", args...)
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "Installing userspace dependencies failed: %v\n", err)
+			return exitMissingTools
+		}
+		report = prereq.RunChecks()
+	}
+	if !report.AllRequiredMet {
 		fmt.Fprintln(os.Stderr, "Missing build tools:")
 		for _, item := range report.Items {
 			if item.Required && !item.Found {
@@ -60,6 +75,7 @@ func runPrepare(repoRoot string, standalone bool, gamePath string) int {
 	cfg := settings.DefaultConfiguration(repoRoot)
 	cfg.OutputDir = settings.OutputDirFor(repoRoot, standalone)
 	cfg.BaseDumpPath = gamePath
+	cfg.CleanupDepsAfterBuild = cleanupDeps
 	// A rebuild keeps what the player set in the launcher: settings.ini is
 	// rewritten from the configuration below, so start from the current file.
 	_ = settings.LoadSettingsIni(filepath.Join(cfg.OutputDir, "settings.ini"), &cfg)
@@ -114,6 +130,74 @@ func runPlay(repoRoot string, standalone bool) int {
 		fmt.Fprintln(os.Stderr, err)
 		return exitSetupFailed
 	}
+	return 0
+}
+
+func runBuildRuntime(repoRoot string, standalone, autoDeps, cleanupDeps bool) int {
+	report := prereq.RunChecks()
+	if !report.AllRequiredMet && autoDeps && len(report.MissingDownloadable) > 0 {
+		if err := prereq.InstallUserspaceTools(context.Background(), report.MissingDownloadable, func(format string, args ...interface{}) {
+			fmt.Printf(format+"\n", args...)
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "Installing userspace dependencies failed: %v\n", err)
+			return exitMissingTools
+		}
+		report = prereq.RunChecks()
+	}
+	if !report.AllRequiredMet {
+		fmt.Fprintln(os.Stderr, "Missing build tools:")
+		for _, item := range report.Items {
+			if item.Required && !item.Found {
+				fmt.Fprintf(os.Stderr, "  %s: %s\n", item.Name, item.ErrorMsg)
+			}
+		}
+		return exitMissingTools
+	}
+	cfg := settings.DefaultConfiguration(repoRoot)
+	cfg.OutputDir = settings.OutputDirFor(repoRoot, standalone)
+	if err := engine.RunRuntimeBuild(context.Background(), repoRoot, cfg, true, func(line string) {
+		fmt.Println(line)
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "Runtime build failed: %v\n", err)
+		return exitSetupFailed
+	}
+	if cleanupDeps {
+		if _, err := engine.CleanupAfterBuild(repoRoot, cfg.OutputDir, true, func(format string, args ...interface{}) {
+			fmt.Printf(format+"\n", args...)
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "Cleanup failed: %v\n", err)
+			return exitSetupFailed
+		}
+	}
+	return 0
+}
+
+func runInstallDeps() int {
+	report := prereq.RunChecks()
+	if len(report.MissingDownloadable) == 0 {
+		fmt.Println("All downloadable build dependencies are already available.")
+		return 0
+	}
+	err := prereq.InstallUserspaceTools(context.Background(), report.MissingDownloadable, func(format string, args ...interface{}) {
+		fmt.Printf(format+"\n", args...)
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to install userspace dependencies: %v\n", err)
+		return exitSetupFailed
+	}
+	return 0
+}
+
+func runCleanupDeps(repoRoot string, standalone bool) int {
+	outDir := settings.OutputDirFor(repoRoot, standalone)
+	freed, err := engine.CleanupAfterBuild(repoRoot, outDir, true, func(format string, args ...interface{}) {
+		fmt.Printf(format+"\n", args...)
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Cleanup finished with errors: %v\n", err)
+		return exitSetupFailed
+	}
+	fmt.Printf("Freed %s.\n", engine.FormatBytes(freed))
 	return 0
 }
 

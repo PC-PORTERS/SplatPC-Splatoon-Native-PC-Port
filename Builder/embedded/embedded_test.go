@@ -38,6 +38,20 @@ func TestExtractEmbeddedAssets(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestIsRepoRoot(t *testing.T) {
+	assert.False(t, IsRepoRoot(""))
+	assert.False(t, IsRepoRoot(t.TempDir()))
+
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "Manifest"), 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "recompiler"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "recompiler", "CMakeLists.txt"), []byte("# test"), 0644))
+	assert.False(t, IsRepoRoot(root), "missing LICENSES directory")
+
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "LICENSES"), 0755))
+	assert.True(t, IsRepoRoot(root))
+}
+
 func TestResolveRepoRoot(t *testing.T) {
 	root, isStandalone, err := ResolveRepoRoot()
 	require.NoError(t, err)

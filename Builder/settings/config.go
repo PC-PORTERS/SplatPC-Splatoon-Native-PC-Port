@@ -66,8 +66,9 @@ type Configuration struct {
 	DetectedGPUName  string
 
 	// Step 3: Build jobs
-	ParallelJobs int
-	CleanBuild   bool
+	ParallelJobs          int
+	CleanBuild            bool
+	CleanupDepsAfterBuild bool
 }
 
 const FallbackOnlineServer = "173.249.46.125:60000"

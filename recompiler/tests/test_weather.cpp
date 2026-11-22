@@ -7,9 +7,11 @@
 #include "os/gx2/vk/gx2_vk_shader.h"
 #include "runtime/port_settings.h"
 #include "rebrewu/logger.hpp"
+#include <algorithm>
 #include <bit>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <limits>
 #include <stdexcept>
 #include <string_view>

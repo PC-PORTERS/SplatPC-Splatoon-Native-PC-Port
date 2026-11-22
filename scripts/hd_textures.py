@@ -3,7 +3,7 @@
 python scripts/hd_textures.py <dump dir> <pack dir> [--scale 2] [--max N]
 
 The textures come from the game you own (dump them by playing with
-RBREW_TEXTURE_DUMP=<dump dir>, see HD-Textures.bat / HD-Textures.sh); the results
+RBREW_TEXTURE_DUMP=<dump dir>, or enable HD Texturing in SplatPC Builder); the results
 stay on your PC in Game/textures. They are derived from the game's files, so they are never
 uploaded or committed - everyone builds their own pack with this script.
 
@@ -299,7 +299,7 @@ def main():
     args = ap.parse_args()
     files = sorted(args.dump.glob('*.dds'), key=lambda p: p.stat().st_size, reverse=True)
     if not files:
-        sys.exit(f'No dumped textures in {args.dump}. Play the game with RBREW_TEXTURE_DUMP set first (HD-Textures.bat / HD-Textures.sh).')
+        sys.exit(f'No dumped textures in {args.dump}. Play the game with RBREW_TEXTURE_DUMP set first (or enable HD Texturing in SplatPC Builder).')
     args.pack.mkdir(parents=True, exist_ok=True)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f'{len(files)} dumped textures; upscaling on the {"graphics card (CUDA)" if device.type == "cuda" else "CPU (slow)"}')

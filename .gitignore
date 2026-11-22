@@ -1,6 +1,5 @@
-# Build outputs, downloads and the installed game are created by Setup.bat /
-# setup.sh and must never be committed (they contain or derive from your game
-# files).
+# Build outputs, downloads and the installed game are created by SplatPC Builder
+# and must never be committed (they contain or derive from your game files).
 /build/
 /Game/
 /Out/
@@ -81,8 +80,6 @@ server.json
 # scripts/: only the maintained tools are tracked. One-off experiment scripts
 # can live here without showing up in git status. Add new tools below.
 /scripts/*
-!/scripts/Setup.ps1
-!/scripts/Install-Update.ps1
 !/scripts/hd_textures.py
 !/scripts/install-hooks.sh
 !/scripts/git-hooks/

@@ -156,6 +156,8 @@ inline int motion_controls(uint8_t* mem) {
 
 inline void apply_live(uint8_t* mem) {
 #if RBREW_GAME_REVISION == 288
+    // The save and control manager addresses below are base ones: on 288 they
+    // point at other data, and patch_image would write into it every 100 ms.
     (void)mem;
     return;
 #endif

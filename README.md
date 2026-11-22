@@ -1,5 +1,5 @@
 # Splatoon 1 🦑 PC Port
-[![contributions - welcome](https://img.shields.io/badge/contributions-welcome-blue)](/CODE_OF_CONDUCT.md "Go to contributions doc")  [![OS - Linux](https://img.shields.io/badge/OS-Linux-blue?logo=linux&logoColor=white)](https://www.linux.org/ "Go to Linux homepage") [![OS - Windows](https://img.shields.io/badge/OS-Windows-blue?logo=windows&logoColor=white)](https://www.microsoft.com/ "Go to Microsoft homepage") [![Licence - Mozilla Public License 2.0](https://img.shields.io/badge/Licence-Mozilla_Public_License_2.0-2ea44f)](https://) [![Youtube - Demo](https://img.shields.io/badge/Youtube-Demo-FF0000?logo=youtube)](https://www.youtube.com/watch?v=TY3kYmz3RQM)
+[![contributions - welcome](https://img.shields.io/badge/contributions-welcome-blue)](/CODE_OF_CONDUCT.md "Go to contributions doc")  [![OS - Linux](https://img.shields.io/badge/OS-Linux-blue?logo=linux&logoColor=white)](https://www.linux.org/ "Go to Linux homepage") [![OS - Windows](https://img.shields.io/badge/OS-Windows-blue?logo=windows&logoColor=white)](https://www.microsoft.com/ "Go to Microsoft homepage") [![Licence - Mozilla Public License 2.0](https://img.shields.io/badge/Licence-Mozilla_Public_License_2.0-2ea44f)](https://) [![Youtube - Demo](https://img.shields.io/badge/Youtube-Demo-FF0000?logo=youtube)](https://www.youtube.com/watch?v=TY3kYmz3RQM) [![Discord](https://img.shields.io/badge/Join-5865F2?style=flat&logo=discord&logoColor=white)](https://discord.gg/a3HkVuuufx)
 ## The original repo is https://github.com/ApfelTeeSaft/RebrewU , Our Splatoon 1 PC Port is simply a continuation of ApfelTeeSaft's RebrewU Project
 
 > IF YOU WANT TO HELP US DM `sussy_0897` IN DISCORD OR START A FORK (PREFERABLY DM ME ON DISCORD SINCE U MIGHT GET ADDED TO OUR TEAM), **Follow Code of conduct.md**
@@ -9,7 +9,7 @@ An unofficial native PC port of **Splatoon (Wii U)** for **Windows and Linux**, 
 
 > **This project contains no Nintendo code, assets or game files.** You need your own copy of the game, dumped from your own Wii U. The setup builds the port on your PC from your files.
 
-> ⚠️ **Work in progress.** Expect graphical glitches, missing effects, stutter and crashes. You need **strong hardware** (see below). If something goes wrong, please [open an issue](https://github.com/NEVESYA/SPLATOON-1-PC-PORT/issues). Include your PC specs and the text from the setup window or a screenshot. **AMD GPUs are not supported**, only NVIDIA
+> ⚠️ **Work in progress.** Expect graphical glitches, missing effects, stutter and crashes. You need **strong hardware** (see below). If something goes wrong, please [open an issue](https://github.com/NEVESYA/SPLATOON-1-PC-PORT/issues). Include your PC specs and the text from the setup window or a screenshot. **AMD GPU compatibility is experimental**; NVIDIA remains the tested baseline.
 
 ## Features
 
@@ -32,7 +32,7 @@ Supported game versions: [VersionDb.md](VersionDb.md) (base game v16 and update 
 - Camera spots and character spawn points for testing
 
 **HD textures (optional, built on your PC)**
-- `HD-Textures` upscales the textures you saw while playing with Real-ESRGAN into `Game\textures`; nothing is downloaded or shared
+- **SplatPC Builder** upscales the textures you saw while playing with Real-ESRGAN into `Game/textures`; nothing is downloaded or shared
 
 **Releases for Windows and Linux**
 - The [Releases page](https://github.com/NEVESYA/SPLATOON-1-PC-PORT/releases) provides standalone graphical builder tools for each release:
@@ -86,8 +86,7 @@ Supported game versions: [VersionDb.md](VersionDb.md) (base game v16 and update 
 ### Optional: HD textures
 
 Upscales textures captured during gameplay using Real-ESRGAN into `textures/`.
-- **SplatPC Builder** detects compatible NVIDIA GPUs and automatically activates HD texturing (CUDA acceleration).
-- You can also run the standalone scripts: `HD-Textures.bat` (Windows) or `./HD-Textures.sh` (Linux).
+- **SplatPC Builder** detects compatible NVIDIA GPUs and automatically activates HD texturing (CUDA acceleration). Play the game to capture textures into `texture-dump/`, then click **"Upscale Dumped Textures to HD (Real-ESRGAN)"** in the builder.
 
 ---
 

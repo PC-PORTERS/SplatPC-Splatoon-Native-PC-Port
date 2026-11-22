@@ -429,6 +429,30 @@ void compiler() {
     gx2vk::shader_shutdown();
 }
 void translation() {
+    {
+        const auto code = bytecode(4, false, 0);
+        std::array<uint32_t, 0x10000> registers{};
+        registers[0xA1B3] = 2;
+        registers[0xA191] = 3;
+        registers[0xA192] = 7 | (1u << 8);
+        R700TranslateInput input{reinterpret_cast<const uint8_t*>(code.data()), uint32_t(code.size() * 4), false, 0};
+        input.context_registers = registers.data();
+        input.vulkan = true;
+        char* translated = r700_to_glsl(input);
+        require(translated != nullptr, "missing-export vertex translation failed");
+        const std::string source(translated);
+        std::free(translated);
+        require(source.find("passParameterSem3 = vec4(0.0, 0.0, 0.0, 0.0);") != std::string::npos,
+                "missing export lost the zero default");
+        require(source.find("passParameterSem7 = vec4(0.0, 0.0, 0.0, 1.0);") != std::string::npos,
+                "missing export lost the alpha-one default");
+        std::vector<uint32_t> spirv;
+        require(gx2vk::compile_glsl(VK_SHADER_STAGE_VERTEX_BIT, source, spirv, nullptr),
+                "default-export shader is invalid");
+        const auto geometry = r700_rect_geometry(source.c_str());
+        require(geometry.find("out vec4 passParameterSem7;") != std::string::npos,
+                "rectangle geometry omitted a default export");
+    }
     std::vector<std::vector<uint32_t>> programs;
     for (unsigned n : {4u, 32u, 128u})
         for (unsigned v : {0u, 1u}) programs.push_back(bytecode(n, false, v));

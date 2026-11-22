@@ -1,15 +1,16 @@
 package engine
 
 import (
+	"context"
 	"fmt"
 	"image"
 	"image/color"
 	"image/png"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 
+	"splatpc-builder/prereq"
 	"splatpc-builder/proc"
 )
 
@@ -18,9 +19,16 @@ func CreateAppImage(gameFolder, repoRoot string, log func(string, ...interface{}
 		return "", fmt.Errorf("AppImage packaging is only supported on Linux")
 	}
 
-	tool, err := exec.LookPath("appimagetool")
-	if err != nil {
-		return "", fmt.Errorf("'appimagetool' was not found in PATH: please install appimagetool to build an AppImage")
+	tool, ok := prereq.LookPath("appimagetool")
+	if !ok {
+		log("appimagetool not found in PATH; downloading official AppImageTool in userspace...")
+		if err := prereq.InstallUserspaceTools(context.Background(), []string{"appimagetool"}, log); err != nil {
+			return "", fmt.Errorf("downloading appimagetool: %w", err)
+		}
+		tool, ok = prereq.LookPath("appimagetool")
+		if !ok {
+			return "", fmt.Errorf("'appimagetool' was not found after userspace install")
+		}
 	}
 
 	// Clean up any legacy Splatoon.AppDir in workspace if present
@@ -94,7 +102,7 @@ StartupNotify=true
 	log("Packaging AppImage with appimagetool in tmp...")
 	cmd := proc.Command(tool, "-n", appDir, tmpAppImage)
 	cmd.Dir = tmpDir
-	cmd.Env = append(os.Environ(), "ARCH=x86_64")
+	cmd.Env = append(prereq.ToolEnv(os.Environ()), "ARCH=x86_64", "APPIMAGE_EXTRACT_AND_RUN=1")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		log("appimagetool output: %s", string(output))

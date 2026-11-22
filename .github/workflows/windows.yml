@@ -37,7 +37,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/vcpkg_cache
-          key: windows-vcpkg-${{ hashFiles('recompiler/port/CMakeLists.txt') }}
+          key: windows-vcpkg-${{ hashFiles('.github/workflows/windows.yml') }}
 
       - name: Install vcpkg dependencies
         shell: pwsh

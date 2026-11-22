@@ -2,7 +2,7 @@
 """
 bundle_builder_assets.py
 
-Packages the required source files (Manifest, recompiler, scripts, LICENSES, setup.sh, build.sh)
+Packages the required source files (Manifest, recompiler, scripts, LICENSES)
 into Builder/embedded/assets.zip so that the standalone SplatPC-Builder executable
 can function completely offline and standalone without needing an external repository clone.
 """
