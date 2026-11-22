@@ -293,6 +293,12 @@ inline Config config() {
     }
     return cached;
 }
+
+// Comfort options (GamePad sound on PC, pad aim with the mouse, rumble) are for online play only: offline,
+// "Play offline" included, stays as on main whatever settings.ini says.
+inline bool online_comfort(bool option) {
+    return option && config().online;
+}
 inline std::string pseudo() {
     return rbrew_online_cfg::resolved("RBREW_PSEUDO", "pseudo", "");
 }

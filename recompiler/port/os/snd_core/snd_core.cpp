@@ -20,6 +20,7 @@
 #include "../os_common.h"
 #include "../gx2/gx2_perf.h"
 #include "../../runtime/splatoon_diagnostics.h"
+#include "../../runtime/online_identity.h"
 #include "../../runtime/port_settings.h"
 #include <stdio.h>
 #include <string.h>
@@ -384,7 +385,7 @@ static void ax_aux_callbacks() {
 }
 
 // GamePad (DRC 0) stereo of the last 96-frame block. With a sink (phone page) it goes only to the phone;
-// without one, gamepad_audio_pc=1 mixes it into the PC output so the GamePad sound is not lost.
+// without one, online play (gamepad_audio_pc) mixes it into the PC output so the GamePad sound is not lost.
 static std::atomic<void (*)(const float*, uint32_t)> s_pad_sink{nullptr};
 static float s_pad_frame[96 * 2];
 void snd_core_set_pad_sink(void (*sink)(const float*, uint32_t)) {
@@ -392,7 +393,9 @@ void snd_core_set_pad_sink(void (*sink)(const float*, uint32_t)) {
 }
 
 static void ax_final_mix_callbacks(float* output) {
-    const bool mix_pad = rbrew_settings::g_gamepad_audio_pc.load(std::memory_order_relaxed) && !s_pad_sink.load();
+    const bool mix_pad =
+        rbrew_online::online_comfort(rbrew_settings::g_gamepad_audio_pc.load(std::memory_order_relaxed)) &&
+        !s_pad_sink.load();
     const bool want_pad = mix_pad || s_pad_sink.load();
     std::fill_n(s_pad_frame, 96 * 2, 0.0f);
     // snd_core.rpl 02005b44 / 020065xx: pointer array, u16 input channels,

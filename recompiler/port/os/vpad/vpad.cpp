@@ -31,6 +31,7 @@
 #include "game_controllers.h"
 #include "../gx2/vk/gx2_imgui_overlay.h"
 #include "../gx2/gx2_env_light.h"
+#include "../../runtime/online_identity.h"
 #include "../../runtime/port_settings.h"
 #include "../../hooks/camera_follow.h"
 #include "../../hooks/mouse_camera.h"
@@ -573,7 +574,8 @@ static void VPADRead(CPUState* cpu) {
             s_mouse_yaw += -float(mdx) * kMouseDegreesPerCount * mouse_scale;
             // Negative pitch looks up: mouse up (mdy < 0) must look up.
             s_mouse_pitch += float(mdy) * kMouseDegreesPerCount * mouse_scale;
-        } else if (motion_aim && rbrew_settings::g_mouse_pad_aim.load(std::memory_order_relaxed)) {
+        } else if (motion_aim &&
+                   rbrew_online::online_comfort(rbrew_settings::g_mouse_pad_aim.load(std::memory_order_relaxed))) {
             mouse_yaw = -(float)mdx * KBM_MOUSE_DEGREES * mouse_scale;
             mouse_pitch = (float)mdy * KBM_MOUSE_DEGREES * mouse_scale; // negative pitch looks up
             if (mouse_variant() >= 4) { // also push the right stick, as if the mouse were a stick (60 reads/s)
@@ -811,19 +813,21 @@ static void VPADGetTPCalibratedPoint(CPUState* cpu) {
 // VPADControlMotor(chan, pattern, length): a bit pattern, one bit per 1/120 s
 // tick (bit 7 of the first byte first), up to 120 bits. The controller of
 // player 1 rumbles for the pattern's duration, at the strength of its share
-// of set bits. Off unless rumble=1 in settings.ini; RBREW_RUMBLE=0/1 overrides it.
+// of set bits. Online play only, unless rumble=0 in settings.ini; RBREW_RUMBLE=0/1 overrides it.
 // Off, both imports keep the blank stubs they have on main.
 static bool rumble_enabled() {
     const char* v = std::getenv("RBREW_RUMBLE");
     if (v && (v[0] == '0' || v[0] == '1')) return v[0] == '1';
-    return rbrew_settings::g_rumble.load(std::memory_order_relaxed);
+    return rbrew_online::online_comfort(rbrew_settings::g_rumble.load(std::memory_order_relaxed));
 }
 static void VPADControlMotor(CPUState* cpu) {
     RET = 0;
 #if defined(HAVE_SDL2)
     const uint32_t pattern = ARG1, bits = std::min<uint32_t>(ARG2 & 0xFFu, 120u);
     ControllerDevice* dev = get_controller(0);
-    if (!dev || !dev->gc || !bits || !rbrew_memory_accessible(MEM, pattern, (bits + 7) / 8)) return;
+    // Registered at start when online; "Play offline" later turns it into the blank stub of main.
+    if (!rumble_enabled() || !dev || !dev->gc || !bits || !rbrew_memory_accessible(MEM, pattern, (bits + 7) / 8))
+        return;
     uint32_t on = 0;
     for (uint32_t i = 0; i < bits; ++i) on += (MEM[pattern + i / 8] >> (7 - i % 8)) & 1u;
     const Uint16 strength = Uint16(0xFFFFu * on / bits);
