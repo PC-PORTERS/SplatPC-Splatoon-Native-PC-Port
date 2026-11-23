@@ -157,8 +157,13 @@ std::string base64(const uint8_t* data, size_t size) {
 }
 bool sha1(const std::string& text, uint8_t out[20]) {
     BCRYPT_ALG_HANDLE alg = nullptr;
+    BCRYPT_HASH_HANDLE hash = nullptr;
     if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA1_ALGORITHM, nullptr, 0) != 0) return false;
-    const bool ok = BCryptHash(alg, nullptr, 0, (PUCHAR)text.data(), ULONG(text.size()), out, 20) == 0;
+    const bool ok =
+        BCryptCreateHash(alg, &hash, nullptr, 0, nullptr, 0, 0) == 0 &&
+        BCryptHashData(hash, reinterpret_cast<PUCHAR>(const_cast<char*>(text.data())), ULONG(text.size()), 0) == 0 &&
+        BCryptFinishHash(hash, out, 20, 0) == 0;
+    if (hash) BCryptDestroyHash(hash);
     BCryptCloseAlgorithmProvider(alg, 0);
     return ok;
 }
