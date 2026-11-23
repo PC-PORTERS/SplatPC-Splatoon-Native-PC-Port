@@ -205,6 +205,7 @@ static constexpr float kYawRate = 240.0f, kPitchRate = 150.0f, kPitchLimit = 80.
 // aiming follows 1:1 - no stick speed limit, no dead zone.
 static float s_mouse_yaw = 0.0f, s_mouse_pitch = 0.0f; // degrees this frame (under s_motion_lock)
 static constexpr float kMouseDegreesPerCount = 0.035f; // 0.09 was far too fast
+bool gx2_mouse_on_pad_window();
 
 // RBREW_GYRO=0 (or "Controller gyro: Off" in the ESC menu) ignores a
 // controller's gyro sensor (stick/mouse only).
@@ -408,7 +409,7 @@ static void VPADRead(CPUState* cpu) {
         // Bindings from the ESC menu's keyboard page (port_settings.h):
         // scancodes, or kMouseBase + an SDL mouse button.
         int mx_dummy, my_dummy;
-        const uint32_t mstate = (uint32_t)SDL_GetMouseState(&mx_dummy, &my_dummy);
+        const uint32_t mstate = gx2_mouse_on_pad_window() ? 0u : (uint32_t)SDL_GetMouseState(&mx_dummy, &my_dummy);
         bool key_held = false; // keys (not mouse buttons) end a replay
         auto bound = [&](int action) {
             const int binding = rbrew_settings::g_keys[action].load(std::memory_order_relaxed);
@@ -438,6 +439,7 @@ static void VPADRead(CPUState* cpu) {
         // mouse up looks up.
         int mdx = 0, mdy = 0;
         SDL_GetRelativeMouseState(&mdx, &mdy);
+        if (gx2_mouse_on_pad_window()) mdx = mdy = 0; // the mouse is touching the GamePad window, not aiming
         // Free fly camera (cinema / hacks page, F7): mouse looks, WASD
         // moves, Space up, Ctrl down, Shift fast; the game gets a neutral pad.
         if (gx2env::fly_camera()) {
@@ -578,6 +580,7 @@ static void VPADRead(CPUState* cpu) {
     // Session recording/replay (RBREW_INPUT_RECORD / RBREW_INPUT_REPLAY):
     // the frame's whole pad, gyro and motion time step included.
     bool live_touch = true;
+    const TouchState touch = current_touch(); // mouse, else phone (screen_mode.h)
     if (rbrew_benchmark::recording() || rbrew_benchmark::replaying()) {
         rbrew_benchmark::Pad pad;
         pad.buttons = buttons;
@@ -585,9 +588,9 @@ static void VPADRead(CPUState* cpu) {
         pad.ly = ly;
         pad.rx = rx;
         pad.ry = ry;
-        pad.touched = g_touch_state.touched ? 1 : 0;
-        pad.x = g_touch_state.touched ? g_touch_state.x : 0;
-        pad.y = g_touch_state.touched ? g_touch_state.y : 0;
+        pad.touched = touch.touched ? 1 : 0;
+        pad.x = touch.touched ? touch.x : 0;
+        pad.y = touch.touched ? touch.y : 0;
         if (has_phys_gyro) std::copy_n(phys_gyro, 3, pad.gyro);
         pad.dt = motion_seconds();
         int scene_id = -1;
@@ -614,9 +617,9 @@ static void VPADRead(CPUState* cpu) {
 
     // --- Simulated touch from mouse in Gamepad View ---
     {
-        const bool touched = (live_touch && g_touch_state.touched) || auto_touched;
-        const uint16_t tx = touched ? (auto_touched ? auto_tx : vpad_touch_raw_x(g_touch_state.x)) : 0;
-        const uint16_t ty = touched ? (auto_touched ? auto_ty : vpad_touch_raw_y(g_touch_state.y)) : 0;
+        const bool touched = (live_touch && touch.touched) || auto_touched;
+        const uint16_t tx = touched ? (auto_touched ? auto_tx : vpad_touch_raw_x(touch.x)) : 0;
+        const uint16_t ty = touched ? (auto_touched ? auto_ty : vpad_touch_raw_y(touch.y)) : 0;
         const uint16_t validity = touched ? VPAD_TP_VALID : VPAD_TP_INVALID_XY;
         write_touch_data(MEM, buf + kVpadTpNormal, tx, ty, touched, validity);
         write_touch_data(MEM, buf + kVpadTpFiltered1, tx, ty, touched, validity);

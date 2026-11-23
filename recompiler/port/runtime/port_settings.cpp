@@ -106,6 +106,10 @@ void publish(const Values& v) {
     g_shader_quality.store(v.shader_quality, std::memory_order_relaxed);
     g_mouse_direct.store(v.mouse_direct, std::memory_order_relaxed);
     g_gsync.store(v.gsync, std::memory_order_relaxed);
+    g_gamepad_window.store(v.gamepad_window, std::memory_order_relaxed);
+    g_phone_gamepad.store(v.phone_gamepad, std::memory_order_relaxed);
+    g_phone_port.store(v.phone_port, std::memory_order_relaxed);
+    g_gamepad_audio_pc.store(v.gamepad_audio_pc, std::memory_order_relaxed);
     g_gyro.store(v.gyro, std::memory_order_relaxed);
     g_gyro_invert_pitch.store(v.gyro_invert_pitch, std::memory_order_relaxed);
     g_gyro_scale.store(v.gyro_sensitivity / 100.0f, std::memory_order_relaxed);
@@ -219,8 +223,12 @@ void write(const Values& v) {
         << "plaza_60fps=" << v.plaza_60fps << "\n"
         << "frame_rate=" << v.frame_rate << "\n"
         << "gsync=" << v.gsync << "\n"
-        << "fullscreen=" << v.fullscreen << "\n"
-        << "fps_overlay=" << v.fps_overlay << "\n"
+        << "fullscreen=" << v.fullscreen << "\n";
+    if (v.gamepad_window) out << "gamepad_window=1\n";
+    if (v.phone_gamepad) out << "phone_gamepad=1\n";
+    if (v.phone_port != 8771) out << "phone_port=" << v.phone_port << "\n";
+    if (v.gamepad_audio_pc) out << "gamepad_audio_pc=1\n";
+    out << "fps_overlay=" << v.fps_overlay << "\n"
         << "simple_overlay=" << v.simple_overlay << "\n"
         << "confirm_quit=" << v.confirm_quit << "\n"
         << "gyro=" << v.gyro << "\n"
@@ -299,6 +307,14 @@ void load() {
             v.gsync = number != 0;
         else if (key == "fullscreen")
             v.fullscreen = number != 0;
+        else if (key == "gamepad_window")
+            v.gamepad_window = number != 0;
+        else if (key == "phone_gamepad")
+            v.phone_gamepad = number != 0;
+        else if (key == "phone_port")
+            v.phone_port = (number >= 1024 && number <= 65535) ? number : 8771;
+        else if (key == "gamepad_audio_pc")
+            v.gamepad_audio_pc = number != 0;
         else if (key == "fps_overlay")
             v.fps_overlay = number != 0;
         else if (key == "simple_overlay")
