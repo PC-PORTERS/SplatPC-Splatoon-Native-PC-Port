@@ -1,10 +1,13 @@
 #include "gx2_graphics_menu.h"
 
 #include "../gx2_env_light.h"
+#include "../pad_remote.h"
+#include <qrcodegen/qrcodegen.hpp>
 
 #include <imgui.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <string>
 
@@ -288,11 +291,57 @@ bool build_cinema(rs::Values& v) {
     return dirty;
 }
 
+// The GamePad screen somewhere else than under the TV picture.
+bool build_gamepad(rs::Values& v) {
+    bool dirty = false;
+    dirty |= check("Separate GamePad window", v.gamepad_window,
+                   "The GamePad screen in its own window (move it to a second screen). Tab: the mouse aims or "
+                   "touches the GamePad window.");
+    dirty |= check("Play GamePad audio on PC", v.gamepad_audio_pc,
+                   "Mixes the GamePad speaker into the PC audio when not streaming to a phone.");
+    dirty |= check("GamePad on phone", v.phone_gamepad,
+                   "The GamePad screen on a phone or tablet on the same Wi-Fi, with touch. Open the address "
+                   "below in its browser; nothing to install.");
+    if (v.phone_gamepad) {
+        const auto urls = pad_remote::urls();
+        for (size_t i = 0; i < urls.size() && i < 3; ++i) {
+            ImGui::Bullet();
+            ImGui::SameLine();
+            ImGui::TextUnformatted(urls[i].c_str());
+        }
+        // QR code of the first address, for the phone camera (black on a white quiet zone).
+        static std::string s_qr_text;
+        static qrcodegen::QrCode s_qr = qrcodegen::QrCode::encodeText("", qrcodegen::QrCode::Ecc::LOW);
+        if (!urls.empty()) {
+            if (urls[0] != s_qr_text) {
+                s_qr_text = urls[0];
+                s_qr = qrcodegen::QrCode::encodeText(s_qr_text.c_str(), qrcodegen::QrCode::Ecc::MEDIUM);
+            }
+            const int modules = s_qr.getSize() + 8;
+            const float cell = std::max(2.0f, std::floor(180.0f / float(modules)));
+            const ImVec2 at = ImGui::GetCursorScreenPos();
+            ImDrawList* draw = ImGui::GetWindowDrawList();
+            draw->AddRectFilled(at, ImVec2(at.x + cell * modules, at.y + cell * modules), IM_COL32(255, 255, 255, 255));
+            for (int y = 0; y < s_qr.getSize(); ++y)
+                for (int x = 0; x < s_qr.getSize(); ++x)
+                    if (s_qr.getModule(x, y)) {
+                        const ImVec2 a(at.x + cell * (x + 4), at.y + cell * (y + 4));
+                        draw->AddRectFilled(a, ImVec2(a.x + cell, a.y + cell), IM_COL32(0, 0, 0, 255));
+                    }
+            ImGui::Dummy(ImVec2(cell * modules, cell * modules));
+        }
+        const std::string status = pad_remote::status();
+        if (!status.empty()) ImGui::TextWrapped("%s", status.c_str());
+    }
+    return dirty;
+}
+
 } // namespace
 
 const char* title(Page page) {
     switch (page) {
     case Page::Graphics: return "Graphics (experimental)";
+    case Page::GamePad: return "GamePad screen";
     case Page::Weather: return "Weather & time (experimental)";
     case Page::Camera: return "Camera & mouse";
     case Page::Cinema: return "Cinema, photo & hacks (experimental)";
@@ -335,6 +384,7 @@ Page build_main_rows(rs::Values& v, bool& dirty) {
     ImGui::SameLine();
     if (button("Cinema, photo & hacks (experimental)", "Cinema mode, photos, focus blur, free camera, spawn."))
         open = Page::Cinema;
+    if (button("GamePad screen", "Second GamePad window, GamePad on phone, GamePad speaker.")) open = Page::GamePad;
     return open;
 }
 
@@ -344,6 +394,7 @@ bool build_page(Page page) {
     bool dirty = false;
     switch (page) {
     case Page::Graphics: dirty = build_graphics(v); break;
+    case Page::GamePad: dirty = build_gamepad(v); break;
     case Page::Weather: dirty = build_weather(v); break;
     case Page::Camera: dirty = build_camera(v); break;
     case Page::Cinema: dirty = build_cinema(v); break;

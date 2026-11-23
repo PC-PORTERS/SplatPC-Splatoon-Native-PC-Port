@@ -7,7 +7,7 @@
 
 namespace gx2_graphics_menu {
 
-enum class Page { None, Graphics, Weather, Camera, Cinema };
+enum class Page { None, Graphics, GamePad, Weather, Camera, Cinema };
 
 // Rows for the main settings page: graphics preset, frame rate, G-Sync and
 // the buttons that open the pages. Returns the page to open, or Page::None.

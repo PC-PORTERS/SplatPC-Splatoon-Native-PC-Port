@@ -222,6 +222,19 @@ if(RBREW_PLT_GENERATED)
         VERBATIM)
 endif()
 
+# qrcodegen (MIT, Nayuki QR-Code-generator v1.8.0), fetched at configure time.
+set(RBREW_QRCODEGEN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/qrcodegen")
+if(NOT EXISTS "${RBREW_QRCODEGEN_DIR}/qrcodegen.hpp")
+    file(DOWNLOAD https://raw.githubusercontent.com/nayuki/QR-Code-generator/v1.8.0/cpp/qrcodegen.hpp
+         "${RBREW_QRCODEGEN_DIR}/qrcodegen.hpp"
+         EXPECTED_HASH SHA256=b779c3b156cf7a57ce789d6fee4fc991ccc2913774d26c909d22bb8f26b2a793)
+endif()
+if(NOT EXISTS "${RBREW_QRCODEGEN_DIR}/qrcodegen.cpp")
+    file(DOWNLOAD https://raw.githubusercontent.com/nayuki/QR-Code-generator/v1.8.0/cpp/qrcodegen.cpp
+         "${RBREW_QRCODEGEN_DIR}/qrcodegen.cpp"
+         EXPECTED_HASH SHA256=1f3b3fcdac6954c32cf583ccd02ec9b5901f756a38c461acedc70be4a77d3757)
+endif()
+
 file(GLOB_RECURSE GAMBIT_RUNTIME_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/os/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/hooks/*.cpp"
@@ -234,13 +247,17 @@ list(REMOVE_ITEM GAMBIT_RUNTIME_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/runtime/rebrewu_ppc_hybrid.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/runtime/rebrewu_ppc_interpreter.cpp"
 )
-list(APPEND GAMBIT_RUNTIME_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/gambit_plt_stubs.cpp")
+list(APPEND GAMBIT_RUNTIME_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/gambit_plt_stubs.cpp"
+    "${RBREW_QRCODEGEN_DIR}/qrcodegen.cpp")
 
 add_library(gambit_runtime STATIC ${GAMBIT_RUNTIME_SOURCES})
 
 target_include_directories(gambit_runtime PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/runtime
     ${SDL2_INCLUDE_DIRS}
+)
+target_include_directories(gambit_runtime PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../third_party
 )
 
 target_compile_definitions(gambit_runtime PUBLIC HAVE_SDL2)
@@ -302,7 +319,7 @@ target_link_libraries(gambit_runtime PUBLIC
 target_link_libraries(gambit_runtime PRIVATE imgui)
 
 if(WIN32)
-    target_link_libraries(gambit_runtime PUBLIC ws2_32 winmm ole32 windowscodecs psapi)
+    target_link_libraries(gambit_runtime PUBLIC ws2_32 winmm bcrypt iphlpapi ole32 windowscodecs psapi)
     if(HAVE_MINIAUDIO)
         target_link_libraries(gambit_runtime PUBLIC ksuser)
     endif()
