@@ -61,6 +61,10 @@ void gx2_draw_set_default_state(CPUState* cpu);
 // gx2_render_vk.cpp owns the Vulkan device; this branch needs no GPU types.
 
 static SDL_Window* s_window = nullptr;
+// Menu "Separate GamePad window": the GamePad screen in its own window (the
+// main window keeps the TV picture). Tab then moves the mouse between aiming
+// (TV) and touching the GamePad window.
+static SDL_Window* s_pad_window = nullptr;
 static bool s_tv_enabled = true;
 
 // GamePad screen resolution (hardware fixed)
