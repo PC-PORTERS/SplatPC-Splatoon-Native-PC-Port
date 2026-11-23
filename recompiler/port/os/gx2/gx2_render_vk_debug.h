@@ -18,10 +18,6 @@ bool gx2_render_vk_read_stencil(const uint8_t* descriptor, uint8_t* mem, std::ve
 bool gx2_render_vk_sampler_params(uint32_t unit, uint32_t* wrap_s, uint32_t* min_filter, uint32_t* compare);
 // Live counters of the Vulkan device layer.
 uint64_t gx2_render_vk_submissions();
-// Shader statistics since the start: glslang compilations, and the time the render thread waited for
-// a program or a pipeline that was still compiling.
-uint64_t gx2_render_vk_shader_compiles();
-double gx2_render_vk_shader_wait_ms();
 uint64_t gx2_render_vk_validation_errors();
 const char* gx2_render_vk_last_validation_error();
 uint64_t gx2_render_vk_pipelines();

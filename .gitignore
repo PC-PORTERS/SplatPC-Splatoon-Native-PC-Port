@@ -19,7 +19,6 @@
 # Auto-fetched third-party headers/sources
 recompiler/third_party/nlohmann/
 recompiler/third_party/miniaudio.h
-recompiler/third_party/qrcodegen/
 
 # Never commit game files
 *.rpx

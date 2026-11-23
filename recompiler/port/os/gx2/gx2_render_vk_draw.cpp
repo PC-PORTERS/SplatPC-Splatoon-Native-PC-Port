@@ -737,16 +737,9 @@ template <class F> auto post_compile(F&& fn, bool background = false) {
     task();
     return job;
 }
-std::atomic<uint64_t> s_compile_wait_us{0}; // render thread stopped on a compile (statistics)
 template <class T> T await_compile(const gx2vk::CompileQueue::Job<T>& job) {
     if (job.ready()) return job.result.get();
-    const auto start = std::chrono::steady_clock::now();
-    T result = s_compile_queue ? s_compile_queue->get(job) : job.result.get();
-    s_compile_wait_us.fetch_add(
-        uint64_t(
-            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count()),
-        std::memory_order_relaxed);
-    return result;
+    return s_compile_queue ? s_compile_queue->get(job) : job.result.get();
 }
 template <class T> T await_compile(gx2vk::ResolvedCompileJob<T>& job) {
     return job.get([](const auto& pending) { return await_compile(pending); });
@@ -5577,10 +5570,6 @@ void (*s_xfb_hook)(bool, VkCommandBuffer) = nullptr;
 bool s_xfb_pipeline = false;
 } // namespace
 
-double gx2_render_vk_shader_wait_ms() {
-    return double(s_compile_wait_us.load(std::memory_order_relaxed)) / 1000.0;
-}
-
 // Per-frame shadow tally; the counters live in the anonymous namespace above.
 void gx2r::shadow_log_frame_end() {
     if (!shadow_log()) return;
@@ -6176,12 +6165,9 @@ void gx2_render_vk_flush() {
     gx2vk::submit(false);
     gx2_render_query_poll();
 }
-// GX2DrawDone calls that found stream-out exports to publish (the guest reads them after the call).
-std::atomic<uint64_t> g_gx2_streamout_finishes{0};
 bool gx2_render_vk_finish() {
     if (!gx2vk::ready()) return false;
     end_rendering();
-    if (s_streamout_batch.pending_count) g_gx2_streamout_finishes.fetch_add(1, std::memory_order_relaxed);
     // GX2DrawDone (Gambit calls it at every frame end) waited for the GPU to
     // go idle, and the game with it. The guest only reads GPU results back
     // through stream-out exports (published here), occlusion queries (their

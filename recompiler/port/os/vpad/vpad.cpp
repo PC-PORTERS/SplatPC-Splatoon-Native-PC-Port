@@ -24,18 +24,14 @@
 // In Gamepad View (Tab), the mouse is freed for touch-screen simulation.
 
 #include "../os_common.h"
-#include "../../runtime/camtrace.h"
 #include "../../runtime/screen_mode.h"
 #include "../../runtime/native_control_defaults.h"
 #include "../../runtime/benchmark_input.h"
 #include "game_controllers.h"
 #include "../gx2/vk/gx2_imgui_overlay.h"
 #include "../gx2/gx2_env_light.h"
-#include "../../runtime/online_identity.h"
 #include "../../runtime/port_settings.h"
-#include "../../hooks/camera_follow.h"
 #include "../../hooks/mouse_camera.h"
-#include <algorithm>
 #include <atomic>
 #include <cstdlib>
 #include <chrono>
@@ -106,9 +102,6 @@ static constexpr uint32_t kActionButtons[rbrew_settings::kFirstMoveAction] = {
 // Mouse sensitivity for right-stick camera: stick_delta = pixel_delta * sensitivity.
 // ~200 px swipe across the screen ≈ full right-stick deflection at this value.
 static constexpr float KBM_MOUSE_SENSITIVITY = 0.005f;
-
-// True while the mouse, not a controller's right stick, is aiming.
-static bool s_mouse_aims = false;
 
 // Keep the tutorial's working virtual-motion camera, driven by right stick
 // or mouse. Outside the tutorial, including Plaza, the active options follow
@@ -205,28 +198,11 @@ struct VirtualMotion {
 };
 static std::mutex s_motion_lock;
 static VirtualMotion s_motion;
-// Pitch the virtual pad rests at after VPADSetGyroDirection (degrees, negative
-// tilts the top back), as a GamePad is held. The game resets the direction to
-// identity at every load; resting flat there, the camera spawned looking at
-// the ground. Measured on the plaza spawn: 0 = top-down view, -24.5 = behind
-// the player as on the console. RBREW_GYRO_REST_PITCH overrides it.
-static float rest_pitch() {
-    static const float value = [] {
-        constexpr float kDefault = -24.5f;
-        const char* v = std::getenv("RBREW_GYRO_REST_PITCH");
-        if (!v || !*v) return kDefault;
-        char* end = nullptr;
-        const float f = std::strtof(v, &end);
-        return end && !*end && f >= -80.0f && f <= 80.0f ? f : kDefault;
-    }();
-    return value;
-}
 static constexpr float kPi = 3.14159265358979f;
 static constexpr float kYawRate = 240.0f, kPitchRate = 150.0f, kPitchLimit = 80.0f; // degrees(/s)
 // Mouse aiming like a PC game ("Mouse aim: Direct"): each frame's mouse
 // movement in degrees turns the virtual GamePad, which the game's motion
 // aiming follows 1:1 - no stick speed limit, no dead zone.
-bool gx2_mouse_on_pad_window();
 static float s_mouse_yaw = 0.0f, s_mouse_pitch = 0.0f; // degrees this frame (under s_motion_lock)
 static constexpr float kMouseDegreesPerCount = 0.035f; // 0.09 was far too fast
 
@@ -269,7 +245,6 @@ void vpad_update_motion(uint8_t* mem, uint32_t buf, float rx, float ry, float dt
     const bool use_gyro = phys_gyro && physical_gyro_enabled();
     float yaw_rate = stick_yaw ? -rx * std::fabs(rx) * kYawRate : 0.0f;
     float pitch_rate = use_gyro && !stick_pitch_with_gyro ? 0.0f : -ry * std::fabs(ry) * kPitchRate;
-    const float traced_mouse_yaw = s_mouse_yaw, traced_mouse_pitch = s_mouse_pitch;
     // The camera takes the mouse yaw and pitch as angles when it can (hooks/gx2_camera_hooks.cpp): no
     // pad rotation to simulate and none of the game's gyro filtering. Otherwise the pad turns.
     if (rbrew_mouse_camera::yaw_queue().offer(s_mouse_yaw)) s_mouse_yaw = 0.0f;
@@ -296,7 +271,6 @@ void vpad_update_motion(uint8_t* mem, uint32_t buf, float rx, float ry, float dt
         pitch_rate += invert_pitch ? rate(phys_gyro[0]) : -rate(phys_gyro[0]);
         yaw_rate += invert_yaw ? -rate(phys_gyro[1]) : rate(phys_gyro[1]);
     }
-    rbrew_camtrace::add_motion(dt, traced_mouse_yaw, traced_mouse_pitch, yaw_rate, rx, ry);
     v.yaw = std::fmod(v.yaw + yaw_rate * dt, 360.0f);
     const float pitch = std::fmax(-kPitchLimit, std::fmin(kPitchLimit, v.pitch + pitch_rate * dt));
     const float applied_pitch_rate = dt > 0 ? (pitch - v.pitch) / dt : 0.0f;
@@ -338,8 +312,7 @@ static void VPADSetGyroDirection(CPUState* cpu) {
     for (int axis = 0; axis < 3; ++axis)
         for (int component = 0; component < 3; ++component)
             s_motion.base.m[component][axis] = float(rbrew_read_f32(MEM, dir + 12 * axis + 4 * component));
-    s_motion.yaw = 0;
-    s_motion.pitch = rest_pitch();
+    s_motion.yaw = s_motion.pitch = 0;
     rbrew_mouse_camera::pitch_aim().reset();
 }
 
@@ -435,7 +408,7 @@ static void VPADRead(CPUState* cpu) {
         // Bindings from the ESC menu's keyboard page (port_settings.h):
         // scancodes, or kMouseBase + an SDL mouse button.
         int mx_dummy, my_dummy;
-        const uint32_t mstate = gx2_mouse_on_pad_window() ? 0u : (uint32_t)SDL_GetMouseState(&mx_dummy, &my_dummy);
+        const uint32_t mstate = (uint32_t)SDL_GetMouseState(&mx_dummy, &my_dummy);
         bool key_held = false; // keys (not mouse buttons) end a replay
         auto bound = [&](int action) {
             const int binding = rbrew_settings::g_keys[action].load(std::memory_order_relaxed);
@@ -465,7 +438,6 @@ static void VPADRead(CPUState* cpu) {
         // mouse up looks up.
         int mdx = 0, mdy = 0;
         SDL_GetRelativeMouseState(&mdx, &mdy);
-        if (gx2_mouse_on_pad_window()) mdx = mdy = 0; // the mouse is touching the GamePad window, not aiming
         // Free fly camera (cinema / hacks page, F7): mouse looks, WASD
         // moves, Space up, Ctrl down, Shift fast; the game gets a neutral pad.
         if (gx2env::fly_camera()) {
@@ -477,25 +449,19 @@ static void VPADRead(CPUState* cpu) {
             mdx = mdy = 0;
         }
         const float mouse_scale = rbrew_settings::g_mouse_scale.load(std::memory_order_relaxed); // ESC menu
-        // rx/ry still hold only the controller's stick here.
-        rbrew_camtrace::add_input(mdx, mdy);
-        if (mdx || mdy)
-            s_mouse_aims = true;
-        else if (std::fabs(rx) > 0.25f || std::fabs(ry) > 0.25f)
-            s_mouse_aims = false;
+        float mrx = (float)mdx * KBM_MOUSE_SENSITIVITY * mouse_scale;
+        float mry = -(float)mdy * KBM_MOUSE_SENSITIVITY * mouse_scale;
+        if (mrx < -1.0f) mrx = -1.0f;
+        if (mrx > 1.0f) mrx = 1.0f;
+        if (mry < -1.0f) mry = -1.0f;
+        if (mry > 1.0f) mry = 1.0f;
         if (rbrew_settings::g_mouse_direct.load(std::memory_order_relaxed)) {
-            // PC aiming (ESC menu "Mouse aim: Direct"): straight to the motion aiming, not the stick.
+            // PC aiming: straight to the motion aiming, not the stick.
             std::lock_guard lock(s_motion_lock);
             s_mouse_yaw += -float(mdx) * kMouseDegreesPerCount * mouse_scale;
             // Negative pitch looks up: mouse up (mdy < 0) must look up.
             s_mouse_pitch += float(mdy) * kMouseDegreesPerCount * mouse_scale;
         } else {
-            float mrx = (float)mdx * KBM_MOUSE_SENSITIVITY * mouse_scale;
-            float mry = -(float)mdy * KBM_MOUSE_SENSITIVITY * mouse_scale;
-            if (mrx < -1.0f) mrx = -1.0f;
-            if (mrx > 1.0f) mrx = 1.0f;
-            if (mry < -1.0f) mry = -1.0f;
-            if (mry > 1.0f) mry = 1.0f;
             // Blend: mouse delta is added to controller stick, clamped
             rx += mrx;
             if (rx < -1.0f) rx = -1.0f;
@@ -579,7 +545,6 @@ static void VPADRead(CPUState* cpu) {
             buttons = 0;
             lx = ly = rx = ry = 0.0f;
             has_phys_gyro = has_phys_accel = false;
-            mouse_yaw = mouse_pitch = 0.0f;
             player_input = false;
         }
     }
@@ -592,7 +557,6 @@ static void VPADRead(CPUState* cpu) {
         rx = scripted.rx;
         ry = scripted.ry;
         has_phys_gyro = has_phys_accel = false;
-        mouse_yaw = mouse_pitch = 0.0f;
         auto_touched = scripted.touched != 0;
         auto_tx = vpad_touch_raw_x(uint16_t(scripted.x));
         auto_ty = vpad_touch_raw_y(uint16_t(scripted.y));
@@ -614,7 +578,6 @@ static void VPADRead(CPUState* cpu) {
     // Session recording/replay (RBREW_INPUT_RECORD / RBREW_INPUT_REPLAY):
     // the frame's whole pad, gyro and motion time step included.
     bool live_touch = true;
-    const TouchState touch = current_touch(); // mouse, else phone (screen_mode.h)
     if (rbrew_benchmark::recording() || rbrew_benchmark::replaying()) {
         rbrew_benchmark::Pad pad;
         pad.buttons = buttons;
@@ -622,9 +585,9 @@ static void VPADRead(CPUState* cpu) {
         pad.ly = ly;
         pad.rx = rx;
         pad.ry = ry;
-        pad.touched = touch.touched ? 1 : 0;
-        pad.x = touch.touched ? touch.x : 0;
-        pad.y = touch.touched ? touch.y : 0;
+        pad.touched = g_touch_state.touched ? 1 : 0;
+        pad.x = g_touch_state.touched ? g_touch_state.x : 0;
+        pad.y = g_touch_state.touched ? g_touch_state.y : 0;
         if (has_phys_gyro) std::copy_n(phys_gyro, 3, pad.gyro);
         pad.dt = motion_seconds();
         int scene_id = -1;
@@ -651,9 +614,9 @@ static void VPADRead(CPUState* cpu) {
 
     // --- Simulated touch from mouse in Gamepad View ---
     {
-        const bool touched = (live_touch && touch.touched) || auto_touched;
-        const uint16_t tx = touched ? (auto_touched ? auto_tx : vpad_touch_raw_x(touch.x)) : 0;
-        const uint16_t ty = touched ? (auto_touched ? auto_ty : vpad_touch_raw_y(touch.y)) : 0;
+        const bool touched = (live_touch && g_touch_state.touched) || auto_touched;
+        const uint16_t tx = touched ? (auto_touched ? auto_tx : vpad_touch_raw_x(g_touch_state.x)) : 0;
+        const uint16_t ty = touched ? (auto_touched ? auto_ty : vpad_touch_raw_y(g_touch_state.y)) : 0;
         const uint16_t validity = touched ? VPAD_TP_VALID : VPAD_TP_INVALID_XY;
         write_touch_data(MEM, buf + kVpadTpNormal, tx, ty, touched, validity);
         write_touch_data(MEM, buf + kVpadTpFiltered1, tx, ty, touched, validity);
@@ -674,7 +637,6 @@ static void VPADRead(CPUState* cpu) {
     write_float(MEM, buf + 0x14, rx);
     write_float(MEM, buf + 0x18, ry);
 
-    rbrew_camera_follow::set(MEM, s_mouse_aims);
     vpad_update_motion(MEM, buf, rx, ry, motion_dt >= 0 ? motion_dt : motion_seconds(),
                        has_phys_gyro ? phys_gyro : nullptr, has_phys_accel ? phys_accel : nullptr);
     rbrew_write8(MEM, buf + kVpadSlideVolume, 0xFF);
@@ -714,46 +676,11 @@ static void VPADGetTPCalibratedPoint(CPUState* cpu) {
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
-// VPADControlMotor(chan, pattern, length): a bit pattern, one bit per 1/120 s
-// tick (bit 7 of the first byte first), up to 120 bits. The controller of
-// player 1 rumbles for the pattern's duration, at the strength of its share
-// of set bits. Online play only, unless rumble=0 in settings.ini; RBREW_RUMBLE=0/1 overrides it.
-// Off, both imports keep the blank stubs they have on main.
-static bool rumble_enabled() {
-    const char* v = std::getenv("RBREW_RUMBLE");
-    if (v && (v[0] == '0' || v[0] == '1')) return v[0] == '1';
-    return rbrew_online::online_comfort(rbrew_settings::g_rumble.load(std::memory_order_relaxed));
-}
-static void VPADControlMotor(CPUState* cpu) {
-    RET = 0;
-#if defined(HAVE_SDL2)
-    const uint32_t pattern = ARG1, bits = std::min<uint32_t>(ARG2 & 0xFFu, 120u);
-    ControllerDevice* dev = get_controller(0);
-    // Registered at start when online; "Play offline" later turns it into the blank stub of main.
-    if (!rumble_enabled() || !dev || !dev->gc || !bits || !rbrew_memory_accessible(MEM, pattern, (bits + 7) / 8))
-        return;
-    uint32_t on = 0;
-    for (uint32_t i = 0; i < bits; ++i) on += (MEM[pattern + i / 8] >> (7 - i % 8)) & 1u;
-    const Uint16 strength = Uint16(0xFFFFu * on / bits);
-    SDL_GameControllerRumble(dev->gc, strength, strength, (bits * 1000 + 119) / 120);
-#endif
-}
-static void VPADStopMotor(CPUState* cpu) {
-    RET = 0;
-#if defined(HAVE_SDL2)
-    if (ControllerDevice* dev = get_controller(0); dev && dev->gc) SDL_GameControllerRumble(dev->gc, 0, 0, 0);
-#endif
-}
-
 #include "vpad_addrs.h"
 
 void vpad_register(CPUState* cpu) {
 #define REG(name) rbrew_register_func(cpu, ADDR_##name, name)
     REG(VPADRead);
-    if (rumble_enabled()) {
-        REG(VPADControlMotor);
-        REG(VPADStopMotor);
-    }
     REG(VPADGetTPCalibratedPoint);
     REG(VPADSetGyroDirection);
 #undef REG
