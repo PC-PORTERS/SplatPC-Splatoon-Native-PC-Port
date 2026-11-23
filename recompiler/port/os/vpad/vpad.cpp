@@ -32,6 +32,7 @@
 #include "../gx2/gx2_env_light.h"
 #include "../../runtime/port_settings.h"
 #include "../../hooks/mouse_camera.h"
+#include <algorithm>
 #include <atomic>
 #include <cstdlib>
 #include <chrono>
@@ -676,11 +677,44 @@ static void VPADGetTPCalibratedPoint(CPUState* cpu) {
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
+// VPADControlMotor(chan, pattern, length): a bit pattern, one bit per 1/120 s
+// tick (bit 7 of the first byte first), up to 120 bits. The controller of
+// player 1 rumbles for the pattern's duration, at the strength of its share
+// of set bits. RBREW_RUMBLE=0/1 overrides settings.ini (`rumble=1`).
+static bool rumble_enabled() {
+    const char* v = std::getenv("RBREW_RUMBLE");
+    if (v && (v[0] == '0' || v[0] == '1')) return v[0] == '1';
+    return rbrew_settings::g_rumble.load(std::memory_order_relaxed);
+}
+static void VPADControlMotor(CPUState* cpu) {
+    RET = 0;
+#if defined(HAVE_SDL2)
+    const uint32_t pattern = ARG1, bits = std::min<uint32_t>(ARG2 & 0xFFu, 120u);
+    ControllerDevice* dev = get_controller(0);
+    if (!rumble_enabled() || !dev || !dev->gc || !bits || !rbrew_memory_accessible(MEM, pattern, (bits + 7) / 8))
+        return;
+    uint32_t on = 0;
+    for (uint32_t i = 0; i < bits; ++i) on += (MEM[pattern + i / 8] >> (7 - i % 8)) & 1u;
+    const Uint16 strength = Uint16(0xFFFFu * on / bits);
+    SDL_GameControllerRumble(dev->gc, strength, strength, (bits * 1000 + 119) / 120);
+#endif
+}
+static void VPADStopMotor(CPUState* cpu) {
+    RET = 0;
+#if defined(HAVE_SDL2)
+    if (ControllerDevice* dev = get_controller(0); dev && dev->gc) SDL_GameControllerRumble(dev->gc, 0, 0, 0);
+#endif
+}
+
 #include "vpad_addrs.h"
 
 void vpad_register(CPUState* cpu) {
 #define REG(name) rbrew_register_func(cpu, ADDR_##name, name)
     REG(VPADRead);
+    if (rumble_enabled()) {
+        REG(VPADControlMotor);
+        REG(VPADStopMotor);
+    }
     REG(VPADGetTPCalibratedPoint);
     REG(VPADSetGyroDirection);
 #undef REG
