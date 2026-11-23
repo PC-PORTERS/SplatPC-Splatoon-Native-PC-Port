@@ -37,13 +37,21 @@ static void WPADProbe(CPUState* cpu) {
     RET = (uint32_t)-1; // WPAD_ERR_NOT_READY / WPAD_ERR_NO_CONTROLLER
 }
 
-// KPADReadEx(chan, buffer, count) → samplesRead
+// KPADReadEx(chan, buffer, count, error) → samplesRead
+// KPADError, written through KPADReadEx's fourth argument.
+constexpr int32_t kKpadOk = 0, kKpadInvalidController = -2;
+
 static void KPADReadEx(CPUState* cpu) {
     uint32_t chan = ARG0;
     uint32_t buf = ARG1;
     uint32_t count = ARG2;
+    const uint32_t error_ptr = ARG3;
+    const auto set_error = [&](int32_t error) {
+        if (error_ptr && rbrew_memory_accessible(MEM, error_ptr, 4)) rbrew_write32(MEM, error_ptr, uint32_t(error));
+    };
 
     if (!buf || count == 0 || !rbrew_memory_accessible(MEM, buf, 0xF0)) {
+        set_error(kKpadInvalidController);
         RET = 0;
         return;
     }
@@ -51,6 +59,7 @@ static void KPADReadEx(CPUState* cpu) {
     if (chan != 0) {
         // Battle Dojo uses WPAD / KPAD channel 0 for Player 2
         for (uint32_t i = 0; i < 0xF0; i += 4) rbrew_write32(MEM, buf + i, 0u);
+        set_error(kKpadInvalidController);
         RET = 0;
         return;
     }
@@ -117,7 +126,7 @@ static void KPADReadEx(CPUState* cpu) {
         rbrew_write8(MEM, buf + 0x5C, 31u); // extensionType = WPAD_EXT_PRO_CONTROLLER
         rbrew_write8(MEM, buf + 0x5D, 0u);  // error = 0
         rbrew_write8(MEM, buf + 0x5E, 1u);  // posValid = 1
-        rbrew_write8(MEM, buf + 0x5F, 0u);  // format = 0
+        rbrew_write8(MEM, buf + 0x5F, 22u); // format = WPAD_FMT_PRO_CONTROLLER
 
         // Pro controller structure at offset +0x60
         rbrew_write32(MEM, buf + 0x60, pro_hold);
@@ -133,6 +142,7 @@ static void KPADReadEx(CPUState* cpu) {
         rbrew_write32(MEM, buf + 0x7C, 0u);
         rbrew_write32(MEM, buf + 0x80, 0u);
 
+        set_error(kKpadOk);
         RET = 1; // 1 sample read
         return;
     }
@@ -140,6 +150,7 @@ static void KPADReadEx(CPUState* cpu) {
 
     // Not connected: clear first entry
     for (uint32_t i = 0; i < 0xF0; i += 4) rbrew_write32(MEM, buf + i, 0u);
+    set_error(kKpadInvalidController);
     RET = 0;
 }
 

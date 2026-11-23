@@ -39,6 +39,13 @@ type dependencyBuilder struct {
 // library left over from a Debug build is built again instead of reused.
 const installStamp = ".splatpc-build-config"
 
+func (b dependencyBuilder) context() context.Context {
+	if b.ctx != nil {
+		return b.ctx
+	}
+	return context.Background()
+}
+
 func (b dependencyBuilder) cmakeExe() string {
 	if b.cmake.exe != "" {
 		return b.cmake.exe
@@ -63,13 +70,16 @@ func (b dependencyBuilder) installedDir(dep sourceDependency) (string, bool) {
 // install builds and installs the dependency unless it already is, and
 // returns the directory holding its installed file.
 func (b dependencyBuilder) install(dep sourceDependency) (string, error) {
+	if err := b.context().Err(); err != nil {
+		return "", err
+	}
 	if dir, ok := b.installedDir(dep); ok {
 		return dir, nil
 	}
 	archive := filepath.Join(b.downloads, dep.archive)
 	if _, err := os.Stat(archive); err != nil {
 		b.log("Downloading %s...", dep.name)
-		if err := downloadFile(dep.url, archive); err != nil {
+		if err := downloadFile(b.context(), dep.url, archive); err != nil {
 			return "", fmt.Errorf("downloading %s: %w", dep.name, err)
 		}
 	}
@@ -260,11 +270,14 @@ const (
 // prepareHeaderDependencies downloads imgui, miniaudio, and nlohmann/json
 // from official upstream URLs so CMake never needs git at configure time.
 func prepareHeaderDependencies(b dependencyBuilder, recompilerDir string, libs *bundledLibraries) error {
+	if err := b.context().Err(); err != nil {
+		return err
+	}
 	// 1. nlohmann/json.hpp
 	jsonTarget := filepath.Join(recompilerDir, "third_party", "nlohmann", "json.hpp")
 	if _, err := os.Stat(jsonTarget); err != nil {
 		jsonArchive := filepath.Join(b.downloads, "nlohmann-json-3.11.3.hpp")
-		if err := ensureVerifiedDownload(jsonArchive, nlohmannURL, nlohmannSHA256, "nlohmann/json", b.log); err != nil {
+		if err := ensureVerifiedDownload(b.context(), jsonArchive, nlohmannURL, nlohmannSHA256, "nlohmann/json", b.log); err != nil {
 			return err
 		}
 		if err := copySingleFile(jsonArchive, jsonTarget); err != nil {
@@ -276,7 +289,7 @@ func prepareHeaderDependencies(b dependencyBuilder, recompilerDir string, libs *
 	miniaudioTarget := filepath.Join(recompilerDir, "third_party", "miniaudio.h")
 	if _, err := os.Stat(miniaudioTarget); err != nil {
 		miniaudioCache := filepath.Join(b.downloads, "miniaudio-0.11.25.h")
-		if err := ensureVerifiedDownload(miniaudioCache, miniaudioURL, miniaudioSHA256, "miniaudio", b.log); err != nil {
+		if err := ensureVerifiedDownload(b.context(), miniaudioCache, miniaudioURL, miniaudioSHA256, "miniaudio", b.log); err != nil {
 			return err
 		}
 		if err := copySingleFile(miniaudioCache, miniaudioTarget); err != nil {
@@ -288,7 +301,7 @@ func prepareHeaderDependencies(b dependencyBuilder, recompilerDir string, libs *
 	imguiArchive := filepath.Join(b.downloads, "imgui-docking.tar.gz")
 	if _, err := os.Stat(imguiArchive); err != nil {
 		b.log("Downloading Dear ImGui (docking)...")
-		if err := downloadFile(imguiDockingURL, imguiArchive); err != nil {
+		if err := downloadFile(b.context(), imguiDockingURL, imguiArchive); err != nil {
 			return fmt.Errorf("downloading imgui: %w", err)
 		}
 	}
@@ -306,7 +319,13 @@ func prepareHeaderDependencies(b dependencyBuilder, recompilerDir string, libs *
 	return nil
 }
 
-func ensureVerifiedDownload(dest, url, expectedHash, label string, log logFunc) error {
+func ensureVerifiedDownload(ctx context.Context, dest, url, expectedHash, label string, log logFunc) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if _, err := os.Stat(dest); err == nil {
 		if h, hErr := fileHash(dest); hErr == nil && (expectedHash == "" || strings.EqualFold(h, expectedHash)) {
 			return nil
@@ -314,7 +333,7 @@ func ensureVerifiedDownload(dest, url, expectedHash, label string, log logFunc) 
 		_ = os.Remove(dest)
 	}
 	log("Downloading %s...", label)
-	if err := downloadFile(url, dest); err != nil {
+	if err := downloadFile(ctx, url, dest); err != nil {
 		return fmt.Errorf("downloading %s: %w", label, err)
 	}
 	if expectedHash != "" {
