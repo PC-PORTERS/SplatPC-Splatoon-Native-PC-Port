@@ -29,6 +29,9 @@
 #ifndef SIO_UDP_CONNRESET
 #define SIO_UDP_CONNRESET _WSAIOW(IOC_VENDOR, 12)
 #endif
+#ifndef SIO_UDP_NETRESET
+#define SIO_UDP_NETRESET _WSAIOW(IOC_VENDOR, 15)
+#endif
 #pragma comment(lib, "ws2_32")
 typedef int socklen_t;
 typedef unsigned short sa_family_t;
@@ -437,6 +440,23 @@ static void set_resolver_allocator(CPUState* cpu) {
     (void)cpu;
 }
 
+#if defined(_WIN32)
+// Windows fails the next recvfrom of a UDP socket when an ICMP error comes back, a Wii U never does.
+// PIA punches NATs with low-TTL probes: the "TTL exceeded" reply gave WSAENETRESET (10052), PIA took
+// its socket for dead and the host dropped the match. Port unreachable (WSAECONNRESET) is the same case.
+static void ignore_udp_icmp_errors(SOCKET s) {
+    static constexpr std::pair<DWORD, const char*> kControls[] = {{SIO_UDP_CONNRESET, "SIO_UDP_CONNRESET"},
+                                                                  {SIO_UDP_NETRESET, "SIO_UDP_NETRESET"}};
+    for (const auto& [control, name] : kControls) {
+        BOOL off = FALSE;
+        DWORD bytes = 0;
+        if (WSAIoctl(s, control, &off, sizeof off, nullptr, 0, &bytes, nullptr, nullptr) != 0)
+            RBREW_LOG_WARN("nsysnet", "%s could not be turned off (error %d): ICMP errors may break P2P\n", name,
+                           WSAGetLastError());
+    }
+}
+#endif
+
 // ---------------------------------------------------------------------------
 // mw_socket / socketclose
 // On Windows, SOCKET is UINT_PTR but games always get small FD numbers so
@@ -476,11 +496,7 @@ static void mw_socket(CPUState* cpu) {
     state.nonblocking = false;
     ++state.generation;
 #if defined(_WIN32)
-    if (type == SOCK_DGRAM) {
-        BOOL off = FALSE;
-        DWORD bytes = 0;
-        WSAIoctl(s, SIO_UDP_CONNRESET, &off, sizeof off, nullptr, 0, &bytes, nullptr, nullptr);
-    }
+    if (type == SOCK_DGRAM) ignore_udp_icmp_errors(s);
 #endif
     net_result(cpu, fd);
 }
