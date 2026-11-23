@@ -22,6 +22,7 @@
 #include "gx2_frame_interp.h"
 #include "gx2_env_light.h"
 #include "vk/gx2_vk_capture.h"
+#include "../../runtime/camtrace.h"
 #include "../../runtime/port_settings.h"
 #include "gx2_render_vk_debug.h"
 #include "../vpad/game_controllers.h"
@@ -70,9 +71,10 @@ static constexpr int DRC_H = 480;
 static void update_window_title() {
     if (!s_window) return;
     char title_buf[128];
-    std::snprintf(title_buf, sizeof(title_buf), "Splatoon | %s | Vulkan [F3=overlay | Tab=view | %s]",
+    std::snprintf(title_buf, sizeof(title_buf), "Splatoon | %s | Vulkan [F3=overlay | Tab=view | %s]%s",
                   g_screen_mode == ScreenMode::TV ? "TV" : "Gamepad",
-                  gx2env::online_mode() ? "F4=social" : "F11=window");
+                  gx2env::online_mode() ? "F4=social" : "F11=window",
+                  rbrew_camtrace::active() ? "  >>> REC camera (F10 to stop) <<<" : "");
     SDL_SetWindowTitle(s_window, title_buf);
 }
 
@@ -1000,6 +1002,9 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
                 } else if (ev.key.keysym.scancode == SDL_SCANCODE_F8) {
                     SplatoonDiagnostics::ToggleManualRecord();
                     controller_log("F8 pressed: Manual recording toggled\n");
+                } else if (ev.key.keysym.scancode == SDL_SCANCODE_F10 && rbrew_camtrace::enabled()) {
+                    rbrew_camtrace::toggle(); // camera trace: Diagnostics\camtrace-*.csv
+                    controller_log("F10 pressed: camera trace %s\n", rbrew_camtrace::active() ? "on" : "off");
                 } else if (ev.key.keysym.scancode == SDL_SCANCODE_F9) {
                     SplatoonDiagnostics::ManualCapture();
                     controller_log("F9 pressed: Diagnostic snapshot captured\n");
@@ -1141,8 +1146,16 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
     const uint16_t draws_this_frame = uint16_t(g_gx2_gpu_draws.exchange(0, std::memory_order_relaxed));
     SplatoonDiagnostics::SampleThreadCpu("game");
 
-    SplatoonDiagnostics::RecordFrame(uint32_t(s_swap_count.load()), frame_delta_ms, guest_work_ms, present_wait_ms,
-                                     vsync_wait_ms, cpu_duration_ms, draws_this_frame, 0, 0, uint8_t(g_screen_mode));
+    // Shader work since the previous frame (read racily: statistics).
+    static uint64_t s_last_shader_compiles = 0;
+    static double s_last_shader_wait_ms = 0.0;
+    const uint64_t shader_compiles = gx2_render_vk_shader_compiles();
+    const double shader_wait_ms = gx2_render_vk_shader_wait_ms();
+    const uint64_t frame_shader_compiles = shader_compiles - std::exchange(s_last_shader_compiles, shader_compiles);
+    const double frame_shader_wait_ms = shader_wait_ms - std::exchange(s_last_shader_wait_ms, shader_wait_ms);
+    SplatoonDiagnostics::RecordFrame(
+        uint32_t(s_swap_count.load()), frame_delta_ms, guest_work_ms, present_wait_ms, vsync_wait_ms, cpu_duration_ms,
+        draws_this_frame, uint16_t(std::min<uint64_t>(frame_shader_compiles, UINT16_MAX)), 0, uint8_t(g_screen_mode));
 
     static FILE* benchmark_csv = [] {
         const char* path = std::getenv("RBREW_BENCHMARK_CSV");
@@ -1150,23 +1163,34 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
         if (file) {
             std::setvbuf(file, nullptr, _IOFBF, 65536);
             std::fprintf(
-                file,
-                "Frame,Scene,FrameTime_ms,GuestWork_ms,VSyncWait_ms,PresentWait_ms,Capture,Profile,Draws,Submits\n");
+                file, "Frame,Scene,FrameTime_ms,GuestWork_ms,VSyncWait_ms,PresentWait_ms,Capture,Profile,Draws,Submits,"
+                      "ShaderCompiles,ShaderWait_ms\n");
         }
         return file;
     }();
     const uint32_t benchmark_frame = s_swap_count.load();
+    static const uint32_t camtrace_at = [] {
+        const char* v = std::getenv("RBREW_CAMTRACE_AT");
+        return v ? uint32_t(std::strtoul(v, nullptr, 10)) : 0u;
+    }();
+    if (camtrace_at && benchmark_frame == camtrace_at && !rbrew_camtrace::active())
+        rbrew_camtrace::toggle(); // tests: start without F10
+    rbrew_camtrace::end_frame(benchmark_frame, rbrew_control_defaults::active_scene_type(MEM), frame_delta_ms,
+                              guest_work_ms, vsync_wait_ms, present_wait_ms,
+                              rbrew_benchmark::frame_draws.load(std::memory_order_relaxed));
+    if (rbrew_camtrace::consume_change()) update_window_title();
     if (benchmark_csv) {
         // Vulkan queue submissions since the previous frame (read racily: statistics).
         static uint64_t s_last_submissions = 0;
         const uint64_t submissions = gx2_render_vk_submissions();
         const uint64_t frame_submissions = submissions - std::exchange(s_last_submissions, submissions);
         std::fprintf(
-            benchmark_csv, "%u,%d,%.6f,%.6f,%.6f,%.6f,%u,%u,%u,%llu\n", benchmark_frame,
+            benchmark_csv, "%u,%d,%.6f,%.6f,%.6f,%.6f,%u,%u,%u,%llu,%llu,%.3f\n", benchmark_frame,
             rbrew_control_defaults::active_scene_type(MEM), frame_delta_ms, guest_work_ms, vsync_wait_ms,
             present_wait_ms, rbrew_benchmark::captured_frame.load(std::memory_order_relaxed) == benchmark_frame,
             unsigned(rbrew_benchmark::profiling.load(std::memory_order_relaxed)),
-            rbrew_benchmark::frame_draws.load(std::memory_order_relaxed), (unsigned long long)frame_submissions);
+            rbrew_benchmark::frame_draws.load(std::memory_order_relaxed), (unsigned long long)frame_submissions,
+            (unsigned long long)frame_shader_compiles, frame_shader_wait_ms);
         if (benchmark_frame % 60 == 0) std::fflush(benchmark_csv);
     }
     static const bool frame_profile = std::getenv("RBREW_FRAME_PROFILE") != nullptr;

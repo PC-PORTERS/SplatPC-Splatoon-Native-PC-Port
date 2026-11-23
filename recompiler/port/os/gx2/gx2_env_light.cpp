@@ -3,6 +3,7 @@
 #include "gx2_env_light.h"
 #include "gx2_sky_model.h"
 #include "../../hooks/gx2_guest_memory.h"
+#include "../../runtime/camtrace.h"
 #include "../../runtime/port_settings.h"
 #include "../../runtime/rebrewu_runtime.h"
 #include "../../runtime/native_control_defaults.h"
@@ -1026,7 +1027,7 @@ void frame(uint8_t* mem, uint64_t swap_count) {
     camera.mem = mem;
     camera.swap_count = swap_count;
     camera.world_frames = world_frames;
-    camera.camera_scene = camera_scene;
+    camera.camera_scene = camera_scene || rbrew_camtrace::active();
     camera.shaders_on = on;
     camera.world = world;
     camera.plaza = plaza;
