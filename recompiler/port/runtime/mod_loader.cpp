@@ -231,6 +231,7 @@ enum class GuestSlotKind { Manifest, BodyTrampoline, Dispatch };
 
 struct GuestHookNode {
     uint64_t handle = 0;
+    unsigned int priority = 0u;
     SplatModGuestHook callback = nullptr;
     void* orig_stub = nullptr;
 };
@@ -256,6 +257,7 @@ struct GuestHookSlot {
 
 struct NativeHookNode {
     uint64_t handle = 0;
+    unsigned int priority = 0u;
     void* detour = nullptr;
     void* orig_stub = nullptr;
 };
@@ -398,7 +400,8 @@ void guest_dispatch_dispatcher(CPUState* cpu, uint32_t guest_addr, void* prev_ho
     }
 }
 
-SplatModHookHandle api_hook_guest(uint32_t guest_addr, SplatModGuestHook hook, SplatModGuestOrig* out_orig) {
+SplatModHookHandle api_hook_guest(uint32_t guest_addr, SplatModGuestHook hook, SplatModGuestOrig* out_orig,
+                                  unsigned int priority) {
     if (!hook || (guest_addr & 3u) != 0) return 0;
 
     std::lock_guard lock(s_hook_mutex);
@@ -408,7 +411,10 @@ SplatModHookHandle api_hook_guest(uint32_t guest_addr, SplatModGuestHook hook, S
 
     auto existing = s_guest_slots.find(guest_addr);
     if (existing != s_guest_slots.end()) {
-        existing->second->nodes.push_back({handle, hook, orig_stub});
+        auto& nodes = existing->second->nodes;
+        const auto pos = std::upper_bound(nodes.begin(), nodes.end(), priority,
+                                          [](unsigned int p, const GuestHookNode& n) { return p < n.priority; });
+        nodes.insert(pos, {handle, priority, hook, orig_stub});
         s_guest_handle_to_addr[handle] = guest_addr;
         if (out_orig) *out_orig = reinterpret_cast<SplatModGuestOrig>(orig_stub);
         return handle;
@@ -449,7 +455,7 @@ SplatModHookHandle api_hook_guest(uint32_t guest_addr, SplatModGuestHook hook, S
         s_dispatch_cpu->dispatch_table[idx] = reinterpret_cast<HostFunc>(slot->bridge);
     }
 
-    slot->nodes.push_back({handle, hook, orig_stub});
+    slot->nodes.push_back({handle, priority, hook, orig_stub});
     s_guest_slots.emplace(guest_addr, std::move(slot));
     s_guest_handle_to_addr[handle] = guest_addr;
     if (out_orig) *out_orig = reinterpret_cast<SplatModGuestOrig>(orig_stub);
@@ -499,7 +505,7 @@ bool api_unhook_guest(SplatModHookHandle handle) {
     return remove_guest_hook_locked(handle);
 }
 
-SplatModHookHandle api_hook_native(void* target, void* detour, void** out_orig) {
+SplatModHookHandle api_hook_native(void* target, void* detour, void** out_orig, unsigned int priority) {
     if (!target || !detour) return 0;
 
     std::lock_guard lock(s_hook_mutex);
@@ -507,10 +513,14 @@ SplatModHookHandle api_hook_native(void* target, void* detour, void** out_orig) 
 
     if (const auto it = s_native_slots.find(target); it != s_native_slots.end()) {
         auto& slot = it->second;
-        void* next_target = slot->nodes.empty() ? slot->orig_trampoline : slot->nodes.back().detour;
-        void* orig_stub = create_jump_stub(next_target);
-        if (!orig_stub || !patch_jump_stub_target(slot->entry_stub, detour)) return 0;
-        slot->nodes.push_back({handle, detour, orig_stub});
+        const auto pos = std::upper_bound(slot->nodes.begin(), slot->nodes.end(), priority,
+                                          [](unsigned int p, const NativeHookNode& n) { return p < n.priority; });
+        const size_t insert_idx = size_t(pos - slot->nodes.begin());
+        void* below_target = (insert_idx == 0) ? slot->orig_trampoline : slot->nodes[insert_idx - 1].detour;
+        void* orig_stub = create_jump_stub(below_target);
+        void* above_stub = (insert_idx == slot->nodes.size()) ? slot->entry_stub : slot->nodes[insert_idx].orig_stub;
+        if (!orig_stub || !patch_jump_stub_target(above_stub, detour)) return 0;
+        slot->nodes.insert(pos, {handle, priority, detour, orig_stub});
         s_native_handle_to_target[handle] = target;
         if (out_orig) *out_orig = orig_stub;
         return handle;
@@ -532,7 +542,7 @@ SplatModHookHandle api_hook_native(void* target, void* detour, void** out_orig) 
         return 0;
     }
 
-    slot->nodes.push_back({handle, detour, orig_stub});
+    slot->nodes.push_back({handle, priority, detour, orig_stub});
     s_native_slots.emplace(target, std::move(slot));
     s_native_handle_to_target[handle] = target;
     if (out_orig) *out_orig = orig_stub;

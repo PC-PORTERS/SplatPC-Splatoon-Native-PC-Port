@@ -53,13 +53,30 @@ Export these C symbols with `SPLATMOD_EXPORT`:
 
 ### Guest Function Hooks (`SPLAT_DEFINE_GUEST_HOOK`)
 
-`host->hook_guest(guest_addr, callback, &orig)` supports every PowerPC guest address uniformly across three host tiers:
+`host->hook_guest(guest_addr, callback, &orig, priority)` supports every PowerPC guest address uniformly across three host tiers:
 
 1. **Manifest-hooked functions**: dynamically stacked via `rbrew_set_guest_hook`, preserving any built-in host hooks underneath mods.
 2. **All other recompiled `Gambit_fn_XXXXXXXX` functions**: hooked automatically at runtime via x86-64 near-trampolines without modifying `.manifest` files or recompiling the game.
 3. **Host OS / `dispatch_table`-only addresses**: wrapped transparently via JIT dispatch bridges.
 
 Multiple mods can stack hooks on the same address and unhook in any order.
+
+#### Hook Priorities
+
+Both `hook_guest` / `hook_native` and the C++ `InstallAt` / `InstallAtFn` helpers accept an optional priority (`0u` by default, matching `HookPriority::LOW`):
+
+```cpp
+enum class HookPriority : unsigned int {
+    LOW = 0u,
+    MEDIUM = 100u,
+    HIGH = 200u,
+    ULTRA_HIGH = 300u,
+};
+```
+
+- **Higher priority hooks run outermost / first** on function entry (so an `ULTRA_HIGH` hook runs before `HIGH`, `MEDIUM`, `LOW`, and can choose whether to invoke `Orig(...)`).
+- Custom `unsigned int` values are also accepted cleanly for fine-grained ordering between presets (for example, `50u`, `150u`, or `250u`).
+- Equal priorities execute in **LIFO** order (most recently installed runs first).
 
 ```cpp
 #include "splat_mod_api.h"
@@ -75,7 +92,8 @@ void PlayerSetupHook::Callback(CPUState* cpu, uint32_t /*guest_addr*/) {
 
 extern "C" SPLATMOD_EXPORT bool splatmod_init(const SplatModHost* host) {
     g_host = host;
-    return PlayerSetupHook::InstallAt(host, 0x023FED60u);
+    // Defaults to priority 0 (HookPriority::LOW), or pass HookPriority::HIGH / an unsigned int:
+    return PlayerSetupHook::InstallAt(host, 0x023FED60u, HookPriority::HIGH);
 }
 
 extern "C" SPLATMOD_EXPORT void splatmod_shutdown(void) {
@@ -93,8 +111,8 @@ int MyNativeHook::Callback(int a, int b) {
     return Orig(a + 1, b);
 }
 
-// Install inside splatmod_init:
-MyNativeHook::InstallAtFn(host, &some_native_function);
+// Install inside splatmod_init (optional priority: HookPriority or unsigned int, default 0):
+MyNativeHook::InstallAtFn(host, &some_native_function, HookPriority::MEDIUM);
 ```
 
 ### Calling Guest Functions (`host->call_guest`)

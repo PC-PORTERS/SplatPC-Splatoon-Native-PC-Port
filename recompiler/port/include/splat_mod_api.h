@@ -49,6 +49,13 @@ typedef enum SplatModScreenMode {
     SPLATMOD_SCREEN_GAMEPAD = 1,
 } SplatModScreenMode;
 
+typedef enum SplatModHookPriority {
+    SPLATMOD_PRIORITY_LOW = 0u,
+    SPLATMOD_PRIORITY_MEDIUM = 100u,
+    SPLATMOD_PRIORITY_HIGH = 200u,
+    SPLATMOD_PRIORITY_ULTRA_HIGH = 300u,
+} SplatModHookPriority;
+
 typedef struct SplatModInfo {
     uint32_t abi_version; // Must match SPLATMOD_ABI_VERSION
     const char* id;       // Short unique id, e.g. "author.mod_name"
@@ -115,9 +122,11 @@ typedef struct SplatModHost {
     const char* (*mods_dir)(void);
 
     // Function hooking & guest calls (safe to stack and unhook in any order).
-    SplatModHookHandle (*hook_guest)(uint32_t guest_addr, SplatModGuestHook hook, SplatModGuestOrig* out_orig);
+    // Higher `priority` hooks execute outermost/first; equal priorities run LIFO.
+    SplatModHookHandle (*hook_guest)(uint32_t guest_addr, SplatModGuestHook hook, SplatModGuestOrig* out_orig,
+                                     unsigned int priority);
     bool (*unhook_guest)(SplatModHookHandle handle);
-    SplatModHookHandle (*hook_native)(void* target, void* detour, void** out_orig);
+    SplatModHookHandle (*hook_native)(void* target, void* detour, void** out_orig, unsigned int priority);
     bool (*unhook_native)(SplatModHookHandle handle);
 
     bool (*call_guest)(CPUState* cpu, uint32_t guest_addr, const uint32_t* args, uint32_t arg_count, uint32_t* out_r3);
@@ -208,6 +217,13 @@ static inline void splatmod_write_f32(uint8_t* mem, uint32_t addr, float value) 
 #ifdef __cplusplus
 } // extern "C"
 
+enum class HookPriority : unsigned int {
+    LOW = SPLATMOD_PRIORITY_LOW,
+    MEDIUM = SPLATMOD_PRIORITY_MEDIUM,
+    HIGH = SPLATMOD_PRIORITY_HIGH,
+    ULTRA_HIGH = SPLATMOD_PRIORITY_ULTRA_HIGH,
+};
+
 // exLaunch-style trampoline hook declaration helpers for C++20 mods.
 //
 // Example (guest function hook):
@@ -217,6 +233,7 @@ static inline void splatmod_write_f32(uint8_t* mem, uint32_t addr, float value) 
 //       // modify cpu->r[3], etc.
 //   }
 //   // In splatmod_init: PlayerSetupHook::InstallAt(host, 0x023FED60u);
+//   // Or with priority: PlayerSetupHook::InstallAt(host, 0x023FED60u, HookPriority::HIGH);
 //
 // Example (native C++ function hook):
 //   SPLAT_DEFINE_NATIVE_HOOK(MyNativeHook, int, (int x, int y))
@@ -232,10 +249,13 @@ static inline void splatmod_write_f32(uint8_t* mem, uint32_t addr, float value) 
         static inline void Orig(CPUState* cpu) {                                                                       \
             if (s_orig) s_orig(cpu);                                                                                   \
         }                                                                                                              \
-        static inline bool InstallAt(const SplatModHost* host, uint32_t guest_addr) {                                  \
+        static inline bool InstallAt(const SplatModHost* host, uint32_t guest_addr, unsigned int priority = 0u) {      \
             if (!host || !host->hook_guest || s_handle) return false;                                                  \
-            s_handle = host->hook_guest(guest_addr, &Name::Callback, &Name::s_orig);                                   \
+            s_handle = host->hook_guest(guest_addr, &Name::Callback, &Name::s_orig, priority);                         \
             return s_handle != 0;                                                                                      \
+        }                                                                                                              \
+        static inline bool InstallAt(const SplatModHost* host, uint32_t guest_addr, HookPriority priority) {           \
+            return InstallAt(host, guest_addr, static_cast<unsigned int>(priority));                                   \
         }                                                                                                              \
         static inline void Uninstall(const SplatModHost* host) {                                                       \
             if (host && host->unhook_guest && s_handle) {                                                              \
@@ -255,15 +275,21 @@ static inline void splatmod_write_f32(uint8_t* mem, uint32_t addr, float value) 
         template <typename... CallArgs> static inline Ret Orig(CallArgs&&... call_args) {                              \
             return s_orig(static_cast<CallArgs&&>(call_args)...);                                                      \
         }                                                                                                              \
-        static inline bool InstallAt(const SplatModHost* host, void* target) {                                         \
+        static inline bool InstallAt(const SplatModHost* host, void* target, unsigned int priority = 0u) {             \
             if (!host || !host->hook_native || s_handle) return false;                                                 \
             void* orig_ptr = nullptr;                                                                                  \
-            s_handle = host->hook_native(target, reinterpret_cast<void*>(&Name::Callback), &orig_ptr);                 \
+            s_handle = host->hook_native(target, reinterpret_cast<void*>(&Name::Callback), &orig_ptr, priority);       \
             s_orig = reinterpret_cast<FnType>(orig_ptr);                                                               \
             return s_handle != 0;                                                                                      \
         }                                                                                                              \
-        static inline bool InstallAtFn(const SplatModHost* host, FnType target) {                                      \
-            return InstallAt(host, reinterpret_cast<void*>(target));                                                   \
+        static inline bool InstallAt(const SplatModHost* host, void* target, HookPriority priority) {                  \
+            return InstallAt(host, target, static_cast<unsigned int>(priority));                                       \
+        }                                                                                                              \
+        static inline bool InstallAtFn(const SplatModHost* host, FnType target, unsigned int priority = 0u) {          \
+            return InstallAt(host, reinterpret_cast<void*>(target), priority);                                         \
+        }                                                                                                              \
+        static inline bool InstallAtFn(const SplatModHost* host, FnType target, HookPriority priority) {               \
+            return InstallAtFn(host, target, static_cast<unsigned int>(priority));                                     \
         }                                                                                                              \
         static inline void Uninstall(const SplatModHost* host) {                                                       \
             if (host && host->unhook_native && s_handle) {                                                             \

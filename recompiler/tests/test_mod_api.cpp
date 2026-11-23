@@ -141,6 +141,88 @@ void plugin_target_entry(CPUState* cpu) {
     plugin_target_body(cpu, cpu->mem);
 }
 
+// ---- Hook priority ordering targets ----
+
+std::vector<int> g_prio_trace;
+
+RBREW_GUEST_BODY void native_trace_target(int tag) {
+    g_prio_trace.push_back(tag);
+}
+
+#define DEFINE_NATIVE_TRACE_HOOK(HookName, EntryTag, ExitTag)                                                          \
+    SPLAT_DEFINE_NATIVE_HOOK(HookName, void, (int tag))                                                                \
+    void HookName::Callback(int tag) {                                                                                 \
+        g_prio_trace.push_back(EntryTag);                                                                              \
+        Orig(tag);                                                                                                     \
+        g_prio_trace.push_back(ExitTag);                                                                               \
+    }
+
+DEFINE_NATIVE_TRACE_HOOK(NativePrioLow, 1, -1)
+DEFINE_NATIVE_TRACE_HOOK(NativePrioMed, 2, -2)
+DEFINE_NATIVE_TRACE_HOOK(NativePrio150, 3, -3)
+DEFINE_NATIVE_TRACE_HOOK(NativePrioHigh1, 4, -4)
+DEFINE_NATIVE_TRACE_HOOK(NativePrioHigh2, 5, -5)
+DEFINE_NATIVE_TRACE_HOOK(NativePrioUltra, 6, -6)
+
+#define DEFINE_GUEST_TRACE_HOOK(HookName, EntryTag)                                                                    \
+    SPLAT_DEFINE_GUEST_HOOK(HookName)                                                                                  \
+    void HookName::Callback(CPUState* cpu, uint32_t /*guest_addr*/) {                                                  \
+        g_prio_trace.push_back(EntryTag);                                                                              \
+        Orig(cpu);                                                                                                     \
+    }
+
+DEFINE_GUEST_TRACE_HOOK(GuestPrioLow, 10)
+DEFINE_GUEST_TRACE_HOOK(GuestPrio50, 15)
+DEFINE_GUEST_TRACE_HOOK(GuestPrioMed, 20)
+DEFINE_GUEST_TRACE_HOOK(GuestPrioHigh, 30)
+DEFINE_GUEST_TRACE_HOOK(GuestPrioUltra, 40)
+
+bool g_short_circuit_ultra = false;
+SPLAT_DEFINE_GUEST_HOOK(GuestPrioUltraSkip)
+void GuestPrioUltraSkip::Callback(CPUState* cpu, uint32_t /*guest_addr*/) {
+    g_prio_trace.push_back(41);
+    if (!g_short_circuit_ultra) Orig(cpu);
+}
+
+void builtin_prio_manifest_hook(CPUState* cpu, uint32_t /*addr*/, HostFunc orig) {
+    g_prio_trace.push_back(5);
+    if (orig) orig(cpu);
+}
+
+RBREW_GUEST_BODY void guest_prio_tier1_body(CPUState* __restrict cpu, uint8_t* __restrict /*mem*/) {
+    g_side_effect_sink += 29;
+    g_prio_trace.push_back(1);
+    cpu->r[3] += 1u;
+}
+
+void guest_prio_tier1_unhooked(CPUState* cpu) {
+    guest_prio_tier1_body(cpu, cpu->mem);
+}
+
+void guest_prio_tier1_entry(CPUState* cpu) {
+    if (const RbrewGuestHook hook = rbrew_guest_hook(0x00024000u)) {
+        hook(cpu, 0x00024000u, &guest_prio_tier1_unhooked);
+        return;
+    }
+    guest_prio_tier1_body(cpu, cpu->mem);
+}
+
+RBREW_GUEST_BODY void guest_prio_tier2_body(CPUState* __restrict cpu, uint8_t* __restrict /*mem*/) {
+    g_side_effect_sink += 31;
+    g_prio_trace.push_back(2);
+    cpu->r[3] += 2u;
+}
+
+void guest_prio_tier2_entry(CPUState* cpu) {
+    guest_prio_tier2_body(cpu, cpu->mem);
+}
+
+void guest_prio_tier3_stub(CPUState* cpu) {
+    g_side_effect_sink += 37;
+    g_prio_trace.push_back(3);
+    cpu->r[3] += 3u;
+}
+
 void test_native_trampolines(const SplatModHost* host) {
     CHECK(native_add_biased(2, 3) == 15);
     CHECK(native_short_leaf(4) == 19);
@@ -181,7 +263,7 @@ void test_tier1_manifest_hooks(const SplatModHost* host, CPUState* cpu, std::vec
         const uint32_t addr = 0x00020000u + uint32_t(i * 4u);
         rbrew_register_guest_body(addr, reinterpret_cast<void*>(&tier1_shared_body), true);
         SplatModGuestOrig orig = nullptr;
-        const SplatModHookHandle h = host->hook_guest(addr, &tier1_noop_callback, &orig);
+        const SplatModHookHandle h = host->hook_guest(addr, &tier1_noop_callback, &orig, 0u);
         CHECK(h != 0 && orig != nullptr);
         handles.push_back(h);
     }
@@ -367,6 +449,139 @@ void test_plugin_load_and_unload(const char* plugin_path, const SplatModHost* ho
     CHECK(r3_out == 17u);
 }
 
+void test_native_hook_priorities(const SplatModHost* host) {
+    g_prio_trace.clear();
+    native_trace_target(99);
+    CHECK(g_prio_trace == (std::vector<int>{99}));
+
+    // Install out of priority order (including default 0u and equal-priority LIFO tie-breaking).
+    CHECK(NativePrioMed::InstallAtFn(host, &native_trace_target, HookPriority::MEDIUM));
+    CHECK(NativePrioLow::InstallAtFn(host, &native_trace_target));
+    CHECK(NativePrioUltra::InstallAtFn(host, &native_trace_target, HookPriority::ULTRA_HIGH));
+    CHECK(NativePrioHigh1::InstallAtFn(host, &native_trace_target, HookPriority::HIGH));
+    CHECK(NativePrio150::InstallAtFn(host, &native_trace_target, 150u));
+    CHECK(NativePrioHigh2::InstallAtFn(host, &native_trace_target, HookPriority::HIGH));
+
+    g_prio_trace.clear();
+    native_trace_target(99);
+    CHECK(g_prio_trace == (std::vector<int>{6, 5, 4, 3, 2, 1, 99, -1, -2, -3, -4, -5, -6}));
+
+    // Remove middle, bottom, and top detours out of order.
+    NativePrioHigh1::Uninstall(host);
+    NativePrioLow::Uninstall(host);
+    NativePrioUltra::Uninstall(host);
+    g_prio_trace.clear();
+    native_trace_target(99);
+    CHECK(g_prio_trace == (std::vector<int>{5, 3, 2, 99, -2, -3, -5}));
+
+    NativePrio150::Uninstall(host);
+    NativePrioHigh2::Uninstall(host);
+    NativePrioMed::Uninstall(host);
+    g_prio_trace.clear();
+    native_trace_target(99);
+    CHECK(g_prio_trace == (std::vector<int>{99}));
+}
+
+void test_guest_hook_priorities(const SplatModHost* host, CPUState* cpu, std::vector<HostFunc>& dispatch) {
+    // Tier 1: manifest-hooked guest function with built-in hook underneath mod chain.
+    constexpr uint32_t kTier1Addr = 0x00024000u;
+    rbrew_register_guest_body(kTier1Addr, reinterpret_cast<void*>(&guest_prio_tier1_body), true);
+    dispatch[kTier1Addr >> 2] = &guest_prio_tier1_entry;
+    CHECK(rbrew_set_guest_hook(kTier1Addr, &builtin_prio_manifest_hook));
+
+    CHECK(GuestPrioMed::InstallAt(host, kTier1Addr, HookPriority::MEDIUM));
+    CHECK(GuestPrioLow::InstallAt(host, kTier1Addr));
+    CHECK(GuestPrioUltra::InstallAt(host, kTier1Addr, HookPriority::ULTRA_HIGH));
+    CHECK(GuestPrioHigh::InstallAt(host, kTier1Addr, HookPriority::HIGH));
+    CHECK(GuestPrio50::InstallAt(host, kTier1Addr, 50u));
+
+    g_prio_trace.clear();
+    cpu->r[3] = 0u;
+    guest_prio_tier1_entry(cpu);
+    CHECK(g_prio_trace == (std::vector<int>{40, 30, 20, 15, 10, 5, 1}));
+    CHECK(cpu->r[3] == 1u);
+
+    GuestPrioHigh::Uninstall(host);
+    GuestPrioLow::Uninstall(host);
+    GuestPrioUltra::Uninstall(host);
+    g_prio_trace.clear();
+    guest_prio_tier1_entry(cpu);
+    CHECK(g_prio_trace == (std::vector<int>{20, 15, 5, 1}));
+
+    GuestPrioMed::Uninstall(host);
+    GuestPrio50::Uninstall(host);
+    CHECK(rbrew_guest_hook(kTier1Addr) == &builtin_prio_manifest_hook);
+    g_prio_trace.clear();
+    guest_prio_tier1_entry(cpu);
+    CHECK(g_prio_trace == (std::vector<int>{5, 1}));
+    CHECK(rbrew_set_guest_hook(kTier1Addr, nullptr));
+
+    // Tier 2: compiled guest body trampoline + outermost short-circuiting.
+    constexpr uint32_t kTier2Addr = 0x00025000u;
+    rbrew_register_guest_body(kTier2Addr, reinterpret_cast<void*>(&guest_prio_tier2_body), false);
+    dispatch[kTier2Addr >> 2] = &guest_prio_tier2_entry;
+
+    CHECK(GuestPrioMed::InstallAt(host, kTier2Addr, HookPriority::MEDIUM));
+    CHECK(GuestPrioLow::InstallAt(host, kTier2Addr));
+    CHECK(GuestPrioUltraSkip::InstallAt(host, kTier2Addr, HookPriority::ULTRA_HIGH));
+    CHECK(GuestPrioHigh::InstallAt(host, kTier2Addr, HookPriority::HIGH));
+    CHECK(GuestPrio50::InstallAt(host, kTier2Addr, 50u));
+
+    g_short_circuit_ultra = false;
+    g_prio_trace.clear();
+    guest_prio_tier2_body(cpu, cpu->mem);
+    CHECK(g_prio_trace == (std::vector<int>{41, 30, 20, 15, 10, 2}));
+
+    g_short_circuit_ultra = true;
+    g_prio_trace.clear();
+    guest_prio_tier2_body(cpu, cpu->mem);
+    CHECK(g_prio_trace == (std::vector<int>{41}));
+    g_short_circuit_ultra = false;
+
+    GuestPrio50::Uninstall(host);
+    GuestPrioHigh::Uninstall(host);
+    g_prio_trace.clear();
+    rbrew_dispatch(cpu, kTier2Addr);
+    CHECK(g_prio_trace == (std::vector<int>{41, 20, 10, 2}));
+
+    GuestPrioUltraSkip::Uninstall(host);
+    GuestPrioMed::Uninstall(host);
+    GuestPrioLow::Uninstall(host);
+    g_prio_trace.clear();
+    guest_prio_tier2_body(cpu, cpu->mem);
+    CHECK(g_prio_trace == (std::vector<int>{2}));
+
+    // Tier 3: dispatch-only guest stub.
+    constexpr uint32_t kTier3Addr = 0x00026000u;
+    dispatch[kTier3Addr >> 2] = &guest_prio_tier3_stub;
+
+    CHECK(GuestPrioMed::InstallAt(host, kTier3Addr, HookPriority::MEDIUM));
+    CHECK(GuestPrioLow::InstallAt(host, kTier3Addr));
+    CHECK(GuestPrioUltra::InstallAt(host, kTier3Addr, HookPriority::ULTRA_HIGH));
+    CHECK(GuestPrioHigh::InstallAt(host, kTier3Addr, HookPriority::HIGH));
+    CHECK(GuestPrio50::InstallAt(host, kTier3Addr, 50u));
+
+    uint32_t r3_out = 0u;
+    g_prio_trace.clear();
+    cpu->r[3] = 0u;
+    CHECK(host->call_guest(cpu, kTier3Addr, nullptr, 0u, &r3_out));
+    CHECK(g_prio_trace == (std::vector<int>{40, 30, 20, 15, 10, 3}));
+    CHECK(r3_out == 3u);
+
+    GuestPrioMed::Uninstall(host);
+    GuestPrioLow::Uninstall(host);
+    GuestPrioUltra::Uninstall(host);
+    g_prio_trace.clear();
+    CHECK(host->call_guest(cpu, kTier3Addr, nullptr, 0u, &r3_out));
+    CHECK(g_prio_trace == (std::vector<int>{30, 15, 3}));
+
+    GuestPrioHigh::Uninstall(host);
+    GuestPrio50::Uninstall(host);
+    g_prio_trace.clear();
+    CHECK(host->call_guest(cpu, kTier3Addr, nullptr, 0u, &r3_out));
+    CHECK(g_prio_trace == (std::vector<int>{3}));
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -383,9 +598,11 @@ int main(int argc, char** argv) {
     CHECK(host && host->abi_version == SPLATMOD_ABI_VERSION);
 
     test_native_trampolines(host);
+    test_native_hook_priorities(host);
     test_tier1_manifest_hooks(host, &cpu, dispatch);
     test_tier2_body_trampolines(host, &cpu, dispatch);
     test_tier3_dispatch_and_call_guest(host, &cpu, dispatch);
+    test_guest_hook_priorities(host, &cpu, dispatch);
     test_host_extensions(host);
 
     if (argc >= 2 && argv[1] && *argv[1]) {
