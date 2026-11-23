@@ -219,8 +219,9 @@ void write(const Values& v) {
         << "plaza_60fps=" << v.plaza_60fps << "\n"
         << "frame_rate=" << v.frame_rate << "\n"
         << "gsync=" << v.gsync << "\n"
-        << "fullscreen=" << v.fullscreen << "\n"
-        << "fps_overlay=" << v.fps_overlay << "\n"
+        << "fullscreen=" << v.fullscreen << "\n";
+    if (v.borderless) out << "borderless=1\n";
+    out << "fps_overlay=" << v.fps_overlay << "\n"
         << "simple_overlay=" << v.simple_overlay << "\n"
         << "confirm_quit=" << v.confirm_quit << "\n"
         << "gyro=" << v.gyro << "\n"
@@ -299,6 +300,8 @@ void load() {
             v.gsync = number != 0;
         else if (key == "fullscreen")
             v.fullscreen = number != 0;
+        else if (key == "borderless")
+            v.borderless = number != 0;
         else if (key == "fps_overlay")
             v.fps_overlay = number != 0;
         else if (key == "simple_overlay")
