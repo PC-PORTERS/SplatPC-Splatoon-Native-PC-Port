@@ -302,7 +302,7 @@ target_link_libraries(gambit_runtime PUBLIC
 target_link_libraries(gambit_runtime PRIVATE imgui)
 
 if(WIN32)
-    target_link_libraries(gambit_runtime PUBLIC ws2_32 winmm mfplat mfuuid shell32 ole32 windowscodecs psapi)
+    target_link_libraries(gambit_runtime PUBLIC ws2_32 winmm mfplat mfuuid shell32 ole32 oleaut32 windowscodecs psapi)
     if(HAVE_MINIAUDIO)
         target_link_libraries(gambit_runtime PUBLIC ksuser)
     endif()

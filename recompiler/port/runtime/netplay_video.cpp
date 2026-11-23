@@ -247,7 +247,8 @@ bool H264Decoder::open() {
     if (!t) return false;
     // Without this the decoder holds pictures back for frame reordering.
     ComPtr<IMFAttributes> attributes;
-    if (SUCCEEDED(t->GetAttributes(&attributes))) attributes->SetUINT32(MF_LOW_LATENCY, TRUE);
+    // CODECAPI_AVLowLatencyMode has the same GUID as MF_LOW_LATENCY and is available under llvm-mingw.
+    if (SUCCEEDED(t->GetAttributes(&attributes))) attributes->SetUINT32(CODECAPI_AVLowLatencyMode, TRUE);
     set_codec_value(t.Get(), CODECAPI_AVLowLatencyMode, 1, true);
     ComPtr<IMFMediaType> input;
     if (FAILED(MFCreateMediaType(&input))) return false;

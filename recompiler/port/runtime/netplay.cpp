@@ -163,8 +163,13 @@ static void set_blocking(socket_t s, bool blocking) {
 constexpr uint32_t kHandshakeMs = 3000, kSilentLinkMs = 3000, kSendMs = 2000, kConnectMs = 1500, kHostSilentMs = 15000;
 
 static bool send_all(socket_t s, const uint8_t* data, size_t size) {
+#ifdef MSG_NOSIGNAL
+    constexpr int kSendFlags = MSG_NOSIGNAL;
+#else
+    constexpr int kSendFlags = 0;
+#endif
     while (size) {
-        const int sent = send(s, reinterpret_cast<const char*>(data), int(size), 0);
+        const int sent = send(s, reinterpret_cast<const char*>(data), int(size), kSendFlags);
         if (sent <= 0) return false;
         data += sent;
         size -= size_t(sent);

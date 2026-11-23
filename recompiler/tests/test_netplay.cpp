@@ -498,7 +498,12 @@ void test_reconnect_under_traffic() {
     send_message(s2, Message::Pad, payload, kPadSize);
     require(wait_for([&] { return host_remote_pad(got) && got == pad2; }), "host receives guest 2 pad");
 
-    bool saw_video = false, saw_audio = false;
+#if defined(_WIN32)
+    constexpr bool expect_video = true;
+#else
+    constexpr bool expect_video = false;
+#endif
+    bool saw_video = !expect_video, saw_audio = false;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     while ((!saw_video || !saw_audio) && std::chrono::steady_clock::now() < deadline) {
         uint8_t header[kHeaderSize];

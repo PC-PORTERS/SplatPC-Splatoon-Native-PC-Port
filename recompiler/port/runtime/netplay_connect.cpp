@@ -211,9 +211,14 @@ bool http(const std::string& url, const char* method, const std::string& headers
                           headers;
     if (std::strcmp(method, "POST") == 0) request += "Content-Length: " + std::to_string(body.size()) + "\r\n";
     request += "\r\n" + body;
+#ifdef MSG_NOSIGNAL
+    constexpr int kSendFlags = MSG_NOSIGNAL;
+#else
+    constexpr int kSendFlags = 0;
+#endif
     bool ok = true;
     for (size_t sent = 0; ok && sent < request.size();) {
-        const int n = send(s, request.data() + sent, int(request.size() - sent), 0);
+        const int n = send(s, request.data() + sent, int(request.size() - sent), kSendFlags);
         ok = n > 0;
         sent += ok ? size_t(n) : 0;
     }
