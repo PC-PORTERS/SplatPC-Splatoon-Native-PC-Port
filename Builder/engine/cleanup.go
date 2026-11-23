@@ -43,6 +43,7 @@ func dependencyPaths(repoRoot string) []string {
 		filepath.Join(buildDir, "curl-build"),
 		filepath.Join(repoRoot, "recompiler", "third_party", "nlohmann"),
 		filepath.Join(repoRoot, "recompiler", "third_party", "miniaudio.h"),
+		filepath.Join(repoRoot, "recompiler", "third_party", "qrcodegen"),
 	}
 }
 

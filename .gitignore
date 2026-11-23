@@ -16,9 +16,10 @@
 *.AppDir/
 *.exe
 
-# Auto-fetched third-party headers
+# Auto-fetched third-party headers/sources
 recompiler/third_party/nlohmann/
 recompiler/third_party/miniaudio.h
+recompiler/third_party/qrcodegen/
 
 # Never commit game files
 *.rpx
@@ -48,7 +49,7 @@ save/
 /recompiler/port/os/snd_core/snd_core_addrs.h
 /recompiler/port/os/stubs/stubs_addrs.h
 /recompiler/port/os/vpad/vpad_addrs.h
-# Only written when generate_revision_header.py is run by hand (runtime/game_revision.h is tracked).
+# Generated from Manifest/ by generate_revision_header.py at configure/build time.
 /recompiler/port/runtime/game_revision.h
 /recompiler/port/runtime/game_branch_tables.h
 
@@ -78,10 +79,9 @@ server.json
 /check_parts.py
 
 # scripts/: only the maintained tools are tracked. One-off experiment scripts
-# can live here without showing up in git status. Add new tools below.
+# and generated files (such as integrity-manifest.txt) stay untracked.
 /scripts/*
 !/scripts/hd_textures.py
-!/scripts/install-hooks.sh
 !/scripts/git-hooks/
 !/scripts/git-hooks/*
 
@@ -91,21 +91,9 @@ server.json
 !/scripts/tests/
 !/scripts/tests/**
 
-# Online launchers and config
-!/scripts/Splatoon-Login.ps1
-!/scripts/Launch-Online.ps1
+# Online config and integrity tool (integrity-manifest.txt is generated at release/build time)
 !/scripts/server.public.txt
-!/scripts/allowed_signers
-!/scripts/Update-Check.ps1
-!/scripts/Update-Apply.ps1
-!/scripts/allowed_signers
-!/scripts/server.public.txt
-!/scripts/friends_relay.py
-!/scripts/splatoon_login.py
 !/scripts/integrity.py
-!/scripts/integrity-manifest.txt
 
 *.lnk
-!/scripts/Launch-Duo.ps1
-!/scripts/Launch-Duo-Public.ps1
 scripts/tests/**/__pycache__/

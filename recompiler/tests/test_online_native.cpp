@@ -95,6 +95,13 @@ void test_attestation() {
     check(proof.version == "0.1.5", "version from VERSION without v");
     const std::string expected = a + " scripts/a.txt\n" + std::string(64, '0') + " scripts/missing.txt\n";
     check(proof.code == sha256_hex(expected), "code: CR removed, a missing file hashes to zeros");
+    // Builder (standalone build-env) -> separate OutputDir: falls back to default_root when game_dir has no manifest.
+    const fs::path output_game = scratch("output") / "Game";
+    fs::create_directories(output_game);
+    check(resolve_integrity_root(root / "Game", scratch("unused")) == root, "git clone layout uses parent dir");
+    check(resolve_integrity_root(output_game, root) == root, "standalone builder layout falls back to default_root");
+    check(attest(resolve_integrity_root(output_game, root)).code == proof.code,
+          "standalone builder output proves the same code hash");
     fs::remove(root / "scripts" / "integrity-manifest.txt");
     check(attest(root).code.empty(), "no manifest, no code");
 }

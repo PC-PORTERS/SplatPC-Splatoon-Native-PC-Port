@@ -1,5 +1,5 @@
 QR Code generator library (C++), v1.8.0 - https://github.com/nayuki/QR-Code-generator
-Used by recompiler/port/third_party/qrcodegen (QR code of the GamePad-on-phone address).
+Downloaded at configure time to recompiler/third_party/qrcodegen (QR code of the GamePad-on-phone address).
 
 QR Code generator library (C++)
 

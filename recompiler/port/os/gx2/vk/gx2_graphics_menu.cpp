@@ -2,7 +2,7 @@
 
 #include "../gx2_env_light.h"
 #include "../pad_remote.h"
-#include "../../../third_party/qrcodegen/qrcodegen.hpp"
+#include <qrcodegen/qrcodegen.hpp>
 
 #include <imgui.h>
 

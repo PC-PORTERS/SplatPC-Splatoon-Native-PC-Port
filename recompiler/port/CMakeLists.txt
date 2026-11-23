@@ -248,6 +248,9 @@ add_library(gambit_online STATIC
     online/social_http.cpp
 )
 target_include_directories(gambit_online PRIVATE ${RBREW_NLOHMANN_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+get_filename_component(RBREW_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
+set_property(SOURCE online/online_boot.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+    RBREW_DEFAULT_INTEGRITY_ROOT="${RBREW_REPO_ROOT}")
 if(WIN32)
     target_link_libraries(gambit_online PUBLIC winhttp bcrypt)
 else()
@@ -255,6 +258,19 @@ else()
 endif()
 if(MSVC)
     target_compile_options(gambit_online PRIVATE /utf-8)
+endif()
+
+# qrcodegen (MIT, Nayuki QR-Code-generator v1.8.0), fetched at configure time.
+set(RBREW_QRCODEGEN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/qrcodegen")
+if(NOT EXISTS "${RBREW_QRCODEGEN_DIR}/qrcodegen.hpp")
+    file(DOWNLOAD https://raw.githubusercontent.com/nayuki/QR-Code-generator/v1.8.0/cpp/qrcodegen.hpp
+         "${RBREW_QRCODEGEN_DIR}/qrcodegen.hpp"
+         EXPECTED_HASH SHA256=b779c3b156cf7a57ce789d6fee4fc991ccc2913774d26c909d22bb8f26b2a793)
+endif()
+if(NOT EXISTS "${RBREW_QRCODEGEN_DIR}/qrcodegen.cpp")
+    file(DOWNLOAD https://raw.githubusercontent.com/nayuki/QR-Code-generator/v1.8.0/cpp/qrcodegen.cpp
+         "${RBREW_QRCODEGEN_DIR}/qrcodegen.cpp"
+         EXPECTED_HASH SHA256=1f3b3fcdac6954c32cf583ccd02ec9b5901f756a38c461acedc70be4a77d3757)
 endif()
 
 file(GLOB_RECURSE GAMBIT_RUNTIME_SOURCES CONFIGURE_DEPENDS
@@ -270,13 +286,16 @@ list(REMOVE_ITEM GAMBIT_RUNTIME_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/runtime/rebrewu_ppc_interpreter.cpp"
 )
 list(APPEND GAMBIT_RUNTIME_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/gambit_plt_stubs.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/qrcodegen/qrcodegen.cpp")
+    "${RBREW_QRCODEGEN_DIR}/qrcodegen.cpp")
 
 add_library(gambit_runtime STATIC ${GAMBIT_RUNTIME_SOURCES})
 
 target_include_directories(gambit_runtime PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/runtime
     ${SDL2_INCLUDE_DIRS}
+)
+target_include_directories(gambit_runtime PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../third_party
 )
 
 target_compile_definitions(gambit_runtime PUBLIC HAVE_SDL2)

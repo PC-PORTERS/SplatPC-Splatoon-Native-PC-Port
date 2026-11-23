@@ -1,6 +1,8 @@
 #include "integrity_proof.h"
 #include "hashing.h"
 
+#include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <iterator>
 #include <optional>
@@ -75,6 +77,25 @@ std::string read_version(const fs::path& root) {
     for (char c : text)
         if (!(c >= '0' && c <= '9') && c != '.') return {};
     return text;
+}
+
+fs::path resolve_integrity_root(const fs::path& game_dir, const fs::path& default_root) {
+    if (const char* env_root = std::getenv("RBREW_INTEGRITY_ROOT"); env_root && *env_root) {
+        return fs::path(std::u8string(env_root, env_root + std::strlen(env_root)));
+    }
+    const fs::path parent = game_dir.parent_path();
+    const fs::path candidates[] = {parent, game_dir, default_root};
+    const auto has_file = [](const fs::path& dir, const fs::path& rel) {
+        std::error_code ec;
+        return !dir.empty() && fs::exists(dir / rel, ec);
+    };
+    for (const fs::path& dir : candidates) {
+        if (has_file(dir, fs::path("scripts") / "integrity-manifest.txt")) return dir;
+    }
+    for (const fs::path& dir : candidates) {
+        if (has_file(dir, "VERSION")) return dir;
+    }
+    return parent;
 }
 
 Attestation attest(const fs::path& root) {

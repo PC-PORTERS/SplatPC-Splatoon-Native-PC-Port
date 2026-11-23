@@ -59,6 +59,10 @@ jobs:
           sudo mv squashfs-root /opt/appimagetool
           sudo ln -s /opt/appimagetool/AppRun /usr/local/bin/appimagetool
 
+      - name: Generate Integrity Manifest
+        run: |
+          python3 scripts/integrity.py --make
+
       - name: Bundle Builder Assets (Build Time)
         run: |
           python3 scripts/bundle_builder_assets.py
@@ -157,6 +161,11 @@ jobs:
         shell: pwsh
         run: |
           "C:\msys64\mingw64\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Generate Integrity Manifest
+        shell: pwsh
+        run: |
+          python scripts/integrity.py --make
 
       - name: Bundle Builder Assets (Build Time)
         shell: pwsh

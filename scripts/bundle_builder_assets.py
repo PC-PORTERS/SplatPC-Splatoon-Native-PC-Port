@@ -35,7 +35,7 @@ def bundle_assets(repo_root: str, output_zip: str):
     total_uncompressed = 0
 
     with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
-        for folder in ["Manifest", "recompiler", "scripts", "LICENSES"]:
+        for folder in ["Manifest", "recompiler", "scripts", "LICENSES", "tools/boss"]:
             folder_path = os.path.join(repo_root, folder)
             if not os.path.exists(folder_path):
                 continue

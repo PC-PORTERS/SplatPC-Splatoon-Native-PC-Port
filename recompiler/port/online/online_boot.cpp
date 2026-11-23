@@ -50,6 +50,18 @@ fs::path env_path(const char* name, const fs::path& fallback) {
     return fs::path(std::u8string(value, value + std::char_traits<char>::length(value)));
 }
 
+fs::path default_integrity_root() {
+#ifdef RBREW_DEFAULT_INTEGRITY_ROOT
+    const char* value = RBREW_DEFAULT_INTEGRITY_ROOT;
+    if (value && *value) return fs::path(std::u8string(value, value + std::char_traits<char>::length(value)));
+#endif
+    return {};
+}
+
+Attestation read_integrity_proof(const fs::path& game_dir) {
+    return attest(resolve_integrity_root(game_dir, default_integrity_root()));
+}
+
 std::string trim_str(std::string s) {
     const size_t b = s.find_first_not_of(" \t\r\n");
     const size_t e = s.find_last_not_of(" \t\r\n");
@@ -112,7 +124,7 @@ void relay_thread(RelayState* state, std::string register_url, std::string serve
         RBREW_LOG_WARN("friends", "unusable server address, friends stay offline\n");
         return;
     }
-    const Attestation proof = attest(env_path("RBREW_INTEGRITY_ROOT", game_dir.parent_path()));
+    const Attestation proof = read_integrity_proof(game_dir);
     RBREW_LOG_INFO("friends", "relay started, version %s, code %.8s\n", proof.version.c_str(), proof.code.c_str());
     const auto& id = rbrew_online::identity();
 
@@ -341,7 +353,7 @@ void start_interactive_login(const LoginFormValues& raw_form) {
             return;
         }
 
-        const Attestation proof = attest(env_path("RBREW_INTEGRITY_ROOT", game_dir.parent_path()));
+        const Attestation proof = read_integrity_proof(game_dir);
         std::string token, err, detail;
         if (!perform_account_login(*transport, form.register_url, register_path, game_dir, id.pid, id.password,
                                    form.pseudo, proof.version, client_proof(proof), token, err, detail)) {

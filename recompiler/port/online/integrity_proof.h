@@ -12,6 +12,8 @@ struct Attestation {
 };
 
 std::string read_version(const std::filesystem::path& root);
+std::filesystem::path resolve_integrity_root(const std::filesystem::path& game_dir,
+                                             const std::filesystem::path& default_root = {});
 Attestation attest(const std::filesystem::path& root);
 
 } // namespace rbrew_native
