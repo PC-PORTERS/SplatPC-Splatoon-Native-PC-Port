@@ -1,6 +1,7 @@
 package roms
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -10,8 +11,18 @@ import (
 type CombinerLogger func(format string, args ...interface{})
 
 func CombineROMs(basePath string, overlays []RomLayer, targetDir string, logger CombinerLogger) error {
+	return CombineROMsContext(context.Background(), basePath, overlays, targetDir, logger)
+}
+
+func CombineROMsContext(ctx context.Context, basePath string, overlays []RomLayer, targetDir string, logger CombinerLogger) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if logger == nil {
 		logger = func(string, ...interface{}) {}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	logger("Initializing combined folder: %s", targetDir)
@@ -21,18 +32,21 @@ func CombineROMs(basePath string, overlays []RomLayer, targetDir string, logger 
 
 	// 1. Copy base dump
 	logger("Applying base ROM v16: %s", basePath)
-	if err := copyDirectoryTree(basePath, targetDir, false, logger); err != nil {
+	if err := copyDirectoryTree(ctx, basePath, targetDir, false, logger); err != nil {
 		return fmt.Errorf("error copying base ROM: %w", err)
 	}
 
 	// 2. Overlay updates and mods in order
 	for i, layer := range overlays {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		logger("Applying overlay layer [%d/%d]: %s", i+1, len(overlays), layer.Name)
 		allowRPX := layer.IsV288
 		if layer.HasRPX && !allowRPX {
 			logger("Note: The .rpx in '%s' is skipped because only v288 is supported to replace the built executable.", layer.Name)
 		}
-		if err := copyDirectoryTree(layer.Path, targetDir, allowRPX, logger); err != nil {
+		if err := copyDirectoryTree(ctx, layer.Path, targetDir, allowRPX, logger); err != nil {
 			return fmt.Errorf("error merging mod %s: %w", layer.Name, err)
 		}
 	}
@@ -44,17 +58,20 @@ func CombineROMs(basePath string, overlays []RomLayer, targetDir string, logger 
 // copyDirectoryTree copies the content of src into dst. Symbolic links are followed: a dump kept
 // behind links (a linked root, code folder or .rpx) is copied by content, because a link recreated
 // in dst would point at nothing there. A link back to a folder being copied is skipped.
-func copyDirectoryTree(src, dst string, allowRPXOverwrite bool, logger CombinerLogger) error {
+func copyDirectoryTree(ctx context.Context, src, dst string, allowRPXOverwrite bool, logger CombinerLogger) error {
 	root, err := filepath.EvalSymlinks(src)
 	if err != nil {
 		return err
 	}
-	return copyFolder(root, dst, "", allowRPXOverwrite, map[string]bool{}, logger)
+	return copyFolder(ctx, root, dst, "", allowRPXOverwrite, map[string]bool{}, logger)
 }
 
 // copyFolder copies one folder; rel is its path from the layer root, in slash form, and active holds
 // the folders of the current branch of the walk (resolved), which a link must not lead back to.
-func copyFolder(src, dst, rel string, allowRPXOverwrite bool, active map[string]bool, logger CombinerLogger) error {
+func copyFolder(ctx context.Context, src, dst, rel string, allowRPXOverwrite bool, active map[string]bool, logger CombinerLogger) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	resolved, err := filepath.EvalSymlinks(src)
 	if err != nil {
 		return err
@@ -74,6 +91,9 @@ func copyFolder(src, dst, rel string, allowRPXOverwrite bool, active map[string]
 		return err
 	}
 	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		path := filepath.Join(src, entry.Name())
 		targetPath := filepath.Join(dst, entry.Name())
 		entryRel := entry.Name()
@@ -99,7 +119,7 @@ func copyFolder(src, dst, rel string, allowRPXOverwrite bool, active map[string]
 			return err
 		}
 		if info.IsDir() {
-			err = copyFolder(path, targetPath, entryRel, allowRPXOverwrite, active, logger)
+			err = copyFolder(ctx, path, targetPath, entryRel, allowRPXOverwrite, active, logger)
 		} else {
 			err = copyFile(path, targetPath)
 		}

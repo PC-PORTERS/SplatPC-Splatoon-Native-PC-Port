@@ -38,6 +38,7 @@ type Wizard struct {
 	overlays []roms.RomLayer
 
 	currentStep StepID
+	building    bool
 	cancelFunc  context.CancelFunc
 
 	mainContainer *fyne.Container
@@ -210,12 +211,16 @@ func (w *Wizard) GoToStep(step StepID) {
 }
 
 func (w *Wizard) StartBuild() {
+	if w.building {
+		return
+	}
 	if w.config.BaseDumpPath == "" {
 		dialog.ShowError(fmt.Errorf("please specify the base ROM in Step 1"), w.window)
 		w.GoToStep(StepRoms)
 		return
 	}
 
+	w.building = true
 	w.GoToStep(StepBuilding)
 	w.buildingView.Reset()
 
@@ -232,18 +237,19 @@ func (w *Wizard) StartBuild() {
 			},
 			OnDone: func(success bool, err error, elapsed time.Duration, appImagePath string) {
 				fyne.Do(func() {
+					w.building = false
+					w.cancelFunc = nil
 					w.buildingView.StopTimer()
 					if success {
 						rememberBuild(w.app.Preferences(), w.config.OutputDir, time.Now(), elapsed)
 						w.doneView.SetSuccess(elapsed, appImagePath)
 						w.GoToStep(StepDone)
+					} else if ctx.Err() == context.Canceled {
+						dialog.ShowInformation("Cancelled", "Build was cancelled by the user.", w.window)
+						w.GoToStep(StepBuildConfig)
 					} else {
-						if err != nil && ctx.Err() == context.Canceled {
-							dialog.ShowInformation("Cancelled", "Build was cancelled by the user.", w.window)
-							w.GoToStep(StepBuildConfig)
-						} else {
-							w.showBuildFailed(err)
-						}
+						w.buildingView.SetFailed(err)
+						w.showBuildFailed(err)
 					}
 				})
 			},
@@ -252,7 +258,7 @@ func (w *Wizard) StartBuild() {
 }
 
 func (w *Wizard) showBuildFailed(err error) {
-	message := wrappedLabel(fmt.Sprintf("Build failed: %v", err))
+	message := wrappedLabel(fmt.Sprintf("Build failed: %v\n\nYou can inspect the build log and click Retry Build or Back to Config.", err))
 	d := dialog.NewCustomConfirm("Build failed", "Troubleshooting", "Close", message, func(help bool) {
 		if help {
 			w.showTroubleshooting()
@@ -262,10 +268,12 @@ func (w *Wizard) showBuildFailed(err error) {
 	d.Show()
 }
 
-func (w *Wizard) CancelBuild() {
-	if w.cancelFunc != nil {
-		w.cancelFunc()
+func (w *Wizard) CancelBuild() bool {
+	if !w.building || w.cancelFunc == nil {
+		return false
 	}
+	w.cancelFunc()
+	return true
 }
 
 func (w *Wizard) Container() fyne.CanvasObject {
