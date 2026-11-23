@@ -107,6 +107,7 @@ void publish(const Values& v) {
     g_shader_quality.store(v.shader_quality, std::memory_order_relaxed);
     g_mouse_direct.store(v.mouse_direct, std::memory_order_relaxed);
     g_gsync.store(v.gsync, std::memory_order_relaxed);
+    g_rumble.store(v.rumble, std::memory_order_relaxed);
     g_gyro.store(v.gyro, std::memory_order_relaxed);
     g_gyro_invert_pitch.store(v.gyro_invert_pitch, std::memory_order_relaxed);
     g_gyro_scale.store(v.gyro_sensitivity / 100.0f, std::memory_order_relaxed);
@@ -226,8 +227,9 @@ void write(const Values& v) {
         << "plaza_60fps=" << v.plaza_60fps << "\n"
         << "frame_rate=" << v.frame_rate << "\n"
         << "gsync=" << v.gsync << "\n"
-        << "fullscreen=" << v.fullscreen << "\n"
-        << "fps_overlay=" << v.fps_overlay << "\n"
+        << "fullscreen=" << v.fullscreen << "\n";
+    if (v.rumble) out << "rumble=1\n";
+    out << "fps_overlay=" << v.fps_overlay << "\n"
         << "simple_overlay=" << v.simple_overlay << "\n"
         << "confirm_quit=" << v.confirm_quit << "\n"
         << "gyro=" << v.gyro << "\n"
@@ -311,6 +313,8 @@ void load() {
             v.gsync = number != 0;
         else if (key == "fullscreen")
             v.fullscreen = number != 0;
+        else if (key == "rumble")
+            v.rumble = number != 0;
         else if (key == "fps_overlay")
             v.fps_overlay = number != 0;
         else if (key == "simple_overlay")

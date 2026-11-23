@@ -3468,6 +3468,9 @@ bool gx2_render_vk_read_stencil(const uint8_t* descriptor, uint8_t* mem, std::ve
 uint64_t gx2_render_vk_submissions() {
     return gx2vk::submission_count();
 }
+uint64_t gx2_render_vk_shader_compiles() {
+    return gx2vk::shader_compile_count();
+}
 uint64_t gx2_render_vk_validation_errors() {
     return gx2vk::validation_error_count();
 }
