@@ -1036,7 +1036,7 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
                 break;
 
             case SDL_MOUSEMOTION:
-                if (g_screen_mode == ScreenMode::Gamepad && !s_pad_window && g_touch_state.touched) {
+                if (g_screen_mode == ScreenMode::Gamepad && g_touch_state.touched) {
                     map_mouse_to_touch(ev.motion.x, ev.motion.y);
                 }
                 break;
@@ -1046,7 +1046,7 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
         }
 
         // Blit game FBO to window and swap (events stay on this thread)
-        bool gamepad = (g_screen_mode == ScreenMode::Gamepad) && !s_pad_window; // main window: TV when split
+        bool gamepad = (g_screen_mode == ScreenMode::Gamepad);
         if (gx2_native_async_active()) {
             struct Present final : Gx2AsyncWork {
                 SDL_Window* window;
