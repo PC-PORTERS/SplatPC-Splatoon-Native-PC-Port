@@ -3,7 +3,6 @@ package settings
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -165,46 +164,6 @@ look_1=custom_look_data
 	}
 }
 
-func TestWriteLauncherScript(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "test_launcher_*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
-
-	cfg := DefaultConfiguration("/tmp")
-	cfg.PlayerName = "InklingMaster"
-	cfg.LanguageID = 2
-
-	err = WriteLauncherScript(cfg, tempDir)
-	if err != nil {
-		t.Fatalf("WriteLauncherScript failed: %v", err)
-	}
-
-	launcherName := "Splatoon.sh"
-	expectedPlayer := `RBREW_PLAYER_NAME="InklingMaster"`
-	expectedLang := `RBREW_CONSOLE_LANGUAGE="2"`
-	if runtime.GOOS == "windows" {
-		launcherName = "Launch_Splatoon.bat"
-		expectedPlayer = `set "RBREW_PLAYER_NAME=InklingMaster"`
-		expectedLang = `set "RBREW_CONSOLE_LANGUAGE=2"`
-	}
-
-	scriptPath := filepath.Join(tempDir, launcherName)
-	data, err := os.ReadFile(scriptPath)
-	if err != nil {
-		t.Fatalf("Failed to read %s: %v", launcherName, err)
-	}
-
-	content := string(data)
-	if !strings.Contains(content, expectedPlayer) {
-		t.Errorf("Expected %s in launcher script", expectedPlayer)
-	}
-	if !strings.Contains(content, expectedLang) {
-		t.Errorf("Expected %s in launcher script", expectedLang)
-	}
-}
-
 func TestHDTexturingOption(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "test_hd_settings_*")
 	if err != nil {
@@ -227,23 +186,64 @@ func TestHDTexturingOption(t *testing.T) {
 	if !strings.Contains(string(data), "hd_textures=1") {
 		t.Errorf("Expected hd_textures=1 in settings.ini, got:\n%s", string(data))
 	}
+}
 
-	// Verify launcher script sets RBREW_TEXTURE_DUMP
-	if err := WriteLauncherScript(cfg, tempDir); err != nil {
-		t.Fatalf("WriteLauncherScript failed: %v", err)
-	}
-
-	launcherName := "Splatoon.sh"
-	if runtime.GOOS == "windows" {
-		launcherName = "Launch_Splatoon.bat"
-	}
-	scriptPath := filepath.Join(tempDir, launcherName)
-	sData, err := os.ReadFile(scriptPath)
+func TestOnlineSettings(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "test_online_settings_*")
 	if err != nil {
-		t.Fatalf("Failed to read launcher script: %v", err)
+		t.Fatalf("Failed to create temp dir: %v", err)
 	}
-	if !strings.Contains(string(sData), "RBREW_TEXTURE_DUMP") {
-		t.Errorf("Expected RBREW_TEXTURE_DUMP in launcher script when UpscaleTextures is true")
+	defer os.RemoveAll(tempDir)
+
+	cfg := DefaultConfiguration("/tmp")
+	cfg.PlayerName = "OnlineSquid"
+	cfg.EnableOnline = true
+	cfg.OnlineServer = "127.0.0.1:60000"
+
+	// 1. Fresh write with online enabled
+	if err := WriteSettingsIni(cfg, tempDir); err != nil {
+		t.Fatalf("WriteSettingsIni failed: %v", err)
+	}
+
+	iniPath := filepath.Join(tempDir, "settings.ini")
+	data, err := os.ReadFile(iniPath)
+	if err != nil {
+		t.Fatalf("Failed to read settings.ini: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "online_server=127.0.0.1:60000") {
+		t.Errorf("Expected online_server=127.0.0.1:60000 in settings.ini, got:\n%s", content)
+	}
+	if !strings.Contains(content, "pseudo=OnlineSquid") {
+		t.Errorf("Expected pseudo=OnlineSquid in settings.ini, got:\n%s", content)
+	}
+
+	// 2. Load settings back into a blank config
+	var loadedCfg Configuration
+	if err := LoadSettingsIni(iniPath, &loadedCfg); err != nil {
+		t.Fatalf("LoadSettingsIni failed: %v", err)
+	}
+	if !loadedCfg.EnableOnline {
+		t.Errorf("Expected EnableOnline to be true")
+	}
+	if loadedCfg.OnlineServer != "127.0.0.1:60000" {
+		t.Errorf("Expected OnlineServer 127.0.0.1:60000, got %s", loadedCfg.OnlineServer)
+	}
+	if loadedCfg.PlayerName != "OnlineSquid" {
+		t.Errorf("Expected PlayerName OnlineSquid, got %s", loadedCfg.PlayerName)
+	}
+
+	// 3. Disabling online clears online_server
+	cfg.EnableOnline = false
+	if err := WriteSettingsIni(cfg, tempDir); err != nil {
+		t.Fatalf("WriteSettingsIni (offline) failed: %v", err)
+	}
+	var reloadedOffline Configuration
+	if err := LoadSettingsIni(iniPath, &reloadedOffline); err != nil {
+		t.Fatalf("LoadSettingsIni (offline) failed: %v", err)
+	}
+	if reloadedOffline.EnableOnline || reloadedOffline.OnlineServer != "" {
+		t.Errorf("Expected offline settings to clear online_server, got %q", reloadedOffline.OnlineServer)
 	}
 }
 

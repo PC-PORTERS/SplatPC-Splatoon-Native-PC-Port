@@ -16,7 +16,7 @@
 *.AppDir/
 *.exe
 
-# Auto-fetched third-party headers
+# Auto-fetched third-party headers/sources
 recompiler/third_party/nlohmann/
 recompiler/third_party/miniaudio.h
 
@@ -48,6 +48,7 @@ save/
 /recompiler/port/os/snd_core/snd_core_addrs.h
 /recompiler/port/os/stubs/stubs_addrs.h
 /recompiler/port/os/vpad/vpad_addrs.h
+# Generated from Manifest/ by generate_revision_header.py at configure/build time.
 /recompiler/port/runtime/game_revision.h
 /recompiler/port/runtime/game_branch_tables.h
 
@@ -63,7 +64,12 @@ __pycache__/
 /frame_dumps*/
 /gameplay_dumps/
 /validation_results/
-/tools/
+
+# tools/: keep the maintained online native tools/tests.
+/tools/*
+!/tools/tests/
+online_identity.ini
+server.json
 /*.png
 /*.log
 /link_cmd.txt
@@ -72,7 +78,7 @@ __pycache__/
 /check_parts.py
 
 # scripts/: only the maintained tools are tracked. One-off experiment scripts
-# can live here without showing up in git status. Add new tools below.
+# and generated files (such as integrity-manifest.txt) stay untracked.
 /scripts/*
 !/scripts/hd_textures.py
 !/scripts/install-hooks.sh
@@ -84,4 +90,10 @@ __pycache__/
 !/scripts/bundle_builder_assets.py
 !/scripts/tests/
 !/scripts/tests/**
+
+# Online config and integrity tool (integrity-manifest.txt is generated at release/build time)
+!/scripts/server.public.txt
+!/scripts/integrity.py
+
+*.lnk
 scripts/tests/**/__pycache__/

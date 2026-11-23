@@ -17,6 +17,10 @@ import (
 	"splatpc-builder/settings"
 )
 
+// ReleaseTag is injected at build time via -ldflags="-X splatpc-builder/engine.ReleaseTag=..."
+// from the Git release/CI tag so CMake embeds the client version without a VERSION file.
+var ReleaseTag string
+
 type StepInfo struct {
 	Index       int
 	Total       int
@@ -221,6 +225,9 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 		"-DRBREW_DIAGNOSTIC_RUNTIME=OFF",
 		"-DRBREW_TEXTURE_DIAGNOSTICS=OFF",
 	)
+	if tag := strings.TrimSpace(ReleaseTag); tag != "" {
+		gameDefines = append(gameDefines, fmt.Sprintf("-DRBREW_APP_VERSION=%s", tag))
+	}
 	if cmake.isWindowsMinGW() {
 		gameDefines = append(gameDefines, "-DCMAKE_EXE_LINKER_FLAGS=-static")
 	}
@@ -264,14 +271,17 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 		_ = os.MkdirAll(filepath.Join(cfg.OutputDir, "texture-dump"), 0755)
 	}
 
-	// Write settings.ini and launcher script
+	// Write settings.ini (native binary reads online & gameplay settings directly; no wrapper scripts)
 	log("Writing custom settings (player nickname: %s)...", cfg.PlayerName)
+	if cfg.EnableOnline && strings.TrimSpace(cfg.OnlineServer) != "" {
+		log("Online multiplayer configured: server %s (pseudo: '%s')", strings.TrimSpace(cfg.OnlineServer), cfg.PlayerName)
+	}
 	if err := settings.WriteSettingsIni(cfg, cfg.OutputDir); err != nil {
 		log("Warning: Failed to write settings.ini: %v", err)
 	}
-	if err := settings.WriteLauncherScript(cfg, cfg.OutputDir); err != nil {
-		log("Warning: Failed to write launch script: %v", err)
-	}
+	// Remove legacy launcher scripts if present from earlier builds
+	_ = os.Remove(filepath.Join(cfg.OutputDir, "Splatoon.sh"))
+	_ = os.Remove(filepath.Join(cfg.OutputDir, "Launch_Splatoon.bat"))
 
 	var appImagePath string
 	// Optional STEP 9: AppImage for Linux

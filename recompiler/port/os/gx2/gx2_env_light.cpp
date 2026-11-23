@@ -7,6 +7,7 @@
 #include "../../runtime/port_settings.h"
 #include "../../runtime/rebrewu_runtime.h"
 #include "../../runtime/native_control_defaults.h"
+#include "../../runtime/online_identity.h"
 #include "rebrewu/logger.hpp"
 #include <atomic>
 #include <cctype>
@@ -889,6 +890,11 @@ void trap(uint8_t* mem, uint64_t frame) {
 #endif
 } // namespace
 
+bool online_mode() {
+    static const bool online = rbrew_online::config().online; // fixed for the session
+    return online;
+}
+
 void frame(uint8_t* mem, uint64_t swap_count) {
     if (!mem) return;
 #if defined(_WIN32)
@@ -961,7 +967,9 @@ void frame(uint8_t* mem, uint64_t swap_count) {
         const char* v = std::getenv("RBREW_LEVEL_EFFECTS");
         return !(v && v[0] == '0');
     }();
-    const auto policy = scene_graphics(scene_type, anywhere, level_effects, every);
+    const auto policy = online_mode() && !online_keeps_graphics(scene_type)
+                            ? SceneGraphics{}
+                            : scene_graphics(scene_type, anywhere, level_effects, every);
     const bool world = policy.environment, post_only = policy.post_only, camera_scene = world || post_only;
     static uint64_t world_frames = 0;
     static int world_scene = -2;

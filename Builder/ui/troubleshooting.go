@@ -50,7 +50,7 @@ func troubleshootingTopics(logPath string) []troubleshootingTopic {
 			"A game built into another folder (or from an older setup) is found once the Builder has built into that folder."},
 	}
 	if runtime.GOOS != "windows" {
-		// The Visual Studio, winget and .bat topics only apply to Windows
+		// The Visual Studio and winget topics only apply to Windows
 		topics = append(topics[:2], topics[4:]...)
 	}
 	return topics
