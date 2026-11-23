@@ -22,15 +22,15 @@ volatile int g_side_effect_sink = 0;
 
 // ---- Native test targets (kept unique to prevent MSVC /OPT:ICF merging) ----
 
-int g_native_bias = 10;
+volatile int g_native_bias = 10;
 
-RBREW_NOINLINE int native_add_biased(int a, int b) {
+RBREW_GUEST_BODY int native_add_biased(int a, int b) {
     const int sum = a + b + g_native_bias;
     g_side_effect_sink += 1;
     return sum;
 }
 
-RBREW_NOINLINE int native_short_leaf(int x) {
+RBREW_GUEST_BODY int native_short_leaf(int x) {
     g_side_effect_sink += 7;
     return x * 3 + 7;
 }

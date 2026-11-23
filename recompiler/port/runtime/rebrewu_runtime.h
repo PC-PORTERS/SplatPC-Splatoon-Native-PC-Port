@@ -39,9 +39,20 @@
 #endif
 #include "../include/splat_cpu_state.h"
 
+// Prevent host compilers from inlining or creating IPA clones (.constprop/.isra)
+// of guest function bodies so Tier 2 runtime x86-64 trampolines intercept every
+// direct and indirect call to the registered body address.
 #ifndef RBREW_GUEST_BODY
 #if defined(_MSC_VER)
 #define RBREW_GUEST_BODY __declspec(noinline)
+#elif defined(__has_attribute)
+#if __has_attribute(noipa)
+#define RBREW_GUEST_BODY __attribute__((noinline, noipa))
+#elif __has_attribute(noclone)
+#define RBREW_GUEST_BODY __attribute__((noinline, noclone))
+#else
+#define RBREW_GUEST_BODY __attribute__((noinline))
+#endif
 #else
 #define RBREW_GUEST_BODY __attribute__((noinline))
 #endif
