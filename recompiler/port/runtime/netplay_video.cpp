@@ -82,9 +82,14 @@ ComPtr<IMFTransform> find_transform(const GUID& category, const GUID& input, con
     return transform;
 }
 
+// Explicit IID: llvm-mingw's strmif.h omits __CRT_UUID_DECL(ICodecAPI), breaking IID_PPV_ARGS.
+constexpr IID kIidCodecApi = {0x901db4c7u, 0x31ce, 0x41a2, {0x85, 0xdc, 0x8f, 0xa0, 0xbf, 0x41, 0xb8, 0xda}};
+
 void set_codec_value(IMFTransform* transform, const GUID& key, UINT32 value, bool boolean = false) {
+    void* raw = nullptr;
+    if (FAILED(transform->QueryInterface(kIidCodecApi, &raw)) || !raw) return;
     ComPtr<ICodecAPI> codec;
-    if (FAILED(transform->QueryInterface(IID_PPV_ARGS(&codec)))) return;
+    codec.Attach(static_cast<ICodecAPI*>(raw));
     VARIANT v;
     VariantInit(&v);
     if (boolean) {
