@@ -2,11 +2,19 @@
 #include "rebrewu_runtime.h"
 #include "splat_mod_api.h"
 
-#include <cassert>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
+
+#define CHECK(cond)                                                                                                    \
+    do {                                                                                                               \
+        if (!(cond)) {                                                                                                 \
+            std::fprintf(stderr, "test_mod_api: CHECK failed at line %d: %s\n", __LINE__, #cond);                      \
+            std::abort();                                                                                              \
+        }                                                                                                              \
+    } while (0)
 
 namespace {
 
@@ -134,34 +142,34 @@ void plugin_target_entry(CPUState* cpu) {
 }
 
 void test_native_trampolines(const SplatModHost* host) {
-    assert(native_add_biased(2, 3) == 15);
-    assert(native_short_leaf(4) == 19);
+    CHECK(native_add_biased(2, 3) == 15);
+    CHECK(native_short_leaf(4) == 19);
 
-    assert(NativeBiasedHookA::InstallAtFn(host, &native_add_biased));
-    assert(native_add_biased(2, 3) == 116); // Orig(3, 3) + 100
+    CHECK(NativeBiasedHookA::InstallAtFn(host, &native_add_biased));
+    CHECK(native_add_biased(2, 3) == 116); // Orig(3, 3) + 100
 
-    assert(NativeBiasedHookB::InstallAtFn(host, &native_add_biased));
-    assert(native_add_biased(2, 3) == 232); // 116 * 2
+    CHECK(NativeBiasedHookB::InstallAtFn(host, &native_add_biased));
+    CHECK(native_add_biased(2, 3) == 232); // 116 * 2
 
-    assert(NativeBiasedHookC::InstallAtFn(host, &native_add_biased));
-    assert(native_add_biased(2, 3) == 237); // 232 + 5
+    CHECK(NativeBiasedHookC::InstallAtFn(host, &native_add_biased));
+    CHECK(native_add_biased(2, 3) == 237); // 232 + 5
 
     // Unhook middle detour first, verifying C -> A -> Orig chain stays intact.
     NativeBiasedHookB::Uninstall(host);
-    assert(native_add_biased(2, 3) == 121); // 116 + 5
+    CHECK(native_add_biased(2, 3) == 121); // 116 + 5
 
     // Unhook top detour, leaving A -> Orig.
     NativeBiasedHookC::Uninstall(host);
-    assert(native_add_biased(2, 3) == 116);
+    CHECK(native_add_biased(2, 3) == 116);
 
     // Unhook final detour, restoring original prologue.
     NativeBiasedHookA::Uninstall(host);
-    assert(native_add_biased(2, 3) == 15);
+    CHECK(native_add_biased(2, 3) == 15);
 
-    assert(NativeShortLeafHook::InstallAtFn(host, &native_short_leaf));
-    assert(native_short_leaf(4) == 1019);
+    CHECK(NativeShortLeafHook::InstallAtFn(host, &native_short_leaf));
+    CHECK(native_short_leaf(4) == 1019);
     NativeShortLeafHook::Uninstall(host);
-    assert(native_short_leaf(4) == 19);
+    CHECK(native_short_leaf(4) == 19);
 }
 
 void test_tier1_manifest_hooks(const SplatModHost* host, CPUState* cpu, std::vector<HostFunc>& dispatch) {
@@ -174,38 +182,38 @@ void test_tier1_manifest_hooks(const SplatModHost* host, CPUState* cpu, std::vec
         rbrew_register_guest_body(addr, reinterpret_cast<void*>(&tier1_shared_body), true);
         SplatModGuestOrig orig = nullptr;
         const SplatModHookHandle h = host->hook_guest(addr, &tier1_noop_callback, &orig);
-        assert(h != 0 && orig != nullptr);
+        CHECK(h != 0 && orig != nullptr);
         handles.push_back(h);
     }
-    for (SplatModHookHandle h : handles) assert(host->unhook_guest(h));
+    for (SplatModHookHandle h : handles) CHECK(host->unhook_guest(h));
 
     // Verify stacking mods on top of a pre-existing built-in C++ manifest hook.
     constexpr uint32_t kStackAddr = 0x00021000u;
     rbrew_register_guest_body(kStackAddr, reinterpret_cast<void*>(&tier1_stack_body), true);
     dispatch[kStackAddr >> 2] = &tier1_stack_entry;
-    assert(rbrew_set_guest_hook(kStackAddr, &builtin_manifest_hook));
+    CHECK(rbrew_set_guest_hook(kStackAddr, &builtin_manifest_hook));
 
-    assert(Tier1ModHookA::InstallAt(host, kStackAddr));
-    assert(Tier1ModHookB::InstallAt(host, kStackAddr));
+    CHECK(Tier1ModHookA::InstallAt(host, kStackAddr));
+    CHECK(Tier1ModHookB::InstallAt(host, kStackAddr));
 
     cpu->r[3] = 1u;
     tier1_stack_entry(cpu);
-    assert(cpu->r[3] == 2032u); // ((1 + 5 + 1000) + 10) * 2
+    CHECK(cpu->r[3] == 2032u); // ((1 + 5 + 1000) + 10) * 2
 
     // Remove bottom mod hook while top mod + built-in hook stay active.
     Tier1ModHookA::Uninstall(host);
     cpu->r[3] = 1u;
     tier1_stack_entry(cpu);
-    assert(cpu->r[3] == 2012u); // (1 + 5 + 1000) * 2
+    CHECK(cpu->r[3] == 2012u); // (1 + 5 + 1000) * 2
 
     // Remove last mod hook, restoring the built-in manifest hook directly.
     Tier1ModHookB::Uninstall(host);
-    assert(rbrew_guest_hook(kStackAddr) == &builtin_manifest_hook);
+    CHECK(rbrew_guest_hook(kStackAddr) == &builtin_manifest_hook);
     cpu->r[3] = 1u;
     tier1_stack_entry(cpu);
-    assert(cpu->r[3] == 1006u);
+    CHECK(cpu->r[3] == 1006u);
 
-    assert(rbrew_set_guest_hook(kStackAddr, nullptr));
+    CHECK(rbrew_set_guest_hook(kStackAddr, nullptr));
 }
 
 void test_tier2_body_trampolines(const SplatModHost* host, CPUState* cpu, std::vector<HostFunc>& dispatch) {
@@ -215,30 +223,30 @@ void test_tier2_body_trampolines(const SplatModHost* host, CPUState* cpu, std::v
 
     cpu->r[3] = 2u;
     tier2_body(cpu, cpu->mem);
-    assert(cpu->r[3] == 23u);
+    CHECK(cpu->r[3] == 23u);
 
-    assert(Tier2ModHookA::InstallAt(host, kBodyAddr));
-    assert(Tier2ModHookB::InstallAt(host, kBodyAddr));
+    CHECK(Tier2ModHookA::InstallAt(host, kBodyAddr));
+    CHECK(Tier2ModHookB::InstallAt(host, kBodyAddr));
 
     // Direct call to compiled body hits trampoline -> ModB -> ModA -> orig.
     cpu->r[3] = 2u;
     tier2_body(cpu, cpu->mem);
-    assert(cpu->r[3] == 80u); // (2 * 10 + 3) + 50 + 7
+    CHECK(cpu->r[3] == 80u); // (2 * 10 + 3) + 50 + 7
 
     // Indirect dispatch also hits the hooked body.
     cpu->r[3] = 2u;
     rbrew_dispatch(cpu, kBodyAddr);
-    assert(cpu->r[3] == 80u);
+    CHECK(cpu->r[3] == 80u);
 
     Tier2ModHookA::Uninstall(host);
     cpu->r[3] = 2u;
     tier2_body(cpu, cpu->mem);
-    assert(cpu->r[3] == 30u); // 23 + 7
+    CHECK(cpu->r[3] == 30u); // 23 + 7
 
     Tier2ModHookB::Uninstall(host);
     cpu->r[3] = 2u;
     tier2_body(cpu, cpu->mem);
-    assert(cpu->r[3] == 23u);
+    CHECK(cpu->r[3] == 23u);
 }
 
 void test_tier3_dispatch_and_call_guest(const SplatModHost* host, CPUState* cpu, std::vector<HostFunc>& dispatch) {
@@ -252,52 +260,52 @@ void test_tier3_dispatch_and_call_guest(const SplatModHost* host, CPUState* cpu,
 
     const uint32_t args[2] = {4u, 5u};
     uint32_t r3_out = 0u;
-    assert(host->call_guest(cpu, kStubAddr, args, 2u, &r3_out));
-    assert(r3_out == 18u);
+    CHECK(host->call_guest(cpu, kStubAddr, args, 2u, &r3_out));
+    CHECK(r3_out == 18u);
     // Caller registers and LR must stay intact across call_guest.
-    assert(cpu->lr == 0xDEADBEEFu);
-    assert(cpu->r[3] == 0x11111111u);
-    assert(cpu->r[4] == 0x22222222u);
-    assert(cpu->r[10] == 0xAAAAAAAAu);
+    CHECK(cpu->lr == 0xDEADBEEFu);
+    CHECK(cpu->r[3] == 0x11111111u);
+    CHECK(cpu->r[4] == 0x22222222u);
+    CHECK(cpu->r[10] == 0xAAAAAAAAu);
 
-    assert(Tier3ModHook::InstallAt(host, kStubAddr));
-    assert(host->call_guest(cpu, kStubAddr, args, 2u, &r3_out));
-    assert(r3_out == 54u);
+    CHECK(Tier3ModHook::InstallAt(host, kStubAddr));
+    CHECK(host->call_guest(cpu, kStubAddr, args, 2u, &r3_out));
+    CHECK(r3_out == 54u);
 
     Tier3ModHook::Uninstall(host);
-    assert(host->call_guest(cpu, kStubAddr, args, 2u, &r3_out));
-    assert(r3_out == 18u);
+    CHECK(host->call_guest(cpu, kStubAddr, args, 2u, &r3_out));
+    CHECK(r3_out == 18u);
 
     // Unmapped or misaligned targets fail cleanly without aborting.
-    assert(!host->call_guest(cpu, 0x0003FFFCu, args, 2u, &r3_out));
-    assert(!host->call_guest(cpu, kStubAddr + 1u, args, 2u, &r3_out));
+    CHECK(!host->call_guest(cpu, 0x0003FFFCu, args, 2u, &r3_out));
+    CHECK(!host->call_guest(cpu, kStubAddr + 1u, args, 2u, &r3_out));
 }
 
 void test_host_extensions(const SplatModHost* host) {
     host->set_dual_view_active(true);
-    assert(rbrew_mod::dual_view_active());
+    CHECK(rbrew_mod::dual_view_active());
     host->set_dual_view_active(false);
-    assert(!rbrew_mod::dual_view_active());
+    CHECK(!rbrew_mod::dual_view_active());
 
     host->set_suppress_cinema_hud(true);
-    assert(rbrew_mod::suppress_cinema_hud());
+    CHECK(rbrew_mod::suppress_cinema_hud());
     host->set_suppress_cinema_hud(false);
-    assert(!rbrew_mod::suppress_cinema_hud());
+    CHECK(!rbrew_mod::suppress_cinema_hud());
 
     host->request_screen_mode(SPLATMOD_SCREEN_GAMEPAD);
     int req_mode = SPLATMOD_SCREEN_TV;
-    assert(rbrew_mod::consume_screen_mode_request(&req_mode));
-    assert(req_mode == SPLATMOD_SCREEN_GAMEPAD);
-    assert(!rbrew_mod::consume_screen_mode_request(&req_mode));
+    CHECK(rbrew_mod::consume_screen_mode_request(&req_mode));
+    CHECK(req_mode == SPLATMOD_SCREEN_GAMEPAD);
+    CHECK(!rbrew_mod::consume_screen_mode_request(&req_mode));
 
     rbrew_mod::note_screen_mode(SPLATMOD_SCREEN_GAMEPAD);
-    assert(host->current_screen_mode() == SPLATMOD_SCREEN_GAMEPAD);
+    CHECK(host->current_screen_mode() == SPLATMOD_SCREEN_GAMEPAD);
     rbrew_mod::note_screen_mode(SPLATMOD_SCREEN_TV);
-    assert(host->current_screen_mode() == SPLATMOD_SCREEN_TV);
+    CHECK(host->current_screen_mode() == SPLATMOD_SCREEN_TV);
 
     host->request_quit();
-    assert(rbrew_mod::consume_quit_request());
-    assert(!rbrew_mod::consume_quit_request());
+    CHECK(rbrew_mod::consume_quit_request());
+    CHECK(!rbrew_mod::consume_quit_request());
 }
 
 void test_plugin_load_and_unload(const char* plugin_path, const SplatModHost* host, CPUState* cpu, uint8_t* arena,
@@ -308,55 +316,55 @@ void test_plugin_load_and_unload(const char* plugin_path, const SplatModHost* ho
 
     const uint32_t args[1] = {10u};
     uint32_t r3_out = 0u;
-    assert(host->call_guest(cpu, kPluginAddr, args, 1u, &r3_out));
-    assert(r3_out == 17u);
+    CHECK(host->call_guest(cpu, kPluginAddr, args, 1u, &r3_out));
+    CHECK(r3_out == 17u);
 
-    assert(!rbrew_mod::has_mods());
-    assert(rbrew_mod::load_mod_from_path(plugin_path, 16u));
-    assert(rbrew_mod::has_mods());
+    CHECK(!rbrew_mod::has_mods());
+    CHECK(rbrew_mod::load_mod_from_path(plugin_path, 16u));
+    CHECK(rbrew_mod::has_mods());
 
     const auto mods = rbrew_mod::list_mods();
-    assert(mods.size() == 1 && mods[0].id == "splatpc.test_mod" && mods[0].initialized);
+    CHECK(mods.size() == 1 && mods[0].id == "splatpc.test_mod" && mods[0].initialized);
 
     const auto pages = rbrew_mod::list_menu_pages();
-    assert(pages.size() == 1 && pages[0].title == "Test Mod Options");
-    assert(pages[0].status && std::strcmp(pages[0].status(pages[0].user), "Ready") == 0);
+    CHECK(pages.size() == 1 && pages[0].title == "Test Mod Options");
+    CHECK(pages[0].status && std::strcmp(pages[0].status(pages[0].user), "Ready") == 0);
 
     // Plugin's SPLAT_DEFINE_GUEST_HOOK adds +100 on top of plugin_target_body (+7).
-    assert(host->call_guest(cpu, kPluginAddr, args, 1u, &r3_out));
-    assert(r3_out == 117u);
+    CHECK(host->call_guest(cpu, kPluginAddr, args, 1u, &r3_out));
+    CHECK(r3_out == 117u);
 
     // Plugin's VPAD hook writes big-endian 0xCAFEBABE to 0x00001000.
     std::memset(arena + 0x00001000u, 0, 4);
     rbrew_mod::on_vpad_read(arena);
-    assert(splatmod_read32(arena, 0x00001000u) == 0xCAFEBABEu);
+    CHECK(splatmod_read32(arena, 0x00001000u) == 0xCAFEBABEu);
 
     // Plugin's KPAD provider reports Player 2 Pro Controller on chan 0.
     SplatModProPad pad{};
-    assert(rbrew_mod::poll_kpad_provider(0u, &pad));
-    assert(pad.hold == 0x00000010u && pad.lx == 0.5f && pad.ly == -0.25f && pad.ry == 0.75f);
-    assert(!rbrew_mod::poll_kpad_provider(1u, &pad));
+    CHECK(rbrew_mod::poll_kpad_provider(0u, &pad));
+    CHECK(pad.hold == 0x00000010u && pad.lx == 0.5f && pad.ly == -0.25f && pad.ry == 0.75f);
+    CHECK(!rbrew_mod::poll_kpad_provider(1u, &pad));
 
     // Plugin's audio tap receives stereo frames without crashing.
     float stereo[32] = {};
     rbrew_mod::on_audio_frames(stereo, 16u);
 
     std::string title;
-    assert(rbrew_mod::copy_window_title_override(title) && title == "SplatPC Test Mod Title");
-    assert(rbrew_mod::relative_mouse_in_gamepad());
+    CHECK(rbrew_mod::copy_window_title_override(title) && title == "SplatPC Test Mod Title");
+    CHECK(rbrew_mod::relative_mouse_in_gamepad());
 
     // Shutdown & unload must cleanly remove all hooks and extensions.
     rbrew_mod::unload_mods_for_test();
-    assert(!rbrew_mod::has_mods());
-    assert(rbrew_mod::list_mods().empty());
-    assert(rbrew_mod::list_menu_pages().empty());
-    assert(!rbrew_mod::has_vpad_hooks());
-    assert(!rbrew_mod::has_kpad_providers());
-    assert(!rbrew_mod::relative_mouse_in_gamepad());
-    assert(!rbrew_mod::copy_window_title_override(title));
+    CHECK(!rbrew_mod::has_mods());
+    CHECK(rbrew_mod::list_mods().empty());
+    CHECK(rbrew_mod::list_menu_pages().empty());
+    CHECK(!rbrew_mod::has_vpad_hooks());
+    CHECK(!rbrew_mod::has_kpad_providers());
+    CHECK(!rbrew_mod::relative_mouse_in_gamepad());
+    CHECK(!rbrew_mod::copy_window_title_override(title));
 
-    assert(host->call_guest(cpu, kPluginAddr, args, 1u, &r3_out));
-    assert(r3_out == 17u);
+    CHECK(host->call_guest(cpu, kPluginAddr, args, 1u, &r3_out));
+    CHECK(r3_out == 17u);
 }
 
 } // namespace
@@ -372,7 +380,7 @@ int main(int argc, char** argv) {
 
     rbrew_mod::set_dispatch_cpu_for_test(&cpu);
     const SplatModHost* host = rbrew_mod::host_api();
-    assert(host && host->abi_version == SPLATMOD_ABI_VERSION);
+    CHECK(host && host->abi_version == SPLATMOD_ABI_VERSION);
 
     test_native_trampolines(host);
     test_tier1_manifest_hooks(host, &cpu, dispatch);

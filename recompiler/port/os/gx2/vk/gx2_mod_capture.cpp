@@ -15,11 +15,42 @@ struct CaptureSlot {
     gx2vk::Buffer staging;
     uint32_t width = 0;
     uint32_t height = 0;
+    VkFormat format = VK_FORMAT_UNDEFINED;
     uint64_t serial = 0;
 };
 
 CaptureSlot s_slots[kSlotCount];
 int s_next_slot = 0;
+
+VkFormat stream_format(VkFormat source) {
+    // Preserve sRGB encoding across blits so captures keep accurate brightness.
+    return (source == VK_FORMAT_R8G8B8A8_SRGB || source == VK_FORMAT_B8G8R8A8_SRGB) ? VK_FORMAT_R8G8B8A8_SRGB
+                                                                                    : VK_FORMAT_R8G8B8A8_UNORM;
+}
+
+void compute_auto_extent(uint32_t src_w, uint32_t src_h, uint32_t& out_w, uint32_t& out_h) {
+    constexpr uint64_t kMaxW = 1920u;
+    constexpr uint64_t kMaxH = 1080u;
+    if (src_w < 2u || src_h < 2u) {
+        out_w = 1280u;
+        out_h = 720u;
+        return;
+    }
+    uint64_t w = src_w;
+    uint64_t h = src_h;
+    if (w > kMaxW) {
+        h = (h * kMaxW) / w;
+        w = kMaxW;
+    }
+    if (h > kMaxH) {
+        w = (w * kMaxH) / h;
+        h = kMaxH;
+    }
+    w &= ~uint64_t(1);
+    h &= ~uint64_t(1);
+    out_w = std::max(2u, uint32_t(w));
+    out_h = std::max(2u, uint32_t(h));
+}
 
 void release_slot(CaptureSlot& slot) {
     if (slot.staging.buffer) gx2vk::destroy_buffer(slot.staging);
@@ -28,17 +59,21 @@ void release_slot(CaptureSlot& slot) {
     slot.scaled = {};
     slot.width = 0;
     slot.height = 0;
+    slot.format = VK_FORMAT_UNDEFINED;
     slot.serial = 0;
 }
 
-bool ensure_slot(CaptureSlot& slot, uint32_t width, uint32_t height) {
-    if (slot.scaled.image && slot.staging.buffer && slot.width == width && slot.height == height) return true;
+bool ensure_slot(CaptureSlot& slot, uint32_t width, uint32_t height, VkFormat format) {
+    if (slot.scaled.image && slot.staging.buffer && slot.width == width && slot.height == height &&
+        slot.format == format) {
+        return true;
+    }
     release_slot(slot);
 
     gx2vk::ImageDesc desc;
     desc.width = width;
     desc.height = height;
-    desc.format = VK_FORMAT_R8G8B8A8_UNORM;
+    desc.format = format;
     desc.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     if (!gx2vk::create_image(slot.scaled, desc)) return false;
 
@@ -51,6 +86,7 @@ bool ensure_slot(CaptureSlot& slot, uint32_t width, uint32_t height) {
 
     slot.width = width;
     slot.height = height;
+    slot.format = format;
     return true;
 }
 
@@ -78,7 +114,6 @@ void capture_if_wanted(gx2vk::Image* tv_img, uint32_t tv_w, uint32_t tv_h, gx2vk
     uint32_t cap_w = 0;
     uint32_t cap_h = 0;
     if (!rbrew_mod::query_frame_capture(&view, &cap_w, &cap_h)) return;
-    if (cap_w == 0 || cap_h == 0 || cap_w > 4096u || cap_h > 4096u) return;
 
     gx2vk::Image* src_img = (view == SPLATMOD_SCREEN_TV) ? tv_img : drc_img;
     uint32_t src_w = (view == SPLATMOD_SCREEN_TV) ? tv_w : drc_w;
@@ -91,6 +126,9 @@ void capture_if_wanted(gx2vk::Image* tv_img, uint32_t tv_w, uint32_t tv_h, gx2vk
 
     if (!gx2vk::format_supports(src_img->desc.format, VK_FORMAT_FEATURE_BLIT_SRC_BIT)) return;
 
+    if (cap_w == 0 || cap_h == 0) compute_auto_extent(src_w, src_h, cap_w, cap_h);
+    if (cap_w == 0 || cap_h == 0 || cap_w > 4096u || cap_h > 4096u) return;
+
     int free_idx = -1;
     for (int i = 0; i < kSlotCount; ++i) {
         const int idx = (s_next_slot + i) % kSlotCount;
@@ -102,7 +140,7 @@ void capture_if_wanted(gx2vk::Image* tv_img, uint32_t tv_w, uint32_t tv_h, gx2vk
     if (free_idx < 0) return; // Both readback buffers still in flight on GPU.
 
     CaptureSlot& slot = s_slots[free_idx];
-    if (!ensure_slot(slot, cap_w, cap_h)) return;
+    if (!ensure_slot(slot, cap_w, cap_h, stream_format(src_img->desc.format))) return;
 
     VkCommandBuffer cb = gx2vk::cmd();
     if (!cb) return;
