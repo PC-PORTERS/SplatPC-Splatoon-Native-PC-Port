@@ -2,6 +2,7 @@
 // camera, free fly camera, fly spots, the spawn hack and the mouse aim (v288).
 #include "gx2_camera_hooks.h"
 #include "gx2_guest_memory.h"
+#include "../runtime/camtrace.h"
 #include "camera_nan_guard.h"
 #include "player_nan_guard.h"
 #include "mouse_camera.h"
@@ -232,6 +233,7 @@ void camera_hook(CPUState* cpu, uint32_t, HostFunc original) {
                 const float dx = at[0] - pos[0], dy = at[1] - pos[1], dz = at[2] - pos[2];
                 s_last_view = {
                     {pos[0], pos[1], pos[2]}, std::atan2(dx, -dz), std::atan2(dy, std::sqrt(dx * dx + dz * dz)), true};
+                rbrew_camtrace::set_camera(s_last_view.yaw, s_last_view.pitch);
             }
             Fly& f = s_fly_state;
             if (s_fly.load(std::memory_order_relaxed)) {
@@ -373,6 +375,14 @@ void register_hooks() {
         const char* v = std::getenv("RBREW_CAMERA_HOOK");
         return v && v[0] == '0';
     }();
+#if RBREW_GAME_REVISION == 288
+    static const bool hook_288 = [] {
+        const char* v = std::getenv("RBREW_CAMERA_HOOK_288");
+        return !(v && v[0] == '0');
+    }();
+    if (!off && hook_288 && !rbrew_set_guest_hook(0x028E6D2Cu, camera_hook))
+        RBREW_LOG_WARN("camera", "look-at hook (028E6D2C) unavailable");
+#endif
     if (!off && !rbrew_set_guest_hook(0x0281ADB4u, camera_hook)) RBREW_LOG_WARN("camera", "look-at hook unavailable");
     if (!off && !rbrew_set_guest_hook(0x0200F24Cu, fov_hook))
         RBREW_LOG_WARN("camera", "field of view hook unavailable");
@@ -506,8 +516,9 @@ void camera_frame(const CameraFrameContext& context) {
         } else {
             if (c.ready && !c.valid(mem)) c.reset();
             const bool need = want || settings.camera_distance != 100 || settings.camera_height != 0 || s_fly.load() ||
-                              s_spawn_wanted.load() || settings.camera_motion || context.shaders_on;
-            static uint64_t retry_at = 0; // a failed search waits 5 s before the next one
+                              s_spawn_wanted.load() || settings.camera_motion || context.shaders_on ||
+                              rbrew_camtrace::active(); // F10 trace: needs the main camera
+            static uint64_t retry_at = 0;               // a failed search waits 5 s before the next one
             if (context.world_frames < 2) retry_at = 0;
             if (need && !c.ready && !c.job.valid() && context.world_frames > 15 && context.world_frames >= retry_at)
                 c.job = std::async(std::launch::async, find_fov, static_cast<const uint8_t*>(mem));
@@ -521,6 +532,7 @@ void camera_frame(const CameraFrameContext& context) {
             }
         }
         s_fov_field.store(c.ready ? c.found.field : 0, std::memory_order_relaxed);
+        rbrew_camtrace::set_search(!context.camera_scene ? 0 : c.ready ? 3 : c.job.valid() ? 2 : 1);
         // Spawn hack: track the character, move it on request.
         // RBREW_SPAWN_TEST=<frame> (diagnostics): save the spot there, spawn
         // back 300 frames later, log the character's position after.

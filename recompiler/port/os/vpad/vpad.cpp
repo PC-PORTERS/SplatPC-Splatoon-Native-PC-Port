@@ -24,6 +24,7 @@
 // In Gamepad View (Tab), the mouse is freed for touch-screen simulation.
 
 #include "../os_common.h"
+#include "../../runtime/camtrace.h"
 #include "../../runtime/screen_mode.h"
 #include "../../runtime/native_control_defaults.h"
 #include "../../runtime/benchmark_input.h"
@@ -31,6 +32,7 @@
 #include "../gx2/vk/gx2_imgui_overlay.h"
 #include "../gx2/gx2_env_light.h"
 #include "../../runtime/port_settings.h"
+#include "../../hooks/camera_follow.h"
 #include "../../hooks/mouse_camera.h"
 #include <algorithm>
 #include <atomic>
@@ -199,12 +201,29 @@ struct VirtualMotion {
 };
 static std::mutex s_motion_lock;
 static VirtualMotion s_motion;
+// Pitch the virtual pad rests at after VPADSetGyroDirection (degrees, negative
+// tilts the top back), as a GamePad is held. The game resets the direction to
+// identity at every load; resting flat there, the camera spawned looking at
+// the ground. Measured on the plaza spawn: 0 = top-down view, -24.5 = behind
+// the player as on the console. RBREW_GYRO_REST_PITCH overrides it.
+static float rest_pitch() {
+    static const float value = [] {
+        constexpr float kDefault = -24.5f;
+        const char* v = std::getenv("RBREW_GYRO_REST_PITCH");
+        if (!v || !*v) return kDefault;
+        char* end = nullptr;
+        const float f = std::strtof(v, &end);
+        return end && !*end && f >= -80.0f && f <= 80.0f ? f : kDefault;
+    }();
+    return value;
+}
 static constexpr float kPi = 3.14159265358979f;
 static constexpr float kYawRate = 240.0f, kPitchRate = 150.0f, kPitchLimit = 80.0f; // degrees(/s)
 // Mouse aiming like a PC game ("Mouse aim: Direct"): each frame's mouse
 // movement in degrees turns the virtual GamePad, which the game's motion
 // aiming follows 1:1 - no stick speed limit, no dead zone.
 static float s_mouse_yaw = 0.0f, s_mouse_pitch = 0.0f; // degrees this frame (under s_motion_lock)
+static bool s_mouse_aims = false;
 static constexpr float kMouseDegreesPerCount = 0.035f; // 0.09 was far too fast
 
 // RBREW_GYRO=0 (or "Controller gyro: Off" in the ESC menu) ignores a
@@ -246,6 +265,7 @@ void vpad_update_motion(uint8_t* mem, uint32_t buf, float rx, float ry, float dt
     const bool use_gyro = phys_gyro && physical_gyro_enabled();
     float yaw_rate = stick_yaw ? -rx * std::fabs(rx) * kYawRate : 0.0f;
     float pitch_rate = use_gyro && !stick_pitch_with_gyro ? 0.0f : -ry * std::fabs(ry) * kPitchRate;
+    const float traced_mouse_yaw = s_mouse_yaw, traced_mouse_pitch = s_mouse_pitch;
     // The camera takes the mouse yaw and pitch as angles when it can (hooks/gx2_camera_hooks.cpp): no
     // pad rotation to simulate and none of the game's gyro filtering. Otherwise the pad turns.
     if (rbrew_mouse_camera::yaw_queue().offer(s_mouse_yaw)) s_mouse_yaw = 0.0f;
@@ -272,6 +292,7 @@ void vpad_update_motion(uint8_t* mem, uint32_t buf, float rx, float ry, float dt
         pitch_rate += invert_pitch ? rate(phys_gyro[0]) : -rate(phys_gyro[0]);
         yaw_rate += invert_yaw ? -rate(phys_gyro[1]) : rate(phys_gyro[1]);
     }
+    rbrew_camtrace::add_motion(dt, traced_mouse_yaw, traced_mouse_pitch, yaw_rate, rx, ry);
     v.yaw = std::fmod(v.yaw + yaw_rate * dt, 360.0f);
     const float pitch = std::fmax(-kPitchLimit, std::fmin(kPitchLimit, v.pitch + pitch_rate * dt));
     const float applied_pitch_rate = dt > 0 ? (pitch - v.pitch) / dt : 0.0f;
@@ -313,7 +334,8 @@ static void VPADSetGyroDirection(CPUState* cpu) {
     for (int axis = 0; axis < 3; ++axis)
         for (int component = 0; component < 3; ++component)
             s_motion.base.m[component][axis] = float(rbrew_read_f32(MEM, dir + 12 * axis + 4 * component));
-    s_motion.yaw = s_motion.pitch = 0;
+    s_motion.yaw = 0;
+    s_motion.pitch = rest_pitch();
     rbrew_mouse_camera::pitch_aim().reset();
 }
 
@@ -450,6 +472,11 @@ static void VPADRead(CPUState* cpu) {
             mdx = mdy = 0;
         }
         const float mouse_scale = rbrew_settings::g_mouse_scale.load(std::memory_order_relaxed); // ESC menu
+        rbrew_camtrace::add_input(mdx, mdy);
+        if (mdx || mdy)
+            s_mouse_aims = true;
+        else if (std::fabs(rx) > 0.25f || std::fabs(ry) > 0.25f)
+            s_mouse_aims = false;
         float mrx = (float)mdx * KBM_MOUSE_SENSITIVITY * mouse_scale;
         float mry = -(float)mdy * KBM_MOUSE_SENSITIVITY * mouse_scale;
         if (mrx < -1.0f) mrx = -1.0f;
@@ -638,6 +665,7 @@ static void VPADRead(CPUState* cpu) {
     write_float(MEM, buf + 0x14, rx);
     write_float(MEM, buf + 0x18, ry);
 
+    rbrew_camera_follow::set(MEM, s_mouse_aims);
     vpad_update_motion(MEM, buf, rx, ry, motion_dt >= 0 ? motion_dt : motion_seconds(),
                        has_phys_gyro ? phys_gyro : nullptr, has_phys_accel ? phys_accel : nullptr);
     rbrew_write8(MEM, buf + kVpadSlideVolume, 0xFF);
