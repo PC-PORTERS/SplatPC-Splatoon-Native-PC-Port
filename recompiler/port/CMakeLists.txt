@@ -249,8 +249,32 @@ add_library(gambit_online STATIC
 )
 target_include_directories(gambit_online PRIVATE ${RBREW_NLOHMANN_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
 get_filename_component(RBREW_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
+set(RBREW_APP_VERSION "")
+if(EXISTS "${RBREW_REPO_ROOT}/VERSION")
+    file(READ "${RBREW_REPO_ROOT}/VERSION" _rbrew_version_raw)
+    string(STRIP "${_rbrew_version_raw}" RBREW_APP_VERSION)
+else()
+    find_package(Git QUIET)
+    if(GIT_FOUND)
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" describe --tags --abbrev=0
+            WORKING_DIRECTORY "${RBREW_REPO_ROOT}"
+            RESULT_VARIABLE _rbrew_tag_res
+            OUTPUT_VARIABLE _rbrew_tag_out
+            ERROR_QUIET)
+        if(_rbrew_tag_res EQUAL 0)
+            string(STRIP "${_rbrew_tag_out}" RBREW_APP_VERSION)
+        endif()
+    endif()
+endif()
+if(RBREW_APP_VERSION MATCHES "([0-9]+(\\.[0-9]+)+)")
+    set(RBREW_APP_VERSION "${CMAKE_MATCH_1}")
+else()
+    set(RBREW_APP_VERSION "")
+endif()
 set_property(SOURCE online/online_boot.cpp APPEND PROPERTY COMPILE_DEFINITIONS
-    RBREW_DEFAULT_INTEGRITY_ROOT="${RBREW_REPO_ROOT}")
+    RBREW_DEFAULT_INTEGRITY_ROOT="${RBREW_REPO_ROOT}"
+    RBREW_APP_VERSION="${RBREW_APP_VERSION}")
 if(WIN32)
     target_link_libraries(gambit_online PUBLIC winhttp bcrypt)
 else()

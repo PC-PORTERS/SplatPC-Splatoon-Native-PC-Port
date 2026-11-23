@@ -58,8 +58,18 @@ fs::path default_integrity_root() {
     return {};
 }
 
+std::string default_app_version() {
+#ifdef RBREW_APP_VERSION
+    const char* value = RBREW_APP_VERSION;
+    if (value && *value) return value;
+#endif
+    return {};
+}
+
 Attestation read_integrity_proof(const fs::path& game_dir) {
-    return attest(resolve_integrity_root(game_dir, default_integrity_root()));
+    Attestation proof = attest(resolve_integrity_root(game_dir, default_integrity_root()));
+    if (proof.version.empty()) proof.version = default_app_version();
+    return proof;
 }
 
 std::string trim_str(std::string s) {

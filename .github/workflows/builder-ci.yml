@@ -61,6 +61,7 @@ jobs:
 
       - name: Generate Integrity Manifest
         run: |
+          python3 scripts/integrity.py --write-version || true
           python3 scripts/integrity.py --make
 
       - name: Bundle Builder Assets (Build Time)
@@ -165,6 +166,8 @@ jobs:
       - name: Generate Integrity Manifest
         shell: pwsh
         run: |
+          python scripts/integrity.py --write-version
+          if ($LASTEXITCODE -ne 0) { $global:LASTEXITCODE = 0 }
           python scripts/integrity.py --make
 
       - name: Bundle Builder Assets (Build Time)

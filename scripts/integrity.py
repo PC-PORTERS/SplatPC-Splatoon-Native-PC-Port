@@ -5,9 +5,10 @@ The release lists the files that make up the game's code in scripts\\integrity-m
 hashes those files as they are on disk (line endings ignored, so a Git checkout and a ZIP agree) and
 sends the result with its sign-in; the server compares it with the hashes of the releases it accepts.
 
-    py -3 scripts\\integrity.py                 print this install's version and code hash (JSON)
-    py -3 scripts\\integrity.py --make          rewrite scripts\\integrity-manifest.txt from the files Git tracks
-    py -3 scripts\\integrity.py --check         say which listed files differ from the manifest (exit 1 when any)
+    py -3 scripts\\integrity.py                      print this install's version and code hash (JSON)
+    py -3 scripts\\integrity.py --write-version TAG  write VERSION from a release tag (or latest git tag)
+    py -3 scripts\\integrity.py --make               rewrite scripts\\integrity-manifest.txt from tracked files
+    py -3 scripts\\integrity.py --check              say which listed files differ from the manifest (exit 1 when any)
 
 The server-side value of a release is `release_hash` = sha256 of the manifest text, printed by --make.
 This makes casual changes visible and refuses old or unofficial versions. It cannot stop someone who
@@ -16,6 +17,7 @@ reads this file and sends the right hash: it is a speed bump, not a lock (modera
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -42,9 +44,26 @@ def covered(relative):
     return relative in COVERED_FILES or relative.startswith(tuple(d.replace("\\", "/") + "/" for d in COVERED_DIRS))
 
 
+def parse_tag_version(tag="", root=ROOT):
+    """Extract numeric X.Y[.Z] version from an explicit tag or `git describe --tags --abbrev=0`."""
+    text = (tag or "").strip()
+    if not text:
+        try:
+            text = subprocess.run(
+                ["git", "describe", "--tags", "--abbrev=0"], cwd=root, capture_output=True, text=True, check=True
+            ).stdout.strip()
+        except (OSError, subprocess.CalledProcessError):
+            return ""
+    match = re.search(r"(\d+(?:\.\d+)+)", text)
+    return match.group(1) if match else ""
+
+
 def tracked_files():
     out = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, capture_output=True, check=True).stdout
-    return sorted(p for p in out.decode("utf-8").split("\0") if p and covered(p))
+    files = [p for p in out.decode("utf-8").split("\0") if p and covered(p)]
+    if os.path.isfile(os.path.join(ROOT, "VERSION")) and "VERSION" not in files:
+        files.append("VERSION")
+    return sorted(files)
 
 
 def manifest_text(paths):
@@ -83,13 +102,17 @@ def current_text(entries, root=ROOT):
 
 
 def read_version(root=ROOT):
-    """The version in VERSION (build/installed-version.txt is a leftover of the removed auto-update)."""
+    """Read version from VERSION (if present) or fallback to the latest git tag when inside a checkout."""
     try:
         with open(os.path.join(root, "VERSION"), encoding="ascii", errors="replace") as handle:
             text = handle.read().strip().lstrip("v")
-    except OSError:
+        if text and all(c.isdigit() or c == "." for c in text):
+            return text
         return ""
-    return text if text and all(c.isdigit() or c == "." for c in text) else ""
+    except OSError:
+        if os.path.exists(os.path.join(root, ".git")):
+            return parse_tag_version("", root=root)
+        return ""
 
 
 def attestation(root=ROOT):
@@ -104,7 +127,27 @@ def differing(root=ROOT):
     return [name for digest, name in entries if mine.get(name) != digest]
 
 
+def write_version_file(tag="", root=ROOT):
+    version = parse_tag_version(tag, root=root)
+    if not version and tag:
+        version = parse_tag_version("", root=root)
+    if not version:
+        return ""
+    with open(os.path.join(root, "VERSION"), "w", encoding="ascii", newline="\n") as handle:
+        handle.write(version + "\n")
+    return version
+
+
 def main(argv):
+    if "--write-version" in argv:
+        idx = argv.index("--write-version")
+        tag = argv[idx + 1] if idx + 1 < len(argv) and not argv[idx + 1].startswith("-") else ""
+        version = write_version_file(tag)
+        if not version:
+            print("Could not determine numeric version from tag", file=sys.stderr)
+            return 1
+        print(version)
+        return 0
     if "--make" in argv:
         text = manifest_text(tracked_files())
         with open(MANIFEST, "w", encoding="utf-8", newline="\n") as handle:

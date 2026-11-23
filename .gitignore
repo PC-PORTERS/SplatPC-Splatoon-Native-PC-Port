@@ -65,8 +65,11 @@ __pycache__/
 /frame_dumps*/
 /gameplay_dumps/
 /validation_results/
+# Release/CI-generated files
+/VERSION
+
+# tools/: keep the maintained SpotPass and online native tools/tests.
 /tools/*
-!/tools/nexlab/
 !/tools/tests/
 !/tools/boss/
 online_identity.ini
