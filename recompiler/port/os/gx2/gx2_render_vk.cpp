@@ -14,6 +14,8 @@
 #include "gx2_weather.h"
 #include "gx2_texture_pack.h"
 #include "vk/gx2_vk_capture.h"
+#include "vk/gx2_mod_capture.h"
+#include "../../runtime/mod_loader.h"
 #include "gx2_detile.h"
 #include "gx2_endian.h"
 #include "gx2_surface.h"
@@ -41,6 +43,8 @@
 #include <ranges>
 #include <type_traits>
 #include <utility>
+
+uint32_t g_scan_drc_source_id = 0;
 
 using namespace gx2r;
 
@@ -727,6 +731,8 @@ void gx2_render_shutdown() {
     end_rendering();
     gx2vk::finish();
     gx2weather::shutdown();
+    gx2_mod_capture::shutdown();
+    g_scan_drc_source_id = 0;
     TXDIAG(txdiag::drain_probes(true));
     s_clear_color_as_depth = false;
     s_color_as_depth_keys.clear();
@@ -2835,7 +2841,10 @@ void gx2_render_copy_to_scan(uint32_t cb_addr, uint32_t scan_target, uint8_t* me
     }
     ColorTarget& scan = it->second;
     const bool gamepad = scan_target != 0 && scan_target != 1;
-    if (!gamepad) S.scan_tv_source_id = scan.id;
+    if (!gamepad)
+        S.scan_tv_source_id = scan.id;
+    else
+        g_scan_drc_source_id = scan.id;
     gx2vk::Image* image = &scan.image;
     if (S.scan_formats[gamepad] & 0x400u) {
         // GPU blits with FRAMEBUFFER_SRGB into an SRGB8_ALPHA8 texture: the
@@ -3224,6 +3233,12 @@ void gx2_render_present(void* sdl_window, bool gamepad_mode) {
     static const bool dump_gamepad = std::getenv("RBREW_FRAME_DUMP_GAMEPAD") != nullptr;
     if (dump_gamepad && S.scan_image[1] && *S.scan_image[1] && S.scan_w[1] && S.scan_h[1])
         dump_frame(*S.scan_image[1], S.scan_w[1], S.scan_h[1], "gamepad");
+    if (rbrew_mod::has_frame_capture()) {
+        gx2vk::Image* tv_cap = (!gamepad_mode && source && source->image) ? source : S.scan_image[0];
+        const uint32_t tv_cap_w = (!gamepad_mode && source && source->image) ? w : S.scan_w[0];
+        const uint32_t tv_cap_h = (!gamepad_mode && source && source->image) ? h : S.scan_h[0];
+        gx2_mod_capture::capture_if_wanted(tv_cap, tv_cap_w, tv_cap_h, S.scan_image[1], S.scan_w[1], S.scan_h[1]);
+    }
     // 120 FPS (gx2_frame_interp.h): this frame is held and presented after
     // the in-between frame the render thread draws next.
     if (gx2vk::has_surface() && gx2interp::frame_complete(index)) return;

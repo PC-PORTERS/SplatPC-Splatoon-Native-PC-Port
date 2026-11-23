@@ -3,6 +3,7 @@
 
 #include "../os_common.h"
 #include "../vpad/game_controllers.h"
+#include "../../runtime/mod_loader.h"
 #include <algorithm>
 
 static void KPADInit(CPUState* cpu) {
@@ -15,10 +16,60 @@ static void KPADShutdown(CPUState* cpu) {
     (void)cpu;
 }
 
+static void write_kpad_pro_status(uint8_t* mem, uint32_t buf, uint32_t pro_hold, float lx, float ly, float rx, float ry,
+                                  uint32_t& prev_hold) {
+    for (uint32_t i = 0; i < 0xF0; i += 4) rbrew_write32(mem, buf + i, 0u);
+
+    constexpr float kThreshold = 0.5f;
+    if (rx <= -kThreshold) pro_hold |= 0x00020000u;
+    if (rx >= kThreshold) pro_hold |= 0x00080000u;
+    if (ry >= kThreshold) pro_hold |= 0x00010000u;
+    if (ry <= -kThreshold) pro_hold |= 0x00040000u;
+    if (lx <= -kThreshold) pro_hold |= 0x00200000u;
+    if (lx >= kThreshold) pro_hold |= 0x00800000u;
+    if (ly >= kThreshold) pro_hold |= 0x00100000u;
+    if (ly <= -kThreshold) pro_hold |= 0x00400000u;
+
+    const uint32_t pro_trigger = pro_hold & ~prev_hold;
+    const uint32_t pro_release = prev_hold & ~pro_hold;
+    prev_hold = pro_hold;
+
+    rbrew_write32(mem, buf + 0x00, pro_hold);
+    rbrew_write32(mem, buf + 0x04, pro_trigger);
+    rbrew_write32(mem, buf + 0x08, pro_release);
+
+    rbrew_write8(mem, buf + 0x5C, 31u); // extensionType = WPAD_EXT_PRO_CONTROLLER
+    rbrew_write8(mem, buf + 0x5D, 0u);  // error = 0
+    rbrew_write8(mem, buf + 0x5E, 1u);  // posValid = 1
+    rbrew_write8(mem, buf + 0x5F, 0u);  // format = 0
+
+    rbrew_write32(mem, buf + 0x60, pro_hold);
+    rbrew_write32(mem, buf + 0x64, pro_trigger);
+    rbrew_write32(mem, buf + 0x68, pro_release);
+    write_guest_float(mem, buf + 0x6C, lx);
+    write_guest_float(mem, buf + 0x70, ly);
+    write_guest_float(mem, buf + 0x74, rx);
+    write_guest_float(mem, buf + 0x78, ry);
+    // KPADProStatus ends with two int32 fields, charging (+0x7C) and
+    // wired (+0x80); ZL/ZR are digital buttons on the Pro Controller.
+    rbrew_write32(mem, buf + 0x7C, 0u);
+    rbrew_write32(mem, buf + 0x80, 0u);
+}
+
 // WPADProbe(chan, type*) → 0 (connected) or -1 (not connected)
 static void WPADProbe(CPUState* cpu) {
     uint32_t chan = ARG0;
     uint32_t type_ptr = ARG1;
+    if (rbrew_mod::has_kpad_providers()) {
+        SplatModProPad mod_pad{};
+        if (rbrew_mod::poll_kpad_provider(chan, &mod_pad)) {
+            if (type_ptr && rbrew_memory_accessible(MEM, type_ptr, 4)) {
+                rbrew_write32(MEM, type_ptr, 31u); // WPAD_EXT_PRO_CONTROLLER
+            }
+            RET = 0;
+            return;
+        }
+    }
     if (chan == 0) {
 #if defined(HAVE_SDL2)
         ControllerDevice* dev = get_controller(1); // Player 2 Pro Controller
@@ -48,6 +99,18 @@ static void KPADReadEx(CPUState* cpu) {
         return;
     }
 
+    if (rbrew_mod::has_kpad_providers()) {
+        SplatModProPad mod_pad{};
+        if (rbrew_mod::poll_kpad_provider(chan, &mod_pad)) {
+            static uint32_t s_mod_prev_hold[4] = {};
+            uint32_t dummy_prev = 0;
+            uint32_t& prev_hold = (chan < 4) ? s_mod_prev_hold[chan] : dummy_prev;
+            write_kpad_pro_status(MEM, buf, mod_pad.hold, mod_pad.lx, mod_pad.ly, mod_pad.rx, mod_pad.ry, prev_hold);
+            RET = 1;
+            return;
+        }
+    }
+
     if (chan != 0) {
         // Battle Dojo uses WPAD / KPAD channel 0 for Player 2
         for (uint32_t i = 0; i < 0xF0; i += 4) rbrew_write32(MEM, buf + i, 0u);
@@ -60,8 +123,6 @@ static void KPADReadEx(CPUState* cpu) {
     if (dev && dev->gc && SDL_GameControllerGetAttached(dev->gc)) {
         SDL_GameController* gc = dev->gc;
         auto btn = [&](SDL_GameControllerButton b) { return SDL_GameControllerGetButton(gc, b) != 0; };
-
-        for (uint32_t i = 0; i < 0xF0; i += 4) rbrew_write32(MEM, buf + i, 0u);
 
         uint32_t pro_hold = 0;
         if (btn(SDL_CONTROLLER_BUTTON_DPAD_UP)) pro_hold |= 0x00000001u;       // UP
@@ -92,46 +153,8 @@ static void KPADReadEx(CPUState* cpu) {
         shape_stick(lx, ly);
         shape_stick(rx, ry);
 
-        // Stick direction emulation
-        constexpr float kThreshold = 0.5f;
-        if (rx <= -kThreshold) pro_hold |= 0x00020000u;
-        if (rx >= kThreshold) pro_hold |= 0x00080000u;
-        if (ry >= kThreshold) pro_hold |= 0x00010000u;
-        if (ry <= -kThreshold) pro_hold |= 0x00040000u;
-        if (lx <= -kThreshold) pro_hold |= 0x00200000u;
-        if (lx >= kThreshold) pro_hold |= 0x00800000u;
-        if (ly >= kThreshold) pro_hold |= 0x00100000u;
-        if (ly <= -kThreshold) pro_hold |= 0x00400000u;
-
         static uint32_t s_p2_prev_hold = 0;
-        uint32_t pro_trigger = pro_hold & ~s_p2_prev_hold;
-        uint32_t pro_release = s_p2_prev_hold & ~pro_hold;
-        s_p2_prev_hold = pro_hold;
-
-        // Base fields
-        rbrew_write32(MEM, buf + 0x00, pro_hold);
-        rbrew_write32(MEM, buf + 0x04, pro_trigger);
-        rbrew_write32(MEM, buf + 0x08, pro_release);
-
-        // Extension fields
-        rbrew_write8(MEM, buf + 0x5C, 31u); // extensionType = WPAD_EXT_PRO_CONTROLLER
-        rbrew_write8(MEM, buf + 0x5D, 0u);  // error = 0
-        rbrew_write8(MEM, buf + 0x5E, 1u);  // posValid = 1
-        rbrew_write8(MEM, buf + 0x5F, 0u);  // format = 0
-
-        // Pro controller structure at offset +0x60
-        rbrew_write32(MEM, buf + 0x60, pro_hold);
-        rbrew_write32(MEM, buf + 0x64, pro_trigger);
-        rbrew_write32(MEM, buf + 0x68, pro_release);
-        write_guest_float(MEM, buf + 0x6C, lx);
-        write_guest_float(MEM, buf + 0x70, ly);
-        write_guest_float(MEM, buf + 0x74, rx);
-        write_guest_float(MEM, buf + 0x78, ry);
-        // KPADProStatus ends with two int32 fields, charging (+0x7C) and
-        // wired (+0x80); ZL/ZR are digital buttons on the Pro Controller.
-        // Writing trigger floats here reported a charging, wired pad.
-        rbrew_write32(MEM, buf + 0x7C, 0u);
-        rbrew_write32(MEM, buf + 0x80, 0u);
+        write_kpad_pro_status(MEM, buf, pro_hold, lx, ly, rx, ry, s_p2_prev_hold);
 
         RET = 1; // 1 sample read
         return;

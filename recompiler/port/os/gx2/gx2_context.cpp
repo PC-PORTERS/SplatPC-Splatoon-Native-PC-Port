@@ -33,6 +33,7 @@
 #endif
 #include "../../runtime/native_control_defaults.h"
 #include "../../runtime/discord_rpc.h"
+#include "../../runtime/mod_loader.h"
 #include "../nn_nfp/nn_nfp.h"
 #include <cstdlib>
 #include <string>
@@ -70,6 +71,11 @@ static constexpr int DRC_H = 480;
 // only shows the view mode.
 static void update_window_title() {
     if (!s_window) return;
+    std::string mod_title;
+    if (rbrew_mod::copy_window_title_override(mod_title)) {
+        SDL_SetWindowTitle(s_window, mod_title.c_str());
+        return;
+    }
     char title_buf[128];
     std::snprintf(title_buf, sizeof(title_buf), "Splatoon | %s | Vulkan [F3=overlay | Tab=view | F11=window]%s",
                   g_screen_mode == ScreenMode::TV ? "TV" : "Gamepad",
@@ -88,21 +94,23 @@ static bool imgui_wants_cursor() {
     return gx2_imgui::menu_open() || (overlay_cursor && gx2_imgui::visible());
 }
 static void sync_overlay_mouse_mode() {
-    if (g_screen_mode == ScreenMode::TV) SDL_SetRelativeMouseMode(imgui_wants_cursor() ? SDL_FALSE : SDL_TRUE);
+    if (g_screen_mode == ScreenMode::TV || rbrew_mod::relative_mouse_in_gamepad())
+        SDL_SetRelativeMouseMode(imgui_wants_cursor() ? SDL_FALSE : SDL_TRUE);
+    else
+        SDL_SetRelativeMouseMode(SDL_FALSE);
+}
+
+static void apply_screen_mode(ScreenMode mode) {
+    g_screen_mode = mode;
+    rbrew_mod::note_screen_mode(mode == ScreenMode::Gamepad ? SPLATMOD_SCREEN_GAMEPAD : SPLATMOD_SCREEN_TV);
+    sync_overlay_mouse_mode(); // capture cursor for camera unless overlay/Gamepad cursor
+    g_touch_state = {false, 0, 0};
+    update_window_title();
 }
 
 // Switch between TV and Gamepad view, adjusting mouse capture accordingly
 static void toggle_screen_mode() {
-    if (g_screen_mode == ScreenMode::TV) {
-        g_screen_mode = ScreenMode::Gamepad;
-        SDL_SetRelativeMouseMode(SDL_FALSE); // free the cursor for touch sim
-        g_touch_state = {false, 0, 0};
-    } else {
-        g_screen_mode = ScreenMode::TV;
-        sync_overlay_mouse_mode(); // capture cursor for camera, unless the overlay is open
-        g_touch_state = {false, 0, 0};
-    }
-    update_window_title();
+    apply_screen_mode(g_screen_mode == ScreenMode::TV ? ScreenMode::Gamepad : ScreenMode::TV);
 }
 
 static bool window_fullscreen() {
@@ -155,6 +163,7 @@ void gx2_render_wait_cache_writes(uint32_t timeout_ms);
 // finish (bounded), then end the process without destructors.
 [[noreturn]] static void gx2_close_requested() {
     RBREW_LOG_INFO("gx2", "Window close requested\n");
+    rbrew_mod::shutdown_mods();
     gx2_render_wait_cache_writes(2000);
     std::fflush(nullptr);
     TXDIAG(txdiag::finish());
@@ -973,20 +982,23 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
             case SDL_JOYDEVICEREMOVED: on_controller_device_removed(ev.jdevice.which); break;
 
             case SDL_MOUSEBUTTONDOWN:
-                if (g_screen_mode == ScreenMode::Gamepad && ev.button.button == SDL_BUTTON_LEFT) {
+                if (g_screen_mode == ScreenMode::Gamepad && !rbrew_mod::relative_mouse_in_gamepad() &&
+                    ev.button.button == SDL_BUTTON_LEFT) {
                     map_mouse_to_touch(ev.button.x, ev.button.y);
                     g_touch_state.touched = true;
                 }
                 break;
 
             case SDL_MOUSEBUTTONUP:
-                if (g_screen_mode == ScreenMode::Gamepad && ev.button.button == SDL_BUTTON_LEFT) {
+                if (g_screen_mode == ScreenMode::Gamepad && !rbrew_mod::relative_mouse_in_gamepad() &&
+                    ev.button.button == SDL_BUTTON_LEFT) {
                     g_touch_state.touched = false;
                 }
                 break;
 
             case SDL_MOUSEMOTION:
-                if (g_screen_mode == ScreenMode::Gamepad && g_touch_state.touched) {
+                if (g_screen_mode == ScreenMode::Gamepad && !rbrew_mod::relative_mouse_in_gamepad() &&
+                    g_touch_state.touched) {
                     map_mouse_to_touch(ev.motion.x, ev.motion.y);
                 }
                 break;
@@ -1155,7 +1167,12 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
     if (s_window) {
         bool fullscreen = false;
         if (gx2_imgui::consume_fullscreen_request(fullscreen)) set_window_fullscreen(fullscreen);
-        if (gx2_imgui::consume_quit_request()) gx2_close_requested();
+        if (gx2_imgui::consume_quit_request() || rbrew_mod::consume_quit_request()) gx2_close_requested();
+        if (rbrew_mod::consume_window_title_changed()) update_window_title();
+        if (rbrew_mod::consume_relative_mouse_changed()) sync_overlay_mouse_mode();
+        if (int req_mode = SPLATMOD_SCREEN_TV; rbrew_mod::consume_screen_mode_request(&req_mode)) {
+            apply_screen_mode(req_mode == SPLATMOD_SCREEN_GAMEPAD ? ScreenMode::Gamepad : ScreenMode::TV);
+        }
         if (rbrew_nfp::consume_search_started()) gx2_imgui::open_amiibo_picker();
         if (gx2_imgui::consume_menu_changed()) sync_overlay_mouse_mode();
         gx2_imgui::note_fullscreen(window_fullscreen());

@@ -14,6 +14,7 @@
 
 #include "../../runtime/port_settings.h"
 #include "../../runtime/splatoon_diagnostics.h"
+#include "../../runtime/mod_loader.h"
 #include "../../nn_nfp/nn_nfp.h"
 #include "../gx2_perf.h"
 
@@ -91,8 +92,9 @@ void update_shader_activity() {
     s_shader_compiling = ImGui::GetTime() - s_shader_last_change < 0.75;
 }
 
-enum class MenuPage { Main, Keyboard, Controller, Amiibo };
+enum class MenuPage { Main, Keyboard, Controller, Amiibo, Mods, ModPage };
 MenuPage s_menu_page = MenuPage::Main;
+uint64_t s_selected_mod_page = 0;
 gx2_graphics_menu::Page s_graphics_page = gx2_graphics_menu::Page::None; // graphics/weather/camera/cinema page
 bool s_prev_menu_open = false;
 bool s_capture = false; // waiting for the key/button of the selected action
@@ -642,6 +644,104 @@ void build_amiibo_page() {
     if (ImGui::Button("Back", ImVec2(width, 0))) set_menu_open(false);
 }
 
+namespace {
+
+const SplatModUi kModUi = {
+    nullptr,
+    [](void*, const char* text) { ImGui::TextUnformatted(text ? text : ""); },
+    [](void*, float r, float g, float b, float a, const char* text) {
+        ImGui::TextColored(ImVec4(r, g, b, a), "%s", text ? text : "");
+    },
+    [](void*, const char* text) { ImGui::TextWrapped("%s", text ? text : ""); },
+    [](void*) { ImGui::Separator(); },
+    [](void*, const char* label) { ImGui::SeparatorText(label ? label : ""); },
+    [](void*) { ImGui::Spacing(); },
+    [](void*) { ImGui::SameLine(); },
+    [](void*, const char* label, float width) { return ImGui::Button(label ? label : "", ImVec2(width, 0.0f)); },
+    [](void*, const char* label, bool* value) { return value ? ImGui::Checkbox(label ? label : "", value) : false; },
+    [](void*, const char* label, int* value, int min_val, int max_val, const char* format) {
+        if (!value) return false;
+        return ImGui::SliderInt(label ? label : "", value, min_val, max_val, (format && *format) ? format : "%d");
+    },
+    [](void*, const char* label, const char* hint, char* buf, size_t buf_size) {
+        if (!buf || buf_size == 0) return false;
+        return ImGui::InputTextWithHint(label ? label : "", hint ? hint : "", buf, buf_size);
+    },
+    [](void*, bool disabled) { ImGui::BeginDisabled(disabled); },
+    [](void*) { ImGui::EndDisabled(); },
+    [](void*, const char* text) { ImGui::SetClipboardText(text ? text : ""); },
+};
+
+} // namespace
+
+void build_mods_page() {
+    const auto mods = rbrew_mod::list_mods();
+    const auto pages = rbrew_mod::list_menu_pages();
+    const float width = ImGui::GetContentRegionAvail().x;
+
+    ImGui::TextDisabled("Loaded mods (%zu):", mods.size());
+    ImGui::Separator();
+    for (const auto& mod : mods) {
+        ImGui::Text("%s %s", mod.name.c_str(), mod.version.c_str());
+        if (!mod.author.empty()) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("by %s", mod.author.c_str());
+        }
+        ImGui::TextDisabled("  id: %s%s", mod.id.c_str(), mod.initialized ? "" : " (inactive)");
+    }
+
+    if (!pages.empty()) {
+        ImGui::Spacing();
+        ImGui::SeparatorText("Mod Menus");
+        for (const auto& page : pages) {
+            if (ImGui::Button(page.title.c_str())) {
+                s_selected_mod_page = page.handle;
+                s_menu_page = MenuPage::ModPage;
+            }
+            if (page.status) {
+                if (const char* st = page.status(page.user); st && *st) {
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("%s", st);
+                }
+            }
+        }
+    }
+
+    ImGui::Spacing();
+    if (ImGui::Button("Back", ImVec2(width, 0))) s_menu_page = MenuPage::Main;
+}
+
+void build_mod_custom_page() {
+    const auto pages = rbrew_mod::list_menu_pages();
+    const rbrew_mod::ModMenuPageView* active = nullptr;
+    for (const auto& page : pages) {
+        if (page.handle == s_selected_mod_page) {
+            active = &page;
+            break;
+        }
+    }
+    if (!active || !active->draw) {
+        s_selected_mod_page = 0;
+        s_menu_page = MenuPage::Mods;
+        return;
+    }
+
+    const int result = active->draw(&kModUi, active->user);
+    if (result == SPLATMOD_MENU_QUIT) {
+        open_quit_confirmation();
+    } else if (result == SPLATMOD_MENU_BACK) {
+        s_selected_mod_page = 0;
+        s_menu_page = MenuPage::Mods;
+        return;
+    }
+
+    ImGui::Separator();
+    if (ImGui::Button("Back", ImVec2(ImGui::GetContentRegionAvail().x, 0))) {
+        s_selected_mod_page = 0;
+        s_menu_page = MenuPage::Mods;
+    }
+}
+
 void build_settings_window() {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     const ImVec2 center(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
@@ -650,12 +750,29 @@ void build_settings_window() {
     ImGui::SetNextWindowSize(ImVec2(560, 640), ImGuiCond_FirstUseEver);
     bool open = true;
     // One window ID for every page (the title shows the page).
-    const char* title = s_graphics_page != gx2_graphics_menu::Page::None ? gx2_graphics_menu::title(s_graphics_page)
-                        : s_menu_page == MenuPage::Main                  ? "Settings"
-                        : s_menu_page == MenuPage::Keyboard              ? "Keyboard & mouse controls"
-                        : s_menu_page == MenuPage::Amiibo                ? "amiibo"
-                                                                         : "Controller controls";
-    const std::string window = std::string(title) + "###settings";
+    std::string page_title = "Settings";
+    if (s_graphics_page != gx2_graphics_menu::Page::None) {
+        page_title = gx2_graphics_menu::title(s_graphics_page);
+    } else if (s_menu_page == MenuPage::Main) {
+        page_title = "Settings";
+    } else if (s_menu_page == MenuPage::Keyboard) {
+        page_title = "Keyboard & mouse controls";
+    } else if (s_menu_page == MenuPage::Amiibo) {
+        page_title = "amiibo";
+    } else if (s_menu_page == MenuPage::Mods) {
+        page_title = "Mods";
+    } else if (s_menu_page == MenuPage::ModPage) {
+        page_title = "Mod";
+        for (const auto& p : rbrew_mod::list_menu_pages()) {
+            if (p.handle == s_selected_mod_page) {
+                page_title = p.title;
+                break;
+            }
+        }
+    } else {
+        page_title = "Controller controls";
+    }
+    const std::string window = page_title + "###settings";
     if (!ImGui::Begin(window.c_str(), &open)) {
         ImGui::End();
         return;
@@ -668,6 +785,18 @@ void build_settings_window() {
     }
     if (s_menu_page == MenuPage::Amiibo) {
         build_amiibo_page();
+        ImGui::End();
+        if (!open) set_menu_open(false);
+        return;
+    }
+    if (s_menu_page == MenuPage::Mods) {
+        build_mods_page();
+        ImGui::End();
+        if (!open) set_menu_open(false);
+        return;
+    }
+    if (s_menu_page == MenuPage::ModPage) {
+        build_mod_custom_page();
         ImGui::End();
         if (!open) set_menu_open(false);
         return;
@@ -724,6 +853,7 @@ void build_settings_window() {
     dirty |= ImGui::Checkbox("Confirm before quitting", &v.confirm_quit);
     if (ImGui::Button("Keyboard & mouse controls")) s_menu_page = MenuPage::Keyboard;
     if (ImGui::Button("Controller controls")) s_menu_page = MenuPage::Controller;
+    if (rbrew_mod::has_mods() && ImGui::Button("Mods")) s_menu_page = MenuPage::Mods;
     if (ImGui::Button("Quit game")) {
         open_quit_confirmation();
     }
@@ -959,6 +1089,7 @@ ImDrawData* begin_frame(VkExtent2D extent) {
     s_prev_menu_open = show_menu;
     if (fresh_menu) {
         s_menu_page = MenuPage::Main;
+        s_selected_mod_page = 0;
         s_graphics_page = gx2_graphics_menu::Page::None;
         s_capture = false;
     }

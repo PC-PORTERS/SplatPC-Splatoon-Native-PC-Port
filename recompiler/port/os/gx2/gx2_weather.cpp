@@ -20,13 +20,18 @@
 #include "vk/gx2_vk_shader.h"
 #include "../../runtime/port_settings.h"
 #include "../../runtime/native_control_defaults.h"
+#include "../../runtime/mod_loader.h"
 #include <chrono>
+#include <cmath>
+#include <utility>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <future>
 #include <map>
 #include <unordered_map>
+
+extern uint32_t g_scan_drc_source_id; // gx2_render_vk.cpp
 
 namespace gx2weather {
 namespace {
@@ -305,6 +310,39 @@ struct Frame {
 };
 Frame s_frame;
 uint64_t s_frame_index = 0;
+
+// Dual-view support for mods (e.g. split-screen / second-screen co-op): the second
+// view gets its own temporal state (TAA history, histogram, curve), swapped around
+// its pass. Zero runtime overhead when disabled.
+bool s_hist_cleared = false;
+bool s_coop = false;
+uint64_t s_updated_present = ~0ull;
+struct ViewSlot {
+    gx2vk::Image history, next_history, hist, curve;
+    Camera prev_camera;
+    bool history_valid = false, curve_valid = false, hist_cleared = false;
+};
+ViewSlot s_view1;
+void swap_view1() {
+    std::swap(s_history, s_view1.history);
+    std::swap(s_next_history, s_view1.next_history);
+    std::swap(s_hist, s_view1.hist);
+    std::swap(s_curve, s_view1.curve);
+    std::swap(s_prev_camera, s_view1.prev_camera);
+    std::swap(s_history_valid, s_view1.history_valid);
+    std::swap(s_curve_valid, s_view1.curve_valid);
+    std::swap(s_hist_cleared, s_view1.hist_cleared);
+}
+struct View1Scope {
+    View1Scope() { swap_view1(); }
+    ~View1Scope() { swap_view1(); }
+};
+float eye_distance(const Camera& a, const Camera& b) {
+    const float dx = a.inverse_view[3] - b.inverse_view[3], dy = a.inverse_view[7] - b.inverse_view[7],
+                dz = a.inverse_view[11] - b.inverse_view[11];
+    return std::sqrt(dx * dx + dy * dy + dz * dz);
+}
+constexpr float kEyeSeparation = 0.5f;
 
 void fill(Params& p, const Frame& f, uint32_t w, uint32_t h) {
     const Camera& c = f.camera;
@@ -774,8 +812,11 @@ bool apply(gx2vk::Image& color, gx2vk::Image& depth, const Camera& camera, const
     f.camera = camera;
     f.settings = settings;
     const uint32_t w = color.desc.width, h = color.desc.height;
-    update(f, w, h);
-    ++s_frame_index;
+    if (!s_coop || s_updated_present != gx2vk::present_count()) {
+        update(f, w, h);
+        ++s_frame_index;
+        s_updated_present = gx2vk::present_count();
+    }
     Params p{};
     fill(p, f, w, h);
     const bool rays = settings.sun_rays && f.sky.sun_elevation > -1.5f && f.sky.rain < 0.6f;
@@ -856,14 +897,13 @@ bool apply(gx2vk::Image& color, gx2vk::Image& depth, const Camera& camera, const
                                 kStorageSampled | VK_IMAGE_USAGE_TRANSFER_DST_BIT) &&
                      make_image(s_curve, VK_IMAGE_TYPE_2D, VK_FORMAT_R16G16B16A16_SFLOAT, 256, 1, 1, kStorageSampled);
         if (curve) {
-            static bool cleared = false;
-            if (!cleared) {
+            if (!s_hist_cleared) {
                 gx2vk::barrier_if_dirty();
                 const VkClearColorValue zero{};
                 const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
                 vkCmdClearColorImage(gx2vk::cmd(), s_hist.image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &range);
                 gx2vk::note_gpu_write(s_hist);
-                cleared = true;
+                s_hist_cleared = true;
             }
             Params hp = p;
             hp.look[1] = 0.8f; // how far towards the reference distribution (partly: no equalising of dark corners)
@@ -894,7 +934,10 @@ bool apply(gx2vk::Image& color, gx2vk::Image& depth, const Camera& camera, const
         c.images[kDome] = &s_dome;
         c.images[kBloom0] = bloom ? &s_bloom_up[0] : nullptr;
         c.images[kToneMap] = curve ? &s_curve : nullptr;
-        c.images[kDomeImage] = &s_hist;
+        if (!s_hist)
+            make_image(s_hist, VK_IMAGE_TYPE_2D, VK_FORMAT_R32_UINT, 128, 1, 1,
+                       kStorageSampled | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+        c.images[kDomeImage] = s_hist ? &s_hist : nullptr;
         dispatch(s_composite, c, cp, (w + 7) / 8, (h + 7) / 8, 1, &s_result);
         gx2vk::Image* final_image = &s_result;
         // Temporal AA (RBREW_TAA=0: off) with the previous frame's camera.
@@ -1009,7 +1052,7 @@ bool apply(gx2vk::Image& color, gx2vk::Image& depth, const Camera& camera, const
     return true;
 }
 
-bool find_camera(uint8_t* memory, Camera& camera); // below
+bool find_camera(uint8_t* memory, Camera& camera, bool allow_hook = true, bool* from_hook = nullptr); // below
 // A sky dome: every vertex about equally far from the model's origin, and
 // far (a big sphere or hemisphere). Distant buildings are not spherical
 // around their origin, so this does not catch them.
@@ -1112,6 +1155,10 @@ bool draw_sky(uint8_t* memory, VkCommandBuffer cb, const VkFormat* colors, VkFor
     Frame f = s_frame;
     Camera camera;
     if (!find_camera(memory, camera)) return false;
+    if (s_coop) {
+        Camera bank;
+        if (find_camera(memory, bank, false) && eye_distance(bank, camera) > kEyeSeparation) return false;
+    }
     f.camera = camera;
     f.sky = sky;
     const uint32_t w = target->image.desc.width, h = target->image.desc.height;
@@ -1147,8 +1194,9 @@ bool s_hud_hidden = false;
 }
 // The view block (VP, view, inverse view, near/far): bank 1 in the plaza,
 // another bank in other scenes (Octo Valley) - the first that decodes.
-bool find_camera(uint8_t* memory, Camera& camera) {
+bool find_camera(uint8_t* memory, Camera& camera, bool allow_hook, bool* from_hook) {
     const auto& s = gx2r::state();
+    if (from_hook) *from_hook = false;
     // A bank can remain valid while no geometry rebinds it during an upward
     // view. Prefer the fresh, identified main camera over that stale state.
     static const bool hook_camera = [] {
@@ -1179,7 +1227,9 @@ bool find_camera(uint8_t* memory, Camera& camera) {
                             target ? target->id : 0);
         }
     };
-    if (hook_camera && fresh && look_at_camera(v.pos, v.at, v.up, v.fovy_deg, v.near_z, v.far_z, aspect, camera)) {
+    if (allow_hook && hook_camera && fresh &&
+        look_at_camera(v.pos, v.at, v.up, v.fovy_deg, v.near_z, v.far_z, aspect, camera)) {
+        if (from_hook) *from_hook = true;
         log(-1);
         return true;
     }
@@ -1216,6 +1266,7 @@ void observe_draw(uint8_t* memory, uint32_t primitive, uint32_t count) {
     // limits it to the plaza with shaders on, as before.
     auto& s = gx2r::state();
     const uint32_t now = uint32_t(gx2vk::present_count());
+    const bool suppress_cinema = rbrew_mod::suppress_cinema_hud();
     {
         static const bool any_scene = [] {
             const char* v = std::getenv("RBREW_CINEMA_ANY");
@@ -1229,7 +1280,7 @@ void observe_draw(uint8_t* memory, uint32_t primitive, uint32_t count) {
             cine_frame = now;
             depth_draws = 0;
             s_hud_hidden = false;
-            cinema = any_scene && rbrew_settings::get().cinema_mode;
+            cinema = any_scene && rbrew_settings::get().cinema_mode && !suppress_cinema;
         }
         const auto* target = s.framebuffer.colors[0];
         if (cinema && !s_hud_hidden && target) {
@@ -1251,8 +1302,12 @@ void observe_draw(uint8_t* memory, uint32_t primitive, uint32_t count) {
     static unsigned world_draws = 0;
     static uint32_t scene_width = 16, scene_height = 9;
     static bool applied = false, allowed = false;
+    static bool applied1 = false; // dual-view: second view processed this frame
+    static Camera run_bank;       // dual-view: uniform bank camera of the current 3D run
+    static bool run_bank_ok = false, run_from_hook = false;
     static rbrew_settings::Values settings;
     if (now != frame) {
+        s_coop = rbrew_mod::dual_view_active();
         for (const auto& [key, color] : s.cb_map)
             if (color.id == s.scan_tv_source_id && color.image.desc.height) {
                 scene_width = color.image.desc.width;
@@ -1260,6 +1315,9 @@ void observe_draw(uint8_t* memory, uint32_t primitive, uint32_t count) {
                 break;
             }
         if (!applied) s_history_valid = false;
+        if (!applied1) s_view1.history_valid = false;
+        applied1 = false;
+        run_bank_ok = run_from_hook = false;
         frame = now;
         depth = nullptr;
         world_draws = 0;
@@ -1269,6 +1327,8 @@ void observe_draw(uint8_t* memory, uint32_t primitive, uint32_t count) {
         if (sky.scene_type != s_frame.sky.scene_type || sky.scene_id != s_frame.sky.scene_id) {
             s_history_valid = false;
             s_curve_valid = false;
+            s_view1.history_valid = false;
+            s_view1.curve_valid = false;
         }
         s_frame.sky = sky;
         allowed = s_frame.sky.active;
@@ -1331,7 +1391,11 @@ void observe_draw(uint8_t* memory, uint32_t primitive, uint32_t count) {
         }
         w_last = w_now;
     }
-    if (!allowed || !target || applied || !scene_color_extent(target->width, target->height, s_frame.sky.plaza)) return;
+    const bool done = s_coop ? applied && applied1 : applied;
+    if (!allowed || !target || done || !scene_color_extent(target->width, target->height, s_frame.sky.plaza)) return;
+    if (s_coop && s.framebuffer.depth &&
+        (target->id == s.scan_tv_source_id || (g_scan_drc_source_id && target->id == g_scan_drc_source_id)))
+        return;
     // The 3D scene's depth may be smaller than the TV image: Octo Valley
     // renders at 848x480 and scales up in the final pass (same aspect).
     auto* scene_depth = s.framebuffer.depth ? s.framebuffer.depth : s.depth_target;
@@ -1342,11 +1406,15 @@ void observe_draw(uint8_t* memory, uint32_t primitive, uint32_t count) {
                                                    scene_depth->image.desc.width, scene_depth->image.desc.height);
     if (same_aspect && !depth) {
         Camera camera;
-        if (find_camera(memory, camera)) {
+        if (find_camera(memory, camera, true, s_coop ? &run_from_hook : nullptr)) {
             depth = &scene_depth->image;
             if (why) ++w_now.cam_ok;
             camera.depth_range = {float(s.raster.depth_range[0]), float(s.raster.depth_range[1])};
             s_frame.camera = camera;
+            if (s_coop) {
+                run_bank_ok = find_camera(memory, run_bank, false);
+                run_bank.depth_range = camera.depth_range;
+            }
         }
     }
     if (s.framebuffer.depth) {
@@ -1355,20 +1423,38 @@ void observe_draw(uint8_t* memory, uint32_t primitive, uint32_t count) {
             const float lo = float(std::min(s.raster.depth_range[0], s.raster.depth_range[1]));
             const float hi = float(std::max(s.raster.depth_range[0], s.raster.depth_range[1]));
             if (s.raster.depth_func == gx2r::wire::GREATER || s.raster.depth_func == gx2r::wire::GEQUAL)
-                s_frame.camera.depth_range = {hi, lo};
+                s_frame.camera.depth_range = run_bank.depth_range = {hi, lo};
             else if (s.raster.depth_func == gx2r::wire::LESS || s.raster.depth_func == gx2r::wire::LEQUAL)
-                s_frame.camera.depth_range = {lo, hi};
+                s_frame.camera.depth_range = run_bank.depth_range = {lo, hi};
         }
         return;
     }
     // The game's final full-screen scene triangle precedes every HUD draw.
     // The plaza is known here: looking at the sky leaves only a few 3D
     // draws, and requiring 64 dropped every effect (a flash in the picture).
-    if (!depth || world_draws < 2 || target->id != s.scan_tv_source_id || count != 3 || (primitive & 31u) != 4u ||
-        s.raster.depth_test || s.raster.blend || (s.target_masks & 15u) != 15u || s.raster.viewport[0] ||
-        s.raster.viewport[1] || s.raster.viewport[2] != int(target->width) ||
-        s.raster.viewport[3] != int(target->height))
+    int view = -1;
+    if (target->id == s.scan_tv_source_id)
+        view = applied ? -1 : 0;
+    else if (s_coop && !applied1 && g_scan_drc_source_id && g_scan_drc_source_id != s.scan_tv_source_id &&
+             target->id == g_scan_drc_source_id && target->width == scene_width && target->height == scene_height)
+        view = 1;
+    if (!depth || world_draws < 2 || view < 0 || count != 3 || (primitive & 31u) != 4u || s.raster.depth_test ||
+        s.raster.blend || (s.target_masks & 15u) != 15u || s.raster.viewport[0] || s.raster.viewport[1] ||
+        s.raster.viewport[2] != int(target->width) || s.raster.viewport[3] != int(target->height))
         return;
+    if (view == 1) {
+        const float sep = run_from_hook ? eye_distance(run_bank, s_frame.camera) : 1e9f;
+        const bool own_camera = run_bank_ok && sep > kEyeSeparation;
+        {
+            View1Scope scope;
+            applied1 = own_camera && apply(target->image, *depth, run_bank, settings, 0, 0);
+        }
+        depth = nullptr;
+        world_draws = 0;
+        s_hdr = nullptr;
+        run_bank_ok = run_from_hook = false;
+        return;
+    }
     applied = apply(target->image, *depth, s_frame.camera, settings, 0, 0);
     if (std::getenv("RBREW_WEATHER_LOG")) {
         static uint32_t last = 0;
@@ -1443,7 +1529,13 @@ void observe_draw(uint8_t* memory, uint32_t primitive, uint32_t count) {
         RBREW_LOG_DEBUG("weather", "frame %u forward %.3f %.3f %.3f", now, -iv[2], -iv[6], -iv[10]);
     }
     // Cinema mode: the HUD draws that follow the final scene pass are skipped.
-    if (applied && settings.cinema_mode) s_hud_hidden = true;
+    if (applied && settings.cinema_mode && !suppress_cinema) s_hud_hidden = true;
+    if (s_coop) {
+        depth = nullptr;
+        world_draws = 0;
+        s_hdr = nullptr;
+        run_bank_ok = run_from_hook = false;
+    }
 }
 
 void shutdown() {
@@ -1480,6 +1572,12 @@ void shutdown() {
                         &s_hist,
                         &s_curve})
         gx2vk::destroy_image(*image);
+    for (auto* image : {&s_view1.history, &s_view1.next_history, &s_view1.hist, &s_view1.curve})
+        gx2vk::destroy_image(*image);
+    s_view1 = {};
+    s_hist_cleared = false;
+    s_updated_present = ~0ull;
+    s_coop = false;
     for (const auto& [key, pipeline] : s_sky_pipelines)
         if (pipeline) vkDestroyPipeline(device, pipeline, nullptr);
     for (const auto& [format, pipeline] : s_rain_pipelines)

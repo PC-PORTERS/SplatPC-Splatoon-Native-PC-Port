@@ -15,6 +15,7 @@
 #include "runtime/discord_rpc.h"
 #include "runtime/splatoon_diagnostics.h"
 #include "runtime/port_settings.h"
+#include "runtime/mod_loader.h"
 #include "os/erreula/erreula.h"
 #include "os/coreinit/coreinit_overlay.h"
 #include "os/coreinit/coreinit_system_settings.h"
@@ -410,6 +411,9 @@ int main(int argc, char** argv) {
 #endif
     // ESC-menu options (settings.ini); start-only values reach the environment here.
     rbrew_settings::load();
+    if (const int early_exit = rbrew_mod::load_and_early_init(argc, argv, RBREW_GAME_REVISION); early_exit >= 0) {
+        return early_exit;
+    }
     rbrew::discord_rpc_init();
     RBREW_LOG_INFO("BOOT", "Splatoon launch runtime; RPX header entry=0x%08X\n", rebrewu_generated::Gambit_entry_point);
     RBREW_LOG_INFO("FS", "RBREW_CONTENT_DIR=%s\n",
@@ -549,6 +553,7 @@ int main(int argc, char** argv) {
     broadcast_guard_install();       // 0285C3D0 broadcast loop guard
     player_anim_register();
     gx2env::register_hooks(); // game camera hooks (hooks/gx2_camera_hooks.h)
+    rbrew_mod::init_mods(&cpu_reg);
     erreula_register(&cpu_reg);
 
     RBREW_LOG_INFO("IMPORT", "OS modules and game dispatch registered\n");
@@ -723,6 +728,7 @@ int main(int argc, char** argv) {
 
     // Arena and dispatch are process-owned: guest workers may still reference
     // them until process termination. Do not free them underneath live workers.
+    rbrew_mod::shutdown_mods();
     rbrew::discord_rpc_shutdown();
     return result;
 }

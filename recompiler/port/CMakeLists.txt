@@ -3,8 +3,8 @@ project(GambitPort CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Shared public headers (the logger lives here).
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../include)
+# Shared public headers (the logger and mod SDK headers live here).
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../include ${CMAKE_CURRENT_SOURCE_DIR}/include)
 set(RBREW_GAME_REVISION "16" CACHE STRING "Title revision of the selected manifest (app_version)")
 if(NOT RBREW_GAME_REVISION MATCHES "^[0-9]+$")
     message(FATAL_ERROR "Unsupported title revision")
@@ -239,6 +239,7 @@ list(APPEND GAMBIT_RUNTIME_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/gambit_plt_stubs
 add_library(gambit_runtime STATIC ${GAMBIT_RUNTIME_SOURCES})
 
 target_include_directories(gambit_runtime PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/runtime
     ${SDL2_INCLUDE_DIRS}
 )
@@ -306,6 +307,8 @@ if(WIN32)
     if(HAVE_MINIAUDIO)
         target_link_libraries(gambit_runtime PUBLIC ksuser)
     endif()
+else()
+    target_link_libraries(gambit_runtime PUBLIC ${CMAKE_DL_LIBS})
 endif()
 
 if(UNIX AND NOT APPLE AND HAVE_MINIAUDIO)
@@ -533,6 +536,18 @@ if(RBREW_BUILD_TESTS)
     target_link_libraries(gambit_non_ieee_mode_tests PRIVATE gambit_runtime)
     target_include_directories(gambit_non_ieee_mode_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME native_non_ieee_mode COMMAND gambit_non_ieee_mode_tests)
+    add_library(gambit_test_mod MODULE ../tests/test_mod_plugin.cpp)
+    target_include_directories(gambit_test_mod PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    if(MINGW)
+        target_link_options(gambit_test_mod PRIVATE -static)
+    endif()
+    add_executable(gambit_mod_api_tests ../tests/test_mod_api.cpp)
+    target_link_libraries(gambit_mod_api_tests PRIVATE gambit_runtime)
+    target_include_directories(gambit_mod_api_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+    add_test(NAME mod_api COMMAND gambit_mod_api_tests $<TARGET_FILE:gambit_test_mod>)
     # Local developer tests/tools below are optional (not in the public tree).
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../tests/test_frame_pacing.cpp")
         add_executable(gambit_frame_pacing_tests ../tests/test_frame_pacing.cpp)
