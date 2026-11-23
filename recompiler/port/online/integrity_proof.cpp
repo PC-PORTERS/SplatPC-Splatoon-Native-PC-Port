@@ -61,45 +61,24 @@ std::optional<std::vector<std::pair<std::string, std::string>>> read_manifest(co
 
 } // namespace
 
-std::string read_version(const fs::path& root) {
-    std::ifstream in(root / "VERSION", std::ios::binary);
-    if (!in) return {};
-    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    const auto is_space = [](char c) {
-        return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\v' || c == '\f';
-    };
-    while (!text.empty() && is_space(text.back())) text.pop_back();
-    size_t first = 0;
-    while (first < text.size() && is_space(text[first])) ++first;
-    while (first < text.size() && text[first] == 'v') ++first;
-    text = text.substr(first);
-    if (text.empty()) return {};
-    for (char c : text)
-        if (!(c >= '0' && c <= '9') && c != '.') return {};
-    return text;
-}
-
 fs::path resolve_integrity_root(const fs::path& game_dir, const fs::path& default_root) {
     if (const char* env_root = std::getenv("RBREW_INTEGRITY_ROOT"); env_root && *env_root) {
         return fs::path(std::u8string(env_root, env_root + std::strlen(env_root)));
     }
     const fs::path parent = game_dir.parent_path();
     const fs::path candidates[] = {parent, game_dir, default_root};
-    const auto has_file = [](const fs::path& dir, const fs::path& rel) {
+    const auto has_manifest = [](const fs::path& dir) {
         std::error_code ec;
-        return !dir.empty() && fs::exists(dir / rel, ec);
+        return !dir.empty() && fs::exists(dir / "scripts" / "integrity-manifest.txt", ec);
     };
     for (const fs::path& dir : candidates) {
-        if (has_file(dir, fs::path("scripts") / "integrity-manifest.txt")) return dir;
-    }
-    for (const fs::path& dir : candidates) {
-        if (has_file(dir, "VERSION")) return dir;
+        if (has_manifest(dir)) return dir;
     }
     return parent;
 }
 
-Attestation attest(const fs::path& root) {
-    Attestation result{read_version(root), {}};
+Attestation attest(const fs::path& root, std::string version) {
+    Attestation result{std::move(version), {}};
     const auto entries = read_manifest(root / "scripts" / "integrity-manifest.txt");
     if (!entries || entries->empty()) return result;
     std::string text;

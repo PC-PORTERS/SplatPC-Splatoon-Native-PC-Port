@@ -249,11 +249,8 @@ add_library(gambit_online STATIC
 )
 target_include_directories(gambit_online PRIVATE ${RBREW_NLOHMANN_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
 get_filename_component(RBREW_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
-set(RBREW_APP_VERSION "")
-if(EXISTS "${RBREW_REPO_ROOT}/VERSION")
-    file(READ "${RBREW_REPO_ROOT}/VERSION" _rbrew_version_raw)
-    string(STRIP "${_rbrew_version_raw}" RBREW_APP_VERSION)
-else()
+set(RBREW_APP_VERSION "" CACHE STRING "Client release version injected from release tag")
+if(NOT RBREW_APP_VERSION)
     find_package(Git QUIET)
     if(GIT_FOUND)
         execute_process(

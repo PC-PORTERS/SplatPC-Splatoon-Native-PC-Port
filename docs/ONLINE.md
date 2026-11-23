@@ -4,7 +4,7 @@ Community servers replace Nintendo's: sign-in, matchmaking, friends and the NAT 
 
 ## Playing
 
-- Build the game with **SplatPC Builder** ([Builder](BUILDER.md)) with a `v288` dump and enable **Online** (on by default).
+- Build the game with **SplatPC Builder** with a `v288` dump and enable **Online** (on by default).
 - First launch: pick a pseudo in the in-game login screen (or configure it in the Builder). The game signs you up natively (an account number plus a key derived from your password; the password is never stored), checks your version against the server, claims your pseudo and connects.
 - You can switch back to offline mode via the in-game **Play offline** option, `RBREW_OFFLINE=1`, or by turning off Online in `settings.ini` / Builder. Your save (`Game/save`) is never touched.
 - Your identity is stored in `Game/online_identity.ini`. **Never share it**: it is your account.

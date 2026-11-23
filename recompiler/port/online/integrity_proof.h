@@ -7,13 +7,12 @@
 namespace rbrew_native {
 
 struct Attestation {
-    std::string version; // VERSION, without a leading "v"; empty when unreadable
+    std::string version; // client version (from release tag); empty when unavailable
     std::string code;    // sha256 of the manifest text this PC's files give; empty without a manifest
 };
 
-std::string read_version(const std::filesystem::path& root);
 std::filesystem::path resolve_integrity_root(const std::filesystem::path& game_dir,
                                              const std::filesystem::path& default_root = {});
-Attestation attest(const std::filesystem::path& root);
+Attestation attest(const std::filesystem::path& root, std::string version = {});
 
 } // namespace rbrew_native

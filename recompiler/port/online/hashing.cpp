@@ -60,12 +60,20 @@ std::string Sha256::hex() {
 
 std::array<uint8_t, 64> sha512(std::string_view data) {
     BCRYPT_ALG_HANDLE algorithm = nullptr;
+    BCRYPT_HASH_HANDLE hash = nullptr;
     if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA512_ALGORITHM, nullptr, 0) != 0)
         throw std::runtime_error("SHA-512 unavailable");
+    if (BCryptCreateHash(algorithm, &hash, nullptr, 0, nullptr, 0, 0) != 0) {
+        BCryptCloseAlgorithmProvider(algorithm, 0);
+        throw std::runtime_error("SHA-512 unavailable");
+    }
     std::array<uint8_t, 64> out{};
-    const NTSTATUS status = BCryptHash(algorithm, nullptr, 0, (PUCHAR)data.data(), ULONG(data.size()), out.data(), 64);
+    const bool ok =
+        BCryptHashData(hash, reinterpret_cast<PUCHAR>(const_cast<char*>(data.data())), ULONG(data.size()), 0) == 0 &&
+        BCryptFinishHash(hash, out.data(), ULONG(out.size()), 0) == 0;
+    BCryptDestroyHash(hash);
     BCryptCloseAlgorithmProvider(algorithm, 0);
-    if (status != 0) throw std::runtime_error("SHA-512 failed");
+    if (!ok) throw std::runtime_error("SHA-512 failed");
     return out;
 }
 

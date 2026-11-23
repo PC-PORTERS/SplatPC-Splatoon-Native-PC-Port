@@ -17,6 +17,10 @@ import (
 	"splatpc-builder/settings"
 )
 
+// ReleaseTag is injected at build time via -ldflags="-X splatpc-builder/engine.ReleaseTag=..."
+// from the Git release/CI tag so CMake embeds the client version without a VERSION file.
+var ReleaseTag string
+
 type StepInfo struct {
 	Index       int
 	Total       int
@@ -221,6 +225,9 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 		"-DRBREW_DIAGNOSTIC_RUNTIME=OFF",
 		"-DRBREW_TEXTURE_DIAGNOSTICS=OFF",
 	)
+	if tag := strings.TrimSpace(ReleaseTag); tag != "" {
+		gameDefines = append(gameDefines, fmt.Sprintf("-DRBREW_APP_VERSION=%s", tag))
+	}
 	if cmake.isWindowsMinGW() {
 		gameDefines = append(gameDefines, "-DCMAKE_EXE_LINKER_FLAGS=-static")
 	}

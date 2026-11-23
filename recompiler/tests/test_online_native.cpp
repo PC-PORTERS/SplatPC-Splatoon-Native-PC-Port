@@ -87,12 +87,11 @@ void test_dates() {
 
 void test_attestation() {
     const fs::path root = scratch("attest");
-    write(root / "VERSION", "v0.1.5\r\n");
     write(root / "scripts" / "a.txt", "one\r\ntwo\r\n");
     const std::string a = sha256_hex("one\ntwo\n");
     write(root / "scripts" / "integrity-manifest.txt", a + " scripts/a.txt\r\n" + a + " scripts/missing.txt\n");
-    const Attestation proof = attest(root);
-    check(proof.version == "0.1.5", "version from VERSION without v");
+    const Attestation proof = attest(root, "0.1.5");
+    check(proof.version == "0.1.5", "version propagated from release tag");
     const std::string expected = a + " scripts/a.txt\n" + std::string(64, '0') + " scripts/missing.txt\n";
     check(proof.code == sha256_hex(expected), "code: CR removed, a missing file hashes to zeros");
     // Builder (standalone build-env) -> separate OutputDir: falls back to default_root when game_dir has no manifest.
@@ -100,7 +99,7 @@ void test_attestation() {
     fs::create_directories(output_game);
     check(resolve_integrity_root(root / "Game", scratch("unused")) == root, "git clone layout uses parent dir");
     check(resolve_integrity_root(output_game, root) == root, "standalone builder layout falls back to default_root");
-    check(attest(resolve_integrity_root(output_game, root)).code == proof.code,
+    check(attest(resolve_integrity_root(output_game, root), "0.1.5").code == proof.code,
           "standalone builder output proves the same code hash");
     fs::remove(root / "scripts" / "integrity-manifest.txt");
     check(attest(root).code.empty(), "no manifest, no code");

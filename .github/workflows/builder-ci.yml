@@ -18,6 +18,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -60,9 +62,11 @@ jobs:
           sudo ln -s /opt/appimagetool/AppRun /usr/local/bin/appimagetool
 
       - name: Generate Integrity Manifest
+        id: version
         run: |
-          python3 scripts/integrity.py --write-version || true
-          python3 scripts/integrity.py --make
+          TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          python3 scripts/integrity.py --make "$TAG"
 
       - name: Bundle Builder Assets (Build Time)
         run: |
@@ -76,7 +80,11 @@ jobs:
       - name: Build SplatPC-Builder Executable and AppImage
         run: |
           cd Builder
-          go build -trimpath -ldflags="-s -w" -o splatpc-builder .
+          LDFLAGS="-s -w"
+          if [ -n "${{ steps.version.outputs.tag }}" ]; then
+            LDFLAGS="$LDFLAGS -X 'splatpc-builder/engine.ReleaseTag=${{ steps.version.outputs.tag }}'"
+          fi
+          go build -trimpath -ldflags="$LDFLAGS" -o splatpc-builder .
           ./splatpc-builder -check || true
           cd ..
 
@@ -146,6 +154,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -164,11 +174,13 @@ jobs:
           "C:\msys64\mingw64\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Generate Integrity Manifest
+        id: win_version
         shell: pwsh
         run: |
-          python scripts/integrity.py --write-version
-          if ($LASTEXITCODE -ne 0) { $global:LASTEXITCODE = 0 }
-          python scripts/integrity.py --make
+          $tag = (git describe --tags --abbrev=0 2>$null)
+          if ($LASTEXITCODE -ne 0) { $tag = ""; $global:LASTEXITCODE = 0 }
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          python scripts/integrity.py --make "$tag"
 
       - name: Bundle Builder Assets (Build Time)
         shell: pwsh
@@ -187,8 +199,15 @@ jobs:
           cd Builder
           $env:CGO_ENABLED = "1"
           go generate ./winres.go
-          go build -trimpath -ldflags="-H windowsgui -s -w" -o ../SplatPC-Builder.exe .
-          go build -trimpath -ldflags="-s -w" -o splatpc-builder-cli.exe .
+          $ldflags = "-H windowsgui -s -w"
+          $cliLdflags = "-s -w"
+          $tag = "${{ steps.win_version.outputs.tag }}"
+          if ($tag) {
+            $ldflags += " -X splatpc-builder/engine.ReleaseTag=$tag"
+            $cliLdflags += " -X splatpc-builder/engine.ReleaseTag=$tag"
+          }
+          go build -trimpath -ldflags="$ldflags" -o ../SplatPC-Builder.exe .
+          go build -trimpath -ldflags="$cliLdflags" -o splatpc-builder-cli.exe .
           cd ..
           if (-not (Test-Path SplatPC-Builder.exe)) {
             throw "SplatPC-Builder.exe was not created"

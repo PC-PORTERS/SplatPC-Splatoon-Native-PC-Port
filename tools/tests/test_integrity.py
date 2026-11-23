@@ -20,15 +20,14 @@ def load(name, relative):
 integrity = load("integrity", "scripts/integrity.py")
 
 
-def make_install(base, files, version="0.1.3"):
-    """A fake install: files {relative: bytes}, a VERSION and a manifest listing the files."""
+def make_install(base, files):
+    """A fake install: files {relative: bytes} and a manifest listing the files."""
     root = pathlib.Path(base)
     for relative, data in files.items():
         target = root / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
-    (root / "VERSION").write_text(version + "\n")
-    names = sorted(files) + ["VERSION"]
+    names = sorted(files)
     text = "".join(f"{integrity.hash_file(str(root / n))} {n}\n" for n in names)
     (root / "scripts").mkdir(exist_ok=True)
     (root / "scripts" / "integrity-manifest.txt").write_text(text, newline="\n")
@@ -42,7 +41,7 @@ class ClientHashTests(unittest.TestCase):
         self.root, self.text = make_install(self.dir, {"recompiler/a.cpp": b"int a;\nint b;\n", "scripts/x.py": b"print(1)\n"})
 
     def test_a_clean_install_proves_the_release_hash(self):
-        proof = integrity.attestation(str(self.root))
+        proof = integrity.attestation(str(self.root), tag="online-v0.1.3")
         self.assertEqual(proof["version"], "0.1.3")
         self.assertEqual(proof["code"], integrity.release_hash(self.text))
         self.assertEqual(integrity.differing(str(self.root)), [])
@@ -60,36 +59,27 @@ class ClientHashTests(unittest.TestCase):
         self.assertNotEqual(integrity.attestation(str(self.root))["code"], good)
         self.assertIn("recompiler/a.cpp", integrity.differing(str(self.root)))
 
-    def test_the_version_comes_from_VERSION_not_from_installed_version(self):
-        stale = self.root / "build"
-        stale.mkdir()
-        (stale / "installed-version.txt").write_text("0.0.1\n")
-        self.assertEqual(integrity.read_version(str(self.root)), "0.1.3")
-        (self.root / "VERSION").unlink()
-        self.assertEqual(integrity.read_version(str(self.root)), "")
-
-    def test_tag_parsing_and_writing_version(self):
+    def test_tag_parsing(self):
         self.assertEqual(integrity.parse_tag_version("v0.1.5"), "0.1.5")
         self.assertEqual(integrity.parse_tag_version("online-v0.1.5"), "0.1.5")
         self.assertEqual(integrity.parse_tag_version("v1.2.3-rc1"), "1.2.3")
         self.assertEqual(integrity.parse_tag_version("no-digits"), "")
-        written = integrity.write_version_file("online-v0.2.0", root=str(self.root))
-        self.assertEqual(written, "0.2.0")
-        self.assertEqual((self.root / "VERSION").read_text(encoding="ascii"), "0.2.0\n")
+        self.assertEqual(integrity.read_version(str(self.root), tag="online-v0.2.0"), "0.2.0")
+        self.assertEqual(integrity.read_version(str(self.root)), "")
 
     def test_no_manifest_means_no_proof(self):
         (self.root / "scripts" / "integrity-manifest.txt").unlink()
         self.assertEqual(integrity.attestation(str(self.root))["code"], "")
 
     def test_what_is_covered(self):
-        for yes in ("recompiler/port/os/x.cpp", "scripts/integrity.py", "VERSION", "profiles/agmp-v288.json"):
+        for yes in ("recompiler/port/os/x.cpp", "scripts/integrity.py", "profiles/agmp-v288.json"):
             self.assertTrue(integrity.covered(yes), yes)
         for no in ("docs/x.md", "scripts/tests/t.py", "scripts/integrity-manifest.txt", "scripts/server.txt",
-                   "tools/nexlab/social.py", "scripts/__pycache__/x.pyc"):
+                   "tools/nexlab/social.py", "tools/boss/make_vssetting.py", "VERSION", "scripts/__pycache__/x.pyc"):
             self.assertFalse(integrity.covered(no), no)
 
     def test_the_real_install_hashes(self):
-        """The repository itself computes version from VERSION or git tags when available."""
+        """The repository itself computes version from git tags when available."""
         proof = integrity.attestation()
         self.assertIn("version", proof)
         self.assertIn("code", proof)

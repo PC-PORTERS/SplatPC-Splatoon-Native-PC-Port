@@ -35,7 +35,7 @@ def bundle_assets(repo_root: str, output_zip: str):
     total_uncompressed = 0
 
     with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
-        for folder in ["Manifest", "recompiler", "scripts", "LICENSES", "tools/boss"]:
+        for folder in ["Manifest", "recompiler", "scripts", "LICENSES"]:
             folder_path = os.path.join(repo_root, folder)
             if not os.path.exists(folder_path):
                 continue
@@ -48,14 +48,6 @@ def bundle_assets(repo_root: str, output_zip: str):
                         zf.write(file_path, rel_path)
                         count += 1
                         total_uncompressed += os.path.getsize(file_path)
-
-        for single_file in ["VERSION", "CMakeLists.txt"]:
-            file_path = os.path.join(repo_root, single_file)
-            if os.path.exists(file_path):
-                rel_path = single_file
-                zf.write(file_path, rel_path)
-                count += 1
-                total_uncompressed += os.path.getsize(file_path)
 
     zip_size = os.path.getsize(output_zip)
     print(f"Bundled {count} files ({total_uncompressed / (1024*1024):.2f} MB uncompressed) into {output_zip} ({zip_size / (1024*1024):.2f} MB compressed)")

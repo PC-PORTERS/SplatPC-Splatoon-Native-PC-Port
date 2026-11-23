@@ -67,9 +67,7 @@ std::string default_app_version() {
 }
 
 Attestation read_integrity_proof(const fs::path& game_dir) {
-    Attestation proof = attest(resolve_integrity_root(game_dir, default_integrity_root()));
-    if (proof.version.empty()) proof.version = default_app_version();
-    return proof;
+    return attest(resolve_integrity_root(game_dir, default_integrity_root()), default_app_version());
 }
 
 std::string trim_str(std::string s) {

@@ -25,6 +25,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -61,11 +63,12 @@ jobs:
           sudo mv squashfs-root /opt/appimagetool
           sudo ln -s /opt/appimagetool/AppRun /usr/local/bin/appimagetool
 
-      - name: Generate Version & Integrity Manifest
+      - name: Generate Integrity Manifest
+        id: version
         run: |
           TAG="${{ github.event.release.tag_name || github.event.inputs.tag || github.ref_name }}"
-          python3 scripts/integrity.py --write-version "$TAG" || true
-          python3 scripts/integrity.py --make
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          python3 scripts/integrity.py --make "$TAG"
 
       - name: Bundle Builder Assets
         run: |
@@ -74,7 +77,11 @@ jobs:
       - name: Build SplatPC-Builder AppImage
         run: |
           cd Builder
-          go build -trimpath -ldflags="-s -w" -o splatpc-builder .
+          LDFLAGS="-s -w"
+          if [ -n "${{ steps.version.outputs.tag }}" ]; then
+            LDFLAGS="$LDFLAGS -X 'splatpc-builder/engine.ReleaseTag=${{ steps.version.outputs.tag }}'"
+          fi
+          go build -trimpath -ldflags="$LDFLAGS" -o splatpc-builder .
           cd ..
 
           APPDIR="AppDir"
@@ -124,6 +131,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -136,13 +145,13 @@ jobs:
         run: |
           "C:\msys64\mingw64\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
-      - name: Generate Version & Integrity Manifest
+      - name: Generate Integrity Manifest
+        id: win_version
         shell: pwsh
         run: |
           $tag = "${{ github.event.release.tag_name || github.event.inputs.tag || github.ref_name }}"
-          python scripts/integrity.py --write-version "$tag"
-          if ($LASTEXITCODE -ne 0) { $global:LASTEXITCODE = 0 }
-          python scripts/integrity.py --make
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          python scripts/integrity.py --make "$tag"
 
       - name: Bundle Builder Assets
         shell: pwsh
@@ -155,7 +164,10 @@ jobs:
           cd Builder
           $env:CGO_ENABLED = "1"
           go generate ./winres.go
-          go build -trimpath -ldflags="-H windowsgui -s -w" -o ../SplatPC-Builder.exe .
+          $ldflags = "-H windowsgui -s -w"
+          $tag = "${{ steps.win_version.outputs.tag }}"
+          if ($tag) { $ldflags += " -X splatpc-builder/engine.ReleaseTag=$tag" }
+          go build -trimpath -ldflags="$ldflags" -o ../SplatPC-Builder.exe .
 
       - name: Package Windows release zip
         shell: pwsh
@@ -179,6 +191,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
         with:
           fetch-depth: 0
 
@@ -209,10 +223,9 @@ jobs:
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-      - name: Generate Version & Integrity Manifest
+      - name: Generate Integrity Manifest
         run: |
-          python3 scripts/integrity.py --write-version "${{ steps.tag.outputs.tag }}" || true
-          python3 scripts/integrity.py --make
+          python3 scripts/integrity.py --make "${{ steps.tag.outputs.tag }}"
           cp scripts/integrity-manifest.txt release-assets/integrity-manifest.txt
 
       - name: Generate Checksums

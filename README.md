@@ -54,7 +54,7 @@ Supported game versions: [VersionDb.md](VersionDb.md) (base game v16 and update 
 
 ---
 
-**More docs:** [Online play and anti-cheat](docs/ONLINE.md) · [Builder](docs/BUILDER.md) · [Run your own server](docs/SERVER.md) · [Update 288](docs/update-288.md)
+**More docs:** [Online play and anti-cheat](docs/ONLINE.md) · [Run your own server](docs/SERVER.md) · [Update 288](docs/update-288.md)
 
 ## Requirements
 

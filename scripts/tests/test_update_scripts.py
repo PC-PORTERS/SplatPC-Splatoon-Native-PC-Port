@@ -40,14 +40,11 @@ def write_dump(root, version, files):
 class UpdateCombinatorTests(unittest.TestCase):
     def test_no_legacy_batch_shell_or_ps1_scripts_remain(self):
         self.assertEqual(list(SCRIPTS.glob('*.ps1')), [])
-        for name in ('Setup.bat', 'setup.sh', 'Play-Online.bat', 'Play-Online.sh', 'HD-Textures.bat', 'HD-Textures.sh', 'update.bat'):
-            self.assertFalse((ROOT / name).exists(), name)
+        for name in ('Setup.bat', 'setup.sh', 'build.sh', 'Play-Online.bat', 'Play-Online.sh', 'HD-Textures.bat',
+                     'HD-Textures.sh', 'update.bat', 'scripts/Setup.ps1'):
+            self.assertFalse((ROOT / name).exists(), f'{name} should have been removed')
         self.assertFalse((SCRIPTS / 'splatoon_login.py').exists())
         self.assertFalse((SCRIPTS / 'friends_relay.py').exists())
-    def test_legacy_setup_and_hd_scripts_are_removed(self):
-        self.assertEqual(list(SCRIPTS.glob('*.ps1')), [])
-        for name in ('Setup.bat', 'setup.sh', 'build.sh', 'HD-Textures.bat', 'HD-Textures.sh', 'scripts/Setup.ps1'):
-            self.assertFalse((ROOT / name).exists(), f'{name} should have been removed')
 
     def test_builder_and_combinator_do_not_reference_legacy_scripts(self):
         embedded = text(ROOT / 'Builder/embedded/embedded.go')

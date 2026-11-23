@@ -38,7 +38,7 @@ int main() {
 #endif
         check(!rbrew_online::read_config().online, "RBREW_OFFLINE=1 keeps the game offline");
         rbrew_online::config_changed();
-        check(!rbrew_online::online_comfort(true), "comfort options stay off offline");
+        check(!rbrew_online::config().online, "config() reflects RBREW_OFFLINE=1");
         // "Play offline" wins over a server too (config() returns before reading anything).
 #if defined(_WIN32)
         _putenv_s("RBREW_OFFLINE", "");
@@ -46,7 +46,7 @@ int main() {
         unsetenv("RBREW_OFFLINE");
 #endif
         rbrew_online::set_session_offline(true);
-        check(!rbrew_online::online_comfort(true), "\"Play offline\" turns the comfort options off");
+        check(!rbrew_online::config().online, "\"Play offline\" disables online mode");
         rbrew_online::set_session_offline(false);
         rbrew_online::config_changed();
 #if defined(_WIN32)
