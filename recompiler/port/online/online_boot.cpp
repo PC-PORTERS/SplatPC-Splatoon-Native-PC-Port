@@ -4,6 +4,7 @@
 #include "integrity_proof.h"
 #include "online_login.h"
 #include "social_http.h"
+#include "wg_tunnel.h"
 
 #include "online_identity.h"
 #include "rebrewu/logger.hpp"
@@ -120,6 +121,24 @@ void stop_relay_locked() {
     s_relay = nullptr; // detached thread cleans up or stops on next wake
 }
 
+void start_wg_tunnel_if_enabled(Transport& transport, const std::string& register_path, const std::string& token) {
+    const char* disabled = std::getenv("RBREW_WG_DISABLE");
+    if (disabled && disabled[0] == '1') return;
+    if (token.empty() || WgTunnel::instance().active()) return;
+
+    std::string priv_key, pub_key;
+    if (!generate_wg_keypair(priv_key, pub_key)) return;
+
+    WgConfig wg_cfg;
+    std::string wg_err;
+    if (!fetch_wg_config(transport, derive_wg_path(register_path), token, pub_key, wg_cfg, wg_err)) {
+        RBREW_LOG_INFO("wireguard", "%s\n", wg_err.c_str());
+        return;
+    }
+    if (wg_cfg.private_key.empty()) wg_cfg.private_key = priv_key;
+    WgTunnel::instance().start(wg_cfg);
+}
+
 void relay_thread(RelayState* state, std::string register_url, std::string server, std::string pseudo,
                   fs::path game_dir, fs::path friends_dir, std::string initial_token, bool skip_register) {
     std::string base_url, register_path;
@@ -152,11 +171,16 @@ void relay_thread(RelayState* state, std::string register_url, std::string serve
     }
 
     FriendsRelay relay(*transport, id.pid, id.password, pseudo, game_dir, friends_dir, client_proof(proof));
-    if (!initial_token.empty()) relay.set_initial_token(initial_token);
-    relay.set_token_callback([game_dir, server, register_url, pseudo, pid = id.pid](const std::string& tok) {
+    if (!initial_token.empty()) {
+        relay.set_initial_token(initial_token);
+        start_wg_tunnel_if_enabled(*transport, register_path, initial_token);
+    }
+    relay.set_token_callback([game_dir, server, register_url, pseudo, pid = id.pid, &transport = *transport,
+                              register_path](const std::string& tok) {
         rbrew_online::save_session_token(
             rbrew_online::SessionToken{tok, server, register_url, pid, pseudo, int64_t(std::time(nullptr))},
             game_dir / "online_session.ini");
+        start_wg_tunnel_if_enabled(transport, register_path, tok);
     });
 
     if (initial_token.empty()) relay.claim_pseudo();
@@ -245,6 +269,7 @@ void online_boot() {
 }
 
 void online_shutdown() {
+    WgTunnel::instance().stop();
     {
         std::lock_guard lock(s_mu);
         stop_relay_locked();

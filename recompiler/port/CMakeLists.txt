@@ -246,8 +246,10 @@ add_library(gambit_online STATIC
     online/online_login.cpp
     online/py_random.cpp
     online/social_http.cpp
+    online/wg_tunnel.cpp
 )
-target_include_directories(gambit_online PRIVATE ${RBREW_NLOHMANN_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+target_include_directories(gambit_online PUBLIC ${RBREW_NLOHMANN_DIR})
+target_include_directories(gambit_online PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
 get_filename_component(RBREW_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
 set(RBREW_APP_VERSION "" CACHE STRING "Client release version injected from release tag")
 if(NOT RBREW_APP_VERSION)
@@ -276,6 +278,58 @@ if(WIN32)
     target_link_libraries(gambit_online PUBLIC winhttp bcrypt)
 else()
     target_link_libraries(gambit_online PUBLIC CURL::libcurl)
+endif()
+
+# Userspace WireGuard P2P client (boringtun fetched from GitHub + thin C-ABI shim).
+option(RBREW_ENABLE_BORINGTUN "Build and link the boringtun WireGuard P2P client" ON)
+find_program(CARGO_EXECUTABLE cargo)
+if(RBREW_ENABLE_BORINGTUN AND CARGO_EXECUTABLE)
+    set(RBREW_BORINGTUN_SRC "${CMAKE_CURRENT_SOURCE_DIR}/third_party/boringtun")
+    if(NOT EXISTS "${RBREW_BORINGTUN_SRC}/boringtun/Cargo.toml")
+        message(STATUS "boringtun: fetching tag boringtun-cli-0.7.1 from GitHub")
+        FetchContent_Declare(
+            boringtun_dl
+            GIT_REPOSITORY https://github.com/cloudflare/boringtun.git
+            GIT_TAG        boringtun-cli-0.7.1
+            GIT_SHALLOW    TRUE
+            SOURCE_DIR     "${RBREW_BORINGTUN_SRC}"
+            SOURCE_SUBDIR  "__none__"
+        )
+        FetchContent_GetProperties(boringtun_dl)
+        if(NOT boringtun_dl_POPULATED)
+            FetchContent_Populate(boringtun_dl)
+        endif()
+    else()
+        message(STATUS "boringtun: using cached source (third_party/boringtun)")
+    endif()
+    set(RBREW_BORINGTUN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/online/boringtun_ffi")
+    set(RBREW_BORINGTUN_TARGET_DIR "${CMAKE_CURRENT_BINARY_DIR}/boringtun_target")
+    if(WIN32)
+        set(RBREW_BORINGTUN_LIB "${RBREW_BORINGTUN_TARGET_DIR}/release/boringtun_client.lib")
+    else()
+        set(RBREW_BORINGTUN_LIB "${RBREW_BORINGTUN_TARGET_DIR}/release/libboringtun_client.a")
+    endif()
+    add_custom_command(
+        OUTPUT "${RBREW_BORINGTUN_LIB}"
+        COMMAND "${CMAKE_COMMAND}" -E env "CARGO_TARGET_DIR=${RBREW_BORINGTUN_TARGET_DIR}"
+                "${CARGO_EXECUTABLE}" build --release --manifest-path "${RBREW_BORINGTUN_DIR}/Cargo.toml"
+        DEPENDS "${RBREW_BORINGTUN_DIR}/Cargo.toml" "${RBREW_BORINGTUN_DIR}/src/lib.rs"
+                "${RBREW_BORINGTUN_SRC}/boringtun/Cargo.toml"
+        COMMENT "Building boringtun_client static library"
+        VERBATIM
+    )
+    add_custom_target(boringtun_client_build DEPENDS "${RBREW_BORINGTUN_LIB}")
+    add_library(boringtun_client STATIC IMPORTED GLOBAL)
+    set_target_properties(boringtun_client PROPERTIES IMPORTED_LOCATION "${RBREW_BORINGTUN_LIB}")
+    add_dependencies(boringtun_client boringtun_client_build)
+    target_include_directories(gambit_online PRIVATE "${RBREW_BORINGTUN_DIR}/include")
+    target_compile_definitions(gambit_online PRIVATE RBREW_HAS_BORINGTUN=1)
+    target_link_libraries(gambit_online PUBLIC boringtun_client)
+    if(WIN32)
+        target_link_libraries(gambit_online PUBLIC ws2_32 userenv ntdll bcrypt)
+    else()
+        target_link_libraries(gambit_online PUBLIC pthread dl m)
+    endif()
 endif()
 if(MSVC)
     target_compile_options(gambit_online PRIVATE /utf-8)

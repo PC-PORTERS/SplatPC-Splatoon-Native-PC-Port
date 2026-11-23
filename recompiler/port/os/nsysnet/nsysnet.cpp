@@ -66,6 +66,7 @@ typedef int ssize_t;
 #include <thread>
 #include <climits>
 #include <charconv>
+#include "../../online/wg_tunnel.h"
 #include "../../runtime/online_identity.h"
 
 // ---------------------------------------------------------------------------
@@ -493,6 +494,7 @@ static void socketclose(CPUState* cpu) {
         return;
     }
     ++s_socket_modes[fd].generation;
+    rbrew_native::WgTunnel::instance().unregister_socket(int(fd));
     net_result(cpu, CLOSE_SOCKET(s));
 }
 static void socketlasterr(CPUState* cpu) {
@@ -517,15 +519,20 @@ static void bind_(CPUState* cpu) {
         net_fail(cpu, kErrBadFd);
         return;
     }
-    net_result(cpu, ::bind(s, reinterpret_cast<sockaddr*>(&sa), sizeof(sa)));
-    if (net_trace_file()) { // requested and actual local port (peer-to-peer diagnosis, 27/10)
+    const int bind_rc = ::bind(s, reinterpret_cast<sockaddr*>(&sa), sizeof(sa));
+    net_result(cpu, bind_rc);
+    if (bind_rc == 0) {
         sockaddr_in local{};
         socklen_t size = sizeof(local);
-        ::getsockname(s, reinterpret_cast<sockaddr*>(&local), &size);
-        char detail[96];
-        std::snprintf(detail, sizeof(detail), "fd=%u requested=%u bound=%u", fd, unsigned(ntohs(sa.sin_port)),
-                      unsigned(ntohs(local.sin_port)));
-        net_note("bind", detail);
+        if (::getsockname(s, reinterpret_cast<sockaddr*>(&local), &size) == 0) {
+            rbrew_native::WgTunnel::instance().register_udp_socket(int(fd), ntohs(local.sin_port));
+            if (net_trace_file()) { // requested and actual local port (peer-to-peer diagnosis, 27/10)
+                char detail[96];
+                std::snprintf(detail, sizeof(detail), "fd=%u requested=%u bound=%u", fd, unsigned(ntohs(sa.sin_port)),
+                              unsigned(ntohs(local.sin_port)));
+                net_note("bind", detail);
+            }
+        }
     }
 }
 static void connect_(CPUState* cpu) {
@@ -625,6 +632,38 @@ static void sendto_(CPUState* cpu) {
         return;
     }
     const uint32_t dest = ntohl(sa.sin_addr.s_addr);
+    auto& wg = rbrew_native::WgTunnel::instance();
+    if (wg.contains_ip(dest)) {
+        net_policy().add_peer(dest);
+        uint16_t local_port = 0;
+        {
+            std::lock_guard lock(s_socket_io_mutex);
+            const HostSocket s = host_socket(fd);
+            if (s == HostSocket(INVALID_SOCKET)) {
+                net_fail(cpu, kErrBadFd);
+                return;
+            }
+            sockaddr_in local{};
+            socklen_t lsize = sizeof(local);
+            if (::getsockname(s, reinterpret_cast<sockaddr*>(&local), &lsize) != 0 || local.sin_port == 0) {
+                sockaddr_in bind_sa{};
+                bind_sa.sin_family = AF_INET;
+                bind_sa.sin_addr.s_addr = htonl(INADDR_ANY);
+                bind_sa.sin_port = 0;
+                ::bind(s, reinterpret_cast<sockaddr*>(&bind_sa), sizeof(bind_sa));
+                lsize = sizeof(local);
+                ::getsockname(s, reinterpret_cast<sockaddr*>(&local), &lsize);
+            }
+            local_port = ntohs(local.sin_port);
+        }
+        const int n = wg.send_udp(int(fd), local_port, dest, ntohs(sa.sin_port), MEM + buffer, size_t(length));
+        net_packet("sendto(wg)", fd, dest, ntohs(sa.sin_port), MEM + buffer, n);
+        if (n < 0)
+            net_fail(cpu, kErrInvalid);
+        else
+            RET = uint32_t(n);
+        return;
+    }
     // Online: a match host learns its players' addresses from the server's NAT traversal
     // calls, which this layer cannot read, so a datagram to any unicast address is let
     // through and that address joins the bounded, expiring peer list. Names still resolve
@@ -651,6 +690,26 @@ static void recvfrom_(CPUState* cpu) {
         return;
     }
     if (address) capacity = rbrew_read32(MEM, alen);
+    auto& wg = rbrew_native::WgTunnel::instance();
+    if (wg.has_pending_rx(int(fd))) {
+        uint32_t src_ip = 0;
+        uint16_t src_port = 0;
+        const int n = wg.recv_udp(int(fd), MEM + buffer, size_t(length), &src_ip, &src_port, true);
+        if (n >= 0) {
+            if (address) {
+                sockaddr_in wg_sa{};
+                wg_sa.sin_family = AF_INET;
+                wg_sa.sin_addr.s_addr = htonl(src_ip);
+                wg_sa.sin_port = htons(src_port);
+                host_to_guest_sockaddr(MEM, address, &wg_sa, capacity);
+                rbrew_write32(MEM, alen, 16);
+            }
+            net_packet("recvfrom(wg)", fd, src_ip, src_port, MEM + buffer, n);
+            net_calls_arm();
+            RET = uint32_t(n);
+            return;
+        }
+    }
     sockaddr_in sa{};
     socklen_t size = sizeof(sa);
     // RBREW_STRICT_UDP_IN=1 (off by default until it is tested between two real networks): online,
@@ -793,6 +852,15 @@ static void select_(CPUState* cpu) {
                         if (FD_ISSET(h, &w)) wout |= 1u << i;
                         if (FD_ISSET(h, &e)) eout |= 1u << i;
                     }
+            auto& wg = rbrew_native::WgTunnel::instance();
+            if (wg.active()) {
+                for (int i = 0; i < nfds; ++i) {
+                    if ((rbits & (1u << i)) && !(rout & (1u << i)) && wg.has_pending_rx(i)) {
+                        rout |= 1u << i;
+                        ++rc;
+                    }
+                }
+            }
         }
         const bool expired =
             timeout >= 0 &&
