@@ -387,6 +387,9 @@ static int map_so_option(int wii_opt) {
     }
 }
 
+static constexpr int kWiiIpTtl = 4;    // IP_TTL in the Wii U numbering
+static constexpr int kDefaultTtl = 64; // the TTL a Wii U sends with
+
 // ---------------------------------------------------------------------------
 // select() fd_set conversion
 // Wii U fd_set: big-endian uint32 bitmap (bit N = fd N, from LSB)
@@ -854,6 +857,9 @@ static void setsockopt_(CPUState* cpu) {
     }
     const int option = level == SOL_SOCKET ? map_so_option(int(opt)) : int(opt);
     int value = int(rbrew_read32(MEM, vp));
+    // PIA restores the TTL after its low-TTL NAT probes with IP_TTL 0, the Wii U default. Windows kept the
+    // probe TTL (4) instead, so no packet of the host got past a few routers.
+    if (level == IPPROTO_IP && opt == kWiiIpTtl && value == 0) value = kDefaultTtl;
     if (level == SOL_SOCKET && opt == 0x80) {
         const uint32_t seconds = rbrew_read32(MEM, vp + 4);
         if (seconds > 65535) {
