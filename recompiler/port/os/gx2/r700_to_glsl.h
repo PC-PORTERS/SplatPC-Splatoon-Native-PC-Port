@@ -3,6 +3,7 @@
 // Entry point: r700_to_glsl().  Returns a heap-allocated GLSL source string;
 // caller must free() the result.  Returns nullptr on fatal parse error.
 #pragma once
+#include "r700_translation_reads.h"
 #include <stdint.h>
 #include <array>
 #include <span>
@@ -76,6 +77,7 @@ char* r700_to_glsl(const R700TranslateInput& in);
 
 void r700_shader_registers(uint32_t* regs, const uint8_t* descriptor, bool pixel);
 void r700_texture_registers(uint32_t* regs, const uint8_t* texture, uint32_t native_slot);
+R700TranslationReads r700_scan_shader_reads(const uint8_t* data, uint32_t size, bool is_pixel);
 // Native assembly for Latte three-corner RECT and four-vertex QUAD primitives.
 std::string r700_rect_geometry(const char* vertex_source, bool quad = false);
 

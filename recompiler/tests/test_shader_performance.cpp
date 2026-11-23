@@ -464,6 +464,23 @@ void translation() {
     auto* without_registers = r700_to_glsl(zero_registers);
     require(without_registers && expected[0] == without_registers, "absent register snapshot was not zeroed");
     std::free(without_registers);
+    {
+        // Fast bytecode read scanner must match full translation reads for VS/PS.
+        const auto scan_vs = r700_scan_shader_reads(reinterpret_cast<const uint8_t*>(programs[0].data()),
+                                                    uint32_t(programs[0].size() * 4), false);
+        const auto full_vs = r700_last_translation_reads();
+        require(scan_vs.valid && full_vs.valid && scan_vs.vs_parameter_mask == full_vs.vs_parameter_mask &&
+                    scan_vs.texture_unit_mask == full_vs.texture_unit_mask,
+                "r700_scan_shader_reads mismatch for VS");
+        const auto ps_code = bytecode(8, true, 0);
+        auto ps_src = translate(ps_code, true);
+        const auto full_ps = r700_last_translation_reads();
+        const auto scan_ps = r700_scan_shader_reads(reinterpret_cast<const uint8_t*>(ps_code.data()),
+                                                    uint32_t(ps_code.size() * 4), true);
+        require(!ps_src.text.empty() && scan_ps.valid && full_ps.valid && scan_ps.vs_parameter_mask == 0 &&
+                    scan_ps.texture_unit_mask == full_ps.texture_unit_mask,
+                "r700_scan_shader_reads mismatch for PS");
+    }
     measure("gx2_to_glsl", 240, [&](unsigned i) {
         auto source = translate(programs[i % programs.size()], false);
         require(source.text == expected[i % programs.size()], "GX2 translation is nondeterministic");
