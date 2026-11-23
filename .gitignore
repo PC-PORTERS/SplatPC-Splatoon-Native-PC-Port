@@ -85,6 +85,7 @@ server.json
 # and generated files (such as integrity-manifest.txt) stay untracked.
 /scripts/*
 !/scripts/hd_textures.py
+!/scripts/install-hooks.sh
 !/scripts/git-hooks/
 !/scripts/git-hooks/*
 

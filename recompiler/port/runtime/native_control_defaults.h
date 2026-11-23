@@ -137,23 +137,6 @@ inline int active_scene_type(uint8_t* mem, int* id = nullptr) {
     return int(type);
 }
 
-// The player's "motion controls" option: byte +0x182 of the control manager
-// (the GamePad option copied to +0x17C by 020355C0). 288 reads the same
-// fields at 02294100 from *(0x101DDF64), as base 02243708 does from
-// *(0x101C1D34). Read-only; -1 while the manager does not exist yet.
-inline int motion_controls(uint8_t* mem) {
-#if RBREW_GAME_REVISION == 288
-    constexpr uint32_t kManager = 0x101DDF64u;
-#else
-    constexpr uint32_t kManager = 0x101C1D34u;
-#endif
-    if (!mem) return -1;
-    const uint32_t manager = rbrew_read32(mem, kManager);
-    if (!manager || uint64_t(manager) + 0x184 > WIIU_MEM_SIZE || !rbrew_memory_accessible(mem, manager + 0x182, 1))
-        return -1;
-    return mem[manager + 0x182] ? 1 : 0;
-}
-
 inline void apply_live(uint8_t* mem) {
 #if RBREW_GAME_REVISION == 288
     // The save and control manager addresses below are base ones: on 288 they

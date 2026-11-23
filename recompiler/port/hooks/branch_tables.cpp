@@ -4,15 +4,6 @@
 // instructions. RebrewU translated only the first slot, so any other case dispatched to an
 // unregistered address; the dispatcher returned silently and the function left without popping its
 // frame or restoring r30: stack and registers were wrong afterwards (freezes and crashes).
-// The case blocks are generated with `rebrewu --hints-file profiles/agmp-v288.tables` (their entries
-// are listed there) and registered by gambit_tables_register(); this file points each table slot at
-// the block it branches to. Address metadata only. Before the first generation that includes the
-// hints, gambit_tables_register falls back to a no-op and the slots stay unregistered, as before.
-// The same tables are also listed in the `[branch_tables]` section of Manifest/Gambit_v288.manifest;
-// the values below are kept here so this file does not depend on the generated header.
-#include "../runtime/rebrewu_runtime.h"
-#include "rebrewu/logger.hpp"
-#include "../os/vpad/vpad_addrs.h"
 // The case blocks are generated from the manifest `[entries]` section (`force` entries) and registered
 // by gambit_tables_register(); this file points each table slot at the block it branches to, from the
 // manifest `[branch_tables]` section (generated header game_branch_tables.h).

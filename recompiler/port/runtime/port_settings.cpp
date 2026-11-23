@@ -112,7 +112,6 @@ void publish(const Values& v) {
     g_phone_gamepad.store(v.phone_gamepad, std::memory_order_relaxed);
     g_phone_port.store(v.phone_port, std::memory_order_relaxed);
     g_gamepad_audio_pc.store(v.gamepad_audio_pc, std::memory_order_relaxed);
-    g_mouse_pad_aim.store(v.mouse_pad_aim, std::memory_order_relaxed);
     g_rumble.store(v.rumble, std::memory_order_relaxed);
     g_gyro.store(v.gyro, std::memory_order_relaxed);
     g_gyro_invert_pitch.store(v.gyro_invert_pitch, std::memory_order_relaxed);
@@ -369,7 +368,7 @@ void load() {
     Values v;
     // Online play keeps the 0.1.5 comfort options unless the file sets them. The menu never writes them
     // (write() keeps them as foreign lines), so an online session cannot turn them on for offline play.
-    v.gamepad_audio_pc = v.mouse_pad_aim = v.rumble = rbrew_online::config().online;
+    v.gamepad_audio_pc = v.rumble = rbrew_online::config().online;
     bool saw_frame_rate = false;
     int bindings_version = 1;
     std::ifstream in(file_path());
@@ -402,8 +401,6 @@ void load() {
             v.phone_port = (number >= 1024 && number <= 65535) ? number : 8771;
         else if (key == "gamepad_audio_pc")
             v.gamepad_audio_pc = number != 0;
-        else if (key == "mouse_pad_aim")
-            v.mouse_pad_aim = number != 0;
         else if (key == "rumble")
             v.rumble = number != 0;
         else if (key == "fps_overlay")

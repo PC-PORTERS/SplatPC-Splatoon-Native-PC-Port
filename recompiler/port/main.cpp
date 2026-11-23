@@ -33,13 +33,7 @@
 
 struct OverlayHostMapping {
     uint8_t* arena;
-    bool committed{};
 };
-
-// RBREW_GUEST_GUARD=1: only the guest regions are accessible, any other guest address faults.
-// Off by default: the first shot of an online match faulted on stray addresses with it on, on a build
-// whose branch tables were empty; not retried since. The fully committed aperture absorbs such accesses.
-static bool g_guest_guard = false;
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -47,52 +41,19 @@ static void platform_sleep_us(unsigned us) {
     Sleep(us / 1000);
 }
 static uint8_t* alloc_arena(size_t sz) {
-    // Write watch lets the renderer skip guest pages the CPU did not write
-    // since it last copied them (gx2_write_watch.h).
-    if (!g_guest_guard)
-        return static_cast<uint8_t*>(
-            VirtualAlloc(nullptr, sz, MEM_RESERVE | MEM_COMMIT | MEM_WRITE_WATCH, PAGE_READWRITE));
-    auto p = static_cast<uint8_t*>(VirtualAlloc(nullptr, sz, MEM_RESERVE | MEM_WRITE_WATCH, PAGE_NOACCESS));
-    if (p && (!VirtualAlloc(p, RBREW_APPLICATION_ARENA_END, MEM_COMMIT, PAGE_READWRITE) ||
-              !VirtualAlloc(p + RBREW_FG_FREE_BASE, RBREW_FG_FREE_SIZE, MEM_COMMIT, PAGE_READWRITE) ||
-              !VirtualAlloc(p + RBREW_MEM1_BASE, RBREW_MEM1_SIZE, MEM_COMMIT, PAGE_READWRITE) ||
-              !VirtualAlloc(p + RBREW_SHARED_DATA_BASE, RBREW_SHARED_DATA_SIZE, MEM_COMMIT, PAGE_READWRITE))) {
-        VirtualFree(p, 0, MEM_RELEASE);
-        return nullptr;
-    }
-    return p;
+    // One flat aperture over the whole 32-bit guest address space, committed
+    // at startup (pages stay demand-zero until touched). Write watch lets the
+    // renderer skip guest pages the CPU did not write since it last copied
+    // them (gx2_write_watch.h).
+    return static_cast<uint8_t*>(VirtualAlloc(nullptr, sz, MEM_RESERVE | MEM_COMMIT | MEM_WRITE_WATCH, PAGE_READWRITE));
 }
 static bool map_overlay(void* user, uint32_t base, uint32_t size, bool enable) {
     if (!user || base != RBREW_OVERLAY_BASE || size != RBREW_OVERLAY_SIZE) return false;
     auto& mapping = *static_cast<OverlayHostMapping*>(user);
-    if (!g_guest_guard) {
-        rbrew_set_overlay_access(mapping.arena, enable);
-        if (enable) RBREW_LOG_INFO("MEM", "OverlayArena mapped: base=%08X size=%08X\n", base, size);
-        return true;
-    }
-    auto p = mapping.arena + base;
-    if (enable) {
-        if (!mapping.committed) {
-            if (VirtualAlloc(p, size, MEM_COMMIT, PAGE_READWRITE) != p) return false;
-            mapping.committed = true;
-        } else {
-            DWORD old_protection;
-            if (!VirtualProtect(p, size, PAGE_READWRITE, &old_protection)) return false;
-        }
-        try {
-            rbrew_set_overlay_access(mapping.arena, true);
-        } catch (...) {
-            DWORD old_protection;
-            VirtualProtect(p, size, PAGE_NOACCESS, &old_protection);
-            throw;
-        }
-        RBREW_LOG_INFO("MEM", "OverlayArena mapped: base=%08X size=%08X\n", base, size);
-        return true;
-    }
-    // Cafe unmaps the aperture; its backing storage survives a later remap.
-    DWORD old_protection;
-    if (!VirtualProtect(p, size, PAGE_NOACCESS, &old_protection)) return false;
-    rbrew_set_overlay_access(mapping.arena, false);
+    // The aperture is already committed; only guest-visible accessibility
+    // changes (the checked path consults the overlay registry).
+    rbrew_set_overlay_access(mapping.arena, enable);
+    if (enable) RBREW_LOG_INFO("MEM", "OverlayArena mapped: base=%08X size=%08X\n", base, size);
     return true;
 }
 static void free_arena(uint8_t* p, size_t sz) {
@@ -329,39 +290,18 @@ static void platform_sleep_us(unsigned us) {
     usleep(us);
 }
 static uint8_t* alloc_arena(size_t sz) {
-    if (!g_guest_guard) {
-        void* all = mmap(nullptr, sz, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-        return all == MAP_FAILED ? nullptr : static_cast<uint8_t*>(all);
-    }
-    void* p = mmap(nullptr, sz, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    // One flat aperture over the whole 32-bit guest address space, mapped
+    // readable/writable at startup (pages stay demand-zero until touched).
+    void* p = mmap(nullptr, sz, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (p == MAP_FAILED) return nullptr;
-    auto* base = static_cast<uint8_t*>(p);
-    if (mprotect(p, RBREW_APPLICATION_ARENA_END, PROT_READ | PROT_WRITE) ||
-        mprotect(base + RBREW_FG_FREE_BASE, RBREW_FG_FREE_SIZE, PROT_READ | PROT_WRITE) ||
-        mprotect(base + RBREW_MEM1_BASE, RBREW_MEM1_SIZE, PROT_READ | PROT_WRITE) ||
-        mprotect(base + RBREW_SHARED_DATA_BASE, RBREW_SHARED_DATA_SIZE, PROT_READ | PROT_WRITE)) {
-        munmap(p, sz);
-        return nullptr;
-    }
     return static_cast<uint8_t*>(p);
 }
 static bool map_overlay(void* user, uint32_t base, uint32_t size, bool enable) {
     if (!user || base != RBREW_OVERLAY_BASE || size != RBREW_OVERLAY_SIZE) return false;
     auto& mapping = *static_cast<OverlayHostMapping*>(user);
-    if (!g_guest_guard) {
-        rbrew_set_overlay_access(mapping.arena, enable);
-        if (enable) RBREW_LOG_INFO("MEM", "OverlayArena mapped: base=%08X size=%08X\n", base, size);
-        return true;
-    }
-    auto p = mapping.arena + base;
-    if (mprotect(p, size, enable ? (PROT_READ | PROT_WRITE) : PROT_NONE)) return false;
-    mapping.committed = true;
-    try {
-        rbrew_set_overlay_access(mapping.arena, enable);
-    } catch (...) {
-        mprotect(p, size, enable ? PROT_NONE : (PROT_READ | PROT_WRITE));
-        throw;
-    }
+    // The aperture is already mapped; only guest-visible accessibility
+    // changes (the checked path consults the overlay registry).
+    rbrew_set_overlay_access(mapping.arena, enable);
     if (enable) RBREW_LOG_INFO("MEM", "OverlayArena mapped: base=%08X size=%08X\n", base, size);
     return true;
 }
@@ -483,12 +423,9 @@ int main(int argc, char** argv) {
                    getenv("RBREW_CONTENT_DIR") ? getenv("RBREW_CONTENT_DIR") : "./content");
 
     // 1. Allocate the shared native layout, including application heap memory.
-    // The whole 32-bit guest space plus a guard is reserved. With RBREW_GUEST_GUARD=1 nothing outside
-    // the committed regions is accessible, so a bad guest pointer (network data) only faults.
-    const char* guard_env = getenv("RBREW_GUEST_GUARD");
-    g_guest_guard = guard_env && guard_env[0] == '1';
-    RBREW_LOG_INFO("MEM", "Guest address guard: %s\n", g_guest_guard ? "on" : "off");
-    const size_t arena_sz = size_t(g_guest_guard ? RBREW_GUEST_GUARDED_APERTURE_SIZE : RBREW_GUEST_APERTURE_SIZE);
+    // The aperture spans the whole 32-bit guest address space so any guest
+    // effective address is a plain offset into it.
+    const size_t arena_sz = size_t(RBREW_GUEST_APERTURE_SIZE);
     uint8_t* arena = alloc_arena(arena_sz);
     if (!arena) {
         RBREW_LOG_ERROR("gambit", "Failed to allocate %zu MB guest arena\n", arena_sz >> 20);

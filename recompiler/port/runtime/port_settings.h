@@ -70,7 +70,6 @@ struct Values {
     int phone_port = 8771;       // its local network port
     // Comfort options, off as on main; online mode turns them on unless settings.ini says otherwise.
     bool gamepad_audio_pc = false;  // the GamePad speaker mixed into the PC output (snd_core.cpp)
-    bool mouse_pad_aim = false;     // stick mouse mode: motion aiming moves the virtual pad (vpad.cpp)
     bool rumble = false;            // GamePad rumble on the controller (vpad.cpp; RBREW_RUMBLE=0/1 wins)
     bool fps_overlay = false;       // debug overlay (F3), hidden at launch; RBREW_FPS_OVERLAY
     bool simple_overlay = false;    // FPS / frame time / max FPS readout; RBREW_SIMPLE_OVERLAY
@@ -145,7 +144,6 @@ inline std::atomic<bool> g_gamepad_window{false};
 inline std::atomic<bool> g_phone_gamepad{false};
 inline std::atomic<int> g_phone_port{8771};
 inline std::atomic<bool> g_gamepad_audio_pc{false};
-inline std::atomic<bool> g_mouse_pad_aim{false};
 inline std::atomic<bool> g_rumble{false};
 inline std::atomic<bool> g_gyro{true};
 inline std::atomic<bool> g_gyro_invert_pitch{false};

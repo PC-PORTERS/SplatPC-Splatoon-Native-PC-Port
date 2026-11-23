@@ -36,9 +36,6 @@
 #include "../../hooks/camera_follow.h"
 #include "../../hooks/mouse_camera.h"
 #include <algorithm>
-#include <fstream>
-#include <cstring>
-#include <vector>
 #include <atomic>
 #include <cstdlib>
 #include <chrono>
@@ -109,12 +106,6 @@ static constexpr uint32_t kActionButtons[rbrew_settings::kFirstMoveAction] = {
 // Mouse sensitivity for right-stick camera: stick_delta = pixel_delta * sensitivity.
 // ~200 px swipe across the screen ≈ full right-stick deflection at this value.
 static constexpr float KBM_MOUSE_SENSITIVITY = 0.005f;
-// Mouse aiming through the virtual GamePad (motion controls): degrees of pad
-// rotation per mouse count at sensitivity 1. Linear, no clamp, no curve, so
-// a mouse motion always turns the camera by the same angle, as in PC games.
-// The stick path makes a mouse delta a stick deflection, which the game then
-// ramps up (its stick acceleration) and which saturates at full deflection.
-static constexpr float KBM_MOUSE_DEGREES = 0.06f;
 
 // True while the mouse, not a controller's right stick, is aiming.
 static bool s_mouse_aims = false;
@@ -210,39 +201,10 @@ struct VirtualMotion {
     Mat3 base{{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}}; // orientation at the last VPADSetGyroDirection
     float yaw = 0, pitch = 0;                     // degrees from base
     float angle[3] = {};                          // revolutions, device axes
-    float mouse_acc = 0;                          // degrees of yaw that came from the mouse
     uint64_t last_ns = 0;
 };
 static std::mutex s_motion_lock;
 static VirtualMotion s_motion;
-// RBREW_MOUSE_VARIANT (diagnostic): how the mouse yaw reaches the game.
-// 0 gyro rate + direction + angle, 1 not the rate, 2 not the direction,
-// 3 not the angle, 4 gyro and a virtual right-stick push (default), 5 stick push only (yaw).
-static int mouse_variant() {
-    static const int value = [] {
-        const char* p = std::getenv("RBREW_MOUSE_VARIANT");
-        return p && *p >= '0' && *p <= '5' ? *p - '0' : 4;
-    }();
-    return value;
-}
-// Degrees per second of mouse turn that fill the right stick (variants 4 and 5).
-static float mouse_stick_rate() {
-    static const float value = [] {
-        const char* p = std::getenv("RBREW_MOUSE_STICK_RATE");
-        const float f = p && *p ? std::strtof(p, nullptr) : 300.0f;
-        return f >= 30.0f && f <= 3000.0f ? f : 300.0f;
-    }();
-    return value;
-}
-// RBREW_GYRO_TRACE=<file> (diagnostic, off by default): direction resets and,
-// every 30 updates, the virtual pad's pitch/yaw, its inputs and the gravity.
-static FILE* gyro_trace() {
-    static FILE* const file = [] {
-        const char* p = std::getenv("RBREW_GYRO_TRACE");
-        return p && *p ? std::fopen(p, "w") : nullptr;
-    }();
-    return file;
-}
 // Pitch the virtual pad rests at after VPADSetGyroDirection (degrees, negative
 // tilts the top back), as a GamePad is held. The game resets the direction to
 // identity at every load; resting flat there, the camera spawned looking at
@@ -281,22 +243,18 @@ static bool physical_gyro_enabled() {
 // DualShock/DualSense the tutorial camera ignored the right stick and the
 // reported acceleration no longer matched the reported orientation.
 void vpad_update_motion(uint8_t* mem, uint32_t buf, float rx, float ry, float dt, const float* phys_gyro = nullptr,
-                        const float* /*phys_accel*/ = nullptr, bool tutorial = false, float mouse_yaw = 0.0f,
-                        float mouse_pitch = 0.0f) {
+                        const float* /*phys_accel*/ = nullptr) {
     std::lock_guard lock(s_motion_lock);
     VirtualMotion& v = s_motion;
-    // Squared response keeps small deflections precise. Outside the tutorial
-    // the game already turns the camera with stick X itself; also yawing the
-    // virtual pad turned it twice as fast with motion controls on. The
-    // tutorial locks stick aiming and aims only with the pad, so there stick
-    // X (and the mouse) yaw the pad, otherwise the camera only moves up and
-    // down. Stick Y: see below.
-    // RBREW_STICK_GYRO_YAW=1 yaws everywhere, =0 never (unset: tutorial only).
-    static const int stick_yaw_mode = [] { // 0 never, 1 always, 2 tutorial
+    // Squared response keeps small deflections precise. The game already turns
+    // the camera with stick X itself; also yawing the virtual pad turned it
+    // twice as fast with motion controls on. Stick Y stays: with motion
+    // controls the game ignores stick Y and pitches only by the pad.
+    // RBREW_STICK_GYRO_YAW=1 restores the stick-driven yaw.
+    static const bool stick_yaw = [] {
         const char* v = std::getenv("RBREW_STICK_GYRO_YAW");
-        return v && v[0] == '1' ? 1 : v && v[0] == '0' ? 0 : 2;
+        return v && v[0] == '1';
     }();
-    const bool stick_yaw = stick_yaw_mode == 1 || (stick_yaw_mode == 2 && tutorial);
     // With a real gyro the stick no longer tilts the pad either: on the
     // console, motion controls aim vertically only by moving the GamePad, but
     // stick Y pitched the virtual pad here, so the camera went up and down
@@ -338,47 +296,21 @@ void vpad_update_motion(uint8_t* mem, uint32_t buf, float rx, float ry, float dt
         pitch_rate += invert_pitch ? rate(phys_gyro[0]) : -rate(phys_gyro[0]);
         yaw_rate += invert_yaw ? -rate(phys_gyro[1]) : rate(phys_gyro[1]);
     }
-    // Mouse: an angle this step (degrees), reported to the game as rate too.
-    if (mouse_variant() == 5) mouse_yaw = 0.0f; // yaw goes through the stick only
-    if (dt > 0)
-        yaw_rate += mouse_yaw / dt;
-    else
-        v.yaw += mouse_yaw;
-    rbrew_camtrace::add_motion(dt, traced_mouse_yaw + mouse_yaw, traced_mouse_pitch + mouse_pitch, yaw_rate, rx, ry);
+    rbrew_camtrace::add_motion(dt, traced_mouse_yaw, traced_mouse_pitch, yaw_rate, rx, ry);
     v.yaw = std::fmod(v.yaw + yaw_rate * dt, 360.0f);
-    v.mouse_acc += mouse_yaw;
-    const int variant = mouse_variant();
-    const float mouse_rate = dt > 0 ? mouse_yaw / dt : 0.0f;
-    const float report_rate = yaw_rate - (variant == 1 ? mouse_rate : 0.0f);
-    const float dir_yaw = v.yaw - (variant == 2 ? v.mouse_acc : 0.0f);
-    // RBREW_MOUSE_TRACE=<file> (diagnostic, off by default): one line per read.
-    static FILE* const mouse_trace = [] {
-        const char* p = std::getenv("RBREW_MOUSE_TRACE");
-        return p && *p ? std::fopen(p, "w") : nullptr;
-    }();
-    // Direct mode accumulates in s_mouse_yaw (traced_mouse_yaw), the other modes pass mouse_yaw.
-    static unsigned trace_read = 0;
-    ++trace_read;
-    if (mouse_trace) { // every read, so reads that receive 0 right after a motion show up too
-        std::fprintf(
-            mouse_trace,
-            "read=%u dt=%.4f direct_yaw=%.3f mouse_yaw=%.3f mouse_pitch=%.3f yaw_rate=%.1f yaw=%.2f tutorial=%d\n",
-            trace_read, dt, traced_mouse_yaw, mouse_yaw, mouse_pitch, yaw_rate, v.yaw, int(tutorial));
-        std::fflush(mouse_trace);
-    }
-    const float pitch = std::fmax(-kPitchLimit, std::fmin(kPitchLimit, v.pitch + pitch_rate * dt + mouse_pitch));
+    const float pitch = std::fmax(-kPitchLimit, std::fmin(kPitchLimit, v.pitch + pitch_rate * dt));
     const float applied_pitch_rate = dt > 0 ? (pitch - v.pitch) / dt : 0.0f;
     v.pitch = pitch;
-    const Mat3 r = mat_mul(mat_mul(rotation_y(dir_yaw * kPi / 180), v.base), rotation_x(v.pitch * kPi / 180));
+    const Mat3 r = mat_mul(mat_mul(rotation_y(v.yaw * kPi / 180), v.base), rotation_x(v.pitch * kPi / 180));
     // World angular velocity: yaw about world Y plus pitch about the pad's X axis.
-    const Mat3 yawed = mat_mul(rotation_y(dir_yaw * kPi / 180), v.base);
+    const Mat3 yawed = mat_mul(rotation_y(v.yaw * kPi / 180), v.base);
     float world[3];
-    for (int i = 0; i < 3; ++i) world[i] = yawed.m[i][0] * applied_pitch_rate + (i == 1 ? report_rate : 0.0f);
+    for (int i = 0; i < 3; ++i) world[i] = yawed.m[i][0] * applied_pitch_rate + (i == 1 ? yaw_rate : 0.0f);
     float gyro[3], gravity[3];
     for (int axis = 0; axis < 3; ++axis) {
         gyro[axis] = (r.m[0][axis] * world[0] + r.m[1][axis] * world[1] + r.m[2][axis] * world[2]) / 360.0f;
         gravity[axis] = -r.m[1][axis]; // R^T (0, -1, 0)
-        v.angle[axis] += (gyro[axis] - (variant == 3 ? r.m[1][axis] * mouse_rate / 360.0f : 0.0f)) * dt;
+        v.angle[axis] += gyro[axis] * dt;
     }
     for (int axis = 0; axis < 3; ++axis) {
         write_float(mem, buf + 0x1C + 4 * axis, gravity[axis]);
@@ -406,15 +338,6 @@ static void VPADSetGyroDirection(CPUState* cpu) {
     for (int axis = 0; axis < 3; ++axis)
         for (int component = 0; component < 3; ++component)
             s_motion.base.m[component][axis] = float(rbrew_read_f32(MEM, dir + 12 * axis + 4 * component));
-    if (FILE* f = gyro_trace()) {
-        const auto& m = s_motion.base.m;
-        std::fprintf(f,
-                     "SetGyroDirection lr=%08X after pitch=%.1f yaw=%.1f  x(%.2f %.2f %.2f) y(%.2f %.2f %.2f) z(%.2f "
-                     "%.2f %.2f)\n",
-                     cpu->lr, s_motion.pitch, s_motion.yaw, m[0][0], m[1][0], m[2][0], m[0][1], m[1][1], m[2][1],
-                     m[0][2], m[1][2], m[2][2]);
-        std::fflush(f);
-    }
     s_motion.yaw = 0;
     s_motion.pitch = rest_pitch();
     rbrew_mouse_camera::pitch_aim().reset();
@@ -502,11 +425,6 @@ static void VPADRead(CPUState* cpu) {
                        std::fabs(ry) > 0.5f;
     }
 
-    const int scene_type = rbrew_control_defaults::active_scene_type(MEM); // 5 TutForShow, 6 Tutorial
-    const bool tutorial = scene_type == 5 || scene_type == 6;
-    const bool motion_aim = tutorial || rbrew_control_defaults::motion_controls(MEM) == 1;
-    float mouse_yaw = 0.0f, mouse_pitch = 0.0f; // degrees this read (mouse via the virtual pad)
-
     // -----------------------------------------------------------------------
     // Keyboard + mouse input (Splatoon layout, active in TV view)
     // KB+M additively overlays controller: pressing a key overrides that axis.
@@ -543,11 +461,8 @@ static void VPADRead(CPUState* cpu) {
             ly = kb_ly;
         } // override controller
 
-        // Mouse relative motion → camera / aim; moving the mouse up looks up.
-        // With motion aiming (the tutorial, or the game's motion controls on)
-        // and mouse_pad_aim=1 it turns the virtual GamePad by a fixed angle per
-        // count; otherwise it is added to the right stick. A controller's own stick and gyro
-        // are unchanged either way.
+        // Mouse relative motion → right stick (camera / aim); moving the
+        // mouse up looks up.
         int mdx = 0, mdy = 0;
         SDL_GetRelativeMouseState(&mdx, &mdy);
         if (gx2_mouse_on_pad_window()) mdx = mdy = 0; // the mouse is touching the GamePad window, not aiming
@@ -574,15 +489,6 @@ static void VPADRead(CPUState* cpu) {
             s_mouse_yaw += -float(mdx) * kMouseDegreesPerCount * mouse_scale;
             // Negative pitch looks up: mouse up (mdy < 0) must look up.
             s_mouse_pitch += float(mdy) * kMouseDegreesPerCount * mouse_scale;
-        } else if (motion_aim &&
-                   rbrew_online::online_comfort(rbrew_settings::g_mouse_pad_aim.load(std::memory_order_relaxed))) {
-            mouse_yaw = -(float)mdx * KBM_MOUSE_DEGREES * mouse_scale;
-            mouse_pitch = (float)mdy * KBM_MOUSE_DEGREES * mouse_scale; // negative pitch looks up
-            if (mouse_variant() >= 4) { // also push the right stick, as if the mouse were a stick (60 reads/s)
-                rx += -mouse_yaw * 60.0f / mouse_stick_rate();
-                if (rx < -1.0f) rx = -1.0f;
-                if (rx > 1.0f) rx = 1.0f;
-            }
         } else {
             float mrx = (float)mdx * KBM_MOUSE_SENSITIVITY * mouse_scale;
             float mry = -(float)mdy * KBM_MOUSE_SENSITIVITY * mouse_scale;
@@ -736,7 +642,6 @@ static void VPADRead(CPUState* cpu) {
             std::copy_n(pad.gyro, 3, phys_gyro);
             has_phys_gyro = has_phys_gyro || replayed;
             has_phys_accel = false;
-            if (replayed) mouse_yaw = mouse_pitch = 0.0f; // recording only: the live mouse stays
             live_touch = false;
             auto_touched = pad.touched != 0;
             auto_tx = vpad_touch_raw_x(uint16_t(pad.x));
@@ -771,8 +676,7 @@ static void VPADRead(CPUState* cpu) {
 
     rbrew_camera_follow::set(MEM, s_mouse_aims);
     vpad_update_motion(MEM, buf, rx, ry, motion_dt >= 0 ? motion_dt : motion_seconds(),
-                       has_phys_gyro ? phys_gyro : nullptr, has_phys_accel ? phys_accel : nullptr, tutorial, mouse_yaw,
-                       mouse_pitch);
+                       has_phys_gyro ? phys_gyro : nullptr, has_phys_accel ? phys_accel : nullptr);
     rbrew_write8(MEM, buf + kVpadSlideVolume, 0xFF);
     rbrew_write8(MEM, buf + kVpadSlideVolumeEx, 0xFF);
     rbrew_write8(MEM, buf + kVpadBattery, 0xC0); // full

@@ -3289,8 +3289,6 @@ void gx2_render_present(void* sdl_window, bool gamepad_mode) {
         dump_frame(*S.scan_image[1], S.scan_w[1], S.scan_h[1], "gamepad");
     // 120 FPS (gx2_frame_interp.h): this frame is held and presented after
     // the in-between frame the render thread draws next.
-    // 120 FPS (gx2_frame_interp.h): this frame is held and presented after
-    // the in-between frame the render thread draws next.
     const bool held = gx2vk::has_surface() && gx2interp::frame_complete(index);
     // GamePad window: the GamePad picture, every frame, also when the main one is held.
     if (s_pad_sink) {

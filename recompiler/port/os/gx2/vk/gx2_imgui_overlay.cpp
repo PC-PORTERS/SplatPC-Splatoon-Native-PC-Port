@@ -18,8 +18,6 @@
 #include "../../online/online_boot.h"
 #include "../../nn_nfp/nn_nfp.h"
 #include "../gx2_perf.h"
-#include <fstream>
-#include <sstream>
 
 #include <imgui.h>
 #include <imgui_impl_sdl2.h>
@@ -578,8 +576,8 @@ void build_controls_page(MenuPage page) {
 }
 
 // ---- Friends page (F4) ----
-// The game's friend list is read from RBREW_FRIENDS_DIR by the fp stubs and filled by scripts/friends_relay.py from the
-// server. This page only talks to that relay through small files in the same folder: add.cmd / remove.cmd (a pseudo),
+// The game's friend list is read from RBREW_FRIENDS_DIR by the fp stubs and filled by online/friends_relay.cpp from
+// the server. This page only talks to that relay through small files in the same folder: add.cmd / remove.cmd (a pseudo),
 // add.res / remove.res ("code|pseudo|text") and state.res ("friend|pid|pseudo|online" lines, "msg|text").
 namespace friends_ui {
 namespace fs = std::filesystem;
@@ -935,8 +933,8 @@ void build_amiibo_page() {
 }
 
 // ---- Friends page (F4) ----
-// The game's friend list is read from RBREW_FRIENDS_DIR by the fp stubs and filled by scripts/friends_relay.py from the
-// server. This page only talks to that relay through small files in the same folder: add.cmd / remove.cmd (a pseudo),
+// The game's friend list is read from RBREW_FRIENDS_DIR by the fp stubs and filled by online/friends_relay.cpp from
+// the server. This page only talks to that relay through small files in the same folder: add.cmd / remove.cmd (a pseudo),
 // add.res / remove.res ("code|pseudo|text") and state.res ("friend|pid|pseudo|online" lines, "msg|text").
 
 const char* menu_title(MenuPage page) {
