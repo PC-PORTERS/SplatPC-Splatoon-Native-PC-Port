@@ -78,8 +78,6 @@ Supported game versions: [VersionDb.md](VersionDb.md) (base game v16 and update 
 3. Play: Launch **`Splatoon.exe`** (Windows) or **`./Splatoon`** (Linux) in your output directory.
 
 > **Updating:** When a new release comes out, simply download the new builder from Releases and run it again. Your saves (`save/`) and shader cache are always preserved.
->
-> **If you cloned the repository** (online branch): double-click **`update.bat`**. It fetches the newest version of your branch, then runs `Setup.bat`. If the update cannot be applied cleanly (local changes in the same files, or a different history), it stops with a message and changes nothing. It never touches `Game\save` or your online identity.
 
 ---
 
