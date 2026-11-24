@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.18)
-project(GambitPort CXX)
+project(GambitPort C CXX)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -381,7 +383,7 @@ if(UNIX AND NOT APPLE AND HAVE_MINIAUDIO)
 endif()
 
 set(GAMBIT_GENERATED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../Gambit" CACHE PATH
-    "Directory containing RebrewU-generated Gambit C++")
+    "Directory containing RebrewU-generated Gambit C/C++ sources")
 # Unit tests, and the commands the Python cross-checks run (tools/tests/test_online_native.py).
 if(RBREW_BUILD_TESTS)
     add_executable(gambit_online_tests ../tests/test_online_native.cpp)
@@ -393,12 +395,21 @@ if(RBREW_BUILD_TESTS)
 endif()
 
 set(RBREW_GAME_DEFAULT OFF)
-if(EXISTS "${GAMBIT_GENERATED_DIR}/Gambit_data.cpp")
+if(EXISTS "${GAMBIT_GENERATED_DIR}/Gambit_data.c" OR EXISTS "${GAMBIT_GENERATED_DIR}/Gambit_data.cpp")
     set(RBREW_GAME_DEFAULT ON)
 endif()
 option(RBREW_BUILD_GAME "Build a private, locally generated game" ${RBREW_GAME_DEFAULT})
+option(RBREW_GAME_LTO "Enable MSVC Release whole-program optimization (/GL + /LTCG) for generated game code" ON)
 if(RBREW_BUILD_GAME)
-file(GLOB GAMBIT_PARTS "${GAMBIT_GENERATED_DIR}/Gambit_part*.cpp")
+if(EXISTS "${GAMBIT_GENERATED_DIR}/Gambit_data.c")
+    file(GLOB GAMBIT_PARTS "${GAMBIT_GENERATED_DIR}/Gambit_part*.c")
+    set(GAMBIT_DATA_SRC "${GAMBIT_GENERATED_DIR}/Gambit_data.c")
+    set(GAMBIT_REGISTER_SRC "${GAMBIT_GENERATED_DIR}/Gambit_register.c")
+else()
+    file(GLOB GAMBIT_PARTS "${GAMBIT_GENERATED_DIR}/Gambit_part*.cpp")
+    set(GAMBIT_DATA_SRC "${GAMBIT_GENERATED_DIR}/Gambit_data.cpp")
+    set(GAMBIT_REGISTER_SRC "${GAMBIT_GENERATED_DIR}/Gambit_register.cpp")
+endif()
 
 if(TARGET rbrew_plt_emit)
     add_dependencies(gambit_runtime rbrew_plt_emit)
@@ -406,8 +417,8 @@ endif()
 
 add_library(gambit_generated OBJECT
     ${GAMBIT_PARTS}
-    ${GAMBIT_GENERATED_DIR}/Gambit_data.cpp
-    ${GAMBIT_GENERATED_DIR}/Gambit_register.cpp
+    ${GAMBIT_DATA_SRC}
+    ${GAMBIT_REGISTER_SRC}
 )
 
 target_include_directories(gambit_generated PRIVATE
@@ -428,17 +439,25 @@ if(MSVC)
     if(CMAKE_GENERATOR MATCHES "Visual Studio")
         target_compile_options(gambit_generated PRIVATE /MP)
     endif()
-    target_compile_options(gambit_generated PRIVATE "$<$<CONFIG:Debug>:/Od>" /bigobj /GS- /Gy- /EHs-c- /GR-)
+    target_compile_options(gambit_generated PRIVATE "$<$<CONFIG:Debug>:/Od>" /bigobj /GS- /Gy-
+        "$<$<COMPILE_LANGUAGE:CXX>:/EHs-c->" "$<$<COMPILE_LANGUAGE:CXX>:/GR->")
     if(HYPER_OPTIMIZE)
-        # Full inlining plus whole-program optimization on the generated parts.
+        # Full inlining plus optional whole-program optimization on the generated parts.
         # /arch:AVX2 (Haswell+) brings MOVBE and BMI2 like -march=native above.
-        target_compile_options(gambit_generated PRIVATE /Ob2 /Oi /GT /GL /arch:AVX2)
+        target_compile_options(gambit_generated PRIVATE /Ob2 /Oi /GT /arch:AVX2)
+        if(RBREW_GAME_LTO)
+            target_compile_options(gambit_generated PRIVATE "$<$<CONFIG:Release>:/GL>")
+        endif()
     else()
         target_compile_options(gambit_generated PRIVATE /Ob1)
     endif()
-    if(EXISTS "${GAMBIT_GENERATED_DIR}/Gambit.h")
-        target_precompile_headers(gambit_generated PRIVATE "${GAMBIT_GENERATED_DIR}/Gambit.h")
+endif()
+if(EXISTS "${GAMBIT_GENERATED_DIR}/Gambit.h")
+    set(_gambit_pch "${GAMBIT_GENERATED_DIR}/Gambit.h")
+    if(EXISTS "${GAMBIT_GENERATED_DIR}/Gambit_inline.h")
+        list(APPEND _gambit_pch "${GAMBIT_GENERATED_DIR}/Gambit_inline.h")
     endif()
+    target_precompile_headers(gambit_generated PRIVATE ${_gambit_pch})
 endif()
 
 add_executable(Gambit
@@ -501,14 +520,17 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         target_compile_options(Gambit PRIVATE "$<$<CONFIG:Debug>:-O0>" -fno-strict-aliasing)
     endif()
     target_compile_options(gambit_runtime PRIVATE -O2)
-    if(HYPER_OPTIMIZE AND TARGET gambit_generated)
-        target_compile_options(gambit_generated PRIVATE -O3)
-        # MOVBE fuses each guest load/store + bswap into one instruction and
-        # BMI2 replaces shift-by-register sequences; -march=native matches the
-        # build machine (do not redistribute such a binary).
-        target_compile_options(gambit_generated PRIVATE -march=native)
-        # GCC/Clang -flto on the generated corpus OOMs the linker (the parts
-        # carry thousands of large functions); MSVC /GL+/LTCG is used there.
+    if(TARGET gambit_generated)
+        target_compile_options(gambit_generated PRIVATE -fno-strict-aliasing "$<$<CONFIG:Debug>:-O0>")
+        if(HYPER_OPTIMIZE)
+            target_compile_options(gambit_generated PRIVATE -O3)
+            # MOVBE fuses each guest load/store + bswap into one instruction and
+            # BMI2 replaces shift-by-register sequences; -march=native matches the
+            # build machine (do not redistribute such a binary).
+            target_compile_options(gambit_generated PRIVATE -march=native)
+            # GCC/Clang -flto on the generated corpus OOMs the linker (the parts
+            # carry thousands of large functions); MSVC /GL+/LTCG is used there.
+        endif()
     endif()
     if(TARGET Gambit AND CMAKE_BUILD_TYPE STREQUAL "Release")
         # Symbols stay in the local binary: CPU profiling of the recompiled
@@ -529,9 +551,9 @@ if(MSVC)
         # (rebrewu_runtime.h); the executable needs no per-access TLS guard.
         target_compile_options(Gambit PRIVATE /Zc:tlsGuards-)
         target_link_options(Gambit PRIVATE "/MAP:$<TARGET_FILE_DIR:Gambit>/Splatoon.map")
-        if(HYPER_OPTIMIZE)
+        if(HYPER_OPTIMIZE AND RBREW_GAME_LTO)
             # gambit_generated is compiled with /GL; link the whole game with LTCG.
-            target_link_options(Gambit PRIVATE /LTCG)
+            target_link_options(Gambit PRIVATE "$<$<CONFIG:Release>:/LTCG>")
         endif()
     endif()
     target_compile_options(gambit_runtime PRIVATE /utf-8 /MP)
