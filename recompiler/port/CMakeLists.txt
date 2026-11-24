@@ -306,7 +306,7 @@ if(RBREW_ENABLE_BORINGTUN AND CARGO_EXECUTABLE)
     set(RBREW_BORINGTUN_TARGET_DIR "${CMAKE_CURRENT_BINARY_DIR}/boringtun_target")
     set(RBREW_BORINGTUN_CARGO_ARGS build --release --manifest-path "${RBREW_BORINGTUN_DIR}/Cargo.toml")
     if(MINGW)
-        if(CMAKE_C_COMPILER_ID STREQUAL "Clang")
+        if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR CMAKE_C_COMPILER_ID STREQUAL "Clang")
             set(_rbrew_rust_target "x86_64-pc-windows-gnullvm")
         else()
             set(_rbrew_rust_target "x86_64-pc-windows-gnu")
@@ -341,6 +341,10 @@ if(RBREW_ENABLE_BORINGTUN AND CARGO_EXECUTABLE)
                 list(APPEND RBREW_BORINGTUN_ENV "AR=${RBREW_SYSTEM_AR}")
             endif()
         else()
+            find_program(_rbrew_fallback_cc NAMES cc clang gcc)
+            if(NOT _rbrew_fallback_cc)
+                set(_rbrew_fallback_cc "cc")
+            endif()
             set(_rbrew_zig_cc_wrapper "${CMAKE_CURRENT_BINARY_DIR}/boringtun_cc_wrapper.sh")
             file(WRITE "${_rbrew_zig_cc_wrapper}"
 "#!/bin/sh
@@ -357,7 +361,7 @@ while [ $i -lt $n ]; do
     esac
     i=$((i + 1))
 done
-exec \"${CMAKE_C_COMPILER}\" \"$@\"
+exec \"${_rbrew_fallback_cc}\" \"$@\"
 ")
             file(CHMOD "${_rbrew_zig_cc_wrapper}" PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
             list(APPEND RBREW_BORINGTUN_ENV "CC=${_rbrew_zig_cc_wrapper}")
