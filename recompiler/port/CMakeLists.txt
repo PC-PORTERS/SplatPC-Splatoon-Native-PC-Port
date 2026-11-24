@@ -304,7 +304,23 @@ if(RBREW_ENABLE_BORINGTUN AND CARGO_EXECUTABLE)
     endif()
     set(RBREW_BORINGTUN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/online/boringtun_ffi")
     set(RBREW_BORINGTUN_TARGET_DIR "${CMAKE_CURRENT_BINARY_DIR}/boringtun_target")
-    if(WIN32)
+    set(RBREW_BORINGTUN_CARGO_ARGS build --release --manifest-path "${RBREW_BORINGTUN_DIR}/Cargo.toml")
+    if(MINGW)
+        find_program(RUSTUP_EXECUTABLE rustup)
+        if(RUSTUP_EXECUTABLE)
+            execute_process(
+                COMMAND "${RUSTUP_EXECUTABLE}" target list --installed
+                OUTPUT_VARIABLE _rbrew_rust_targets
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+                ERROR_QUIET)
+            if(NOT _rbrew_rust_targets MATCHES "x86_64-pc-windows-gnu")
+                message(STATUS "boringtun: adding Rust target x86_64-pc-windows-gnu for MinGW")
+                execute_process(COMMAND "${RUSTUP_EXECUTABLE}" target add x86_64-pc-windows-gnu)
+            endif()
+        endif()
+        list(APPEND RBREW_BORINGTUN_CARGO_ARGS --target x86_64-pc-windows-gnu)
+        set(RBREW_BORINGTUN_LIB "${RBREW_BORINGTUN_TARGET_DIR}/x86_64-pc-windows-gnu/release/libboringtun_client.a")
+    elseif(WIN32)
         set(RBREW_BORINGTUN_LIB "${RBREW_BORINGTUN_TARGET_DIR}/release/boringtun_client.lib")
     else()
         set(RBREW_BORINGTUN_LIB "${RBREW_BORINGTUN_TARGET_DIR}/release/libboringtun_client.a")
@@ -312,7 +328,7 @@ if(RBREW_ENABLE_BORINGTUN AND CARGO_EXECUTABLE)
     add_custom_command(
         OUTPUT "${RBREW_BORINGTUN_LIB}"
         COMMAND "${CMAKE_COMMAND}" -E env "CARGO_TARGET_DIR=${RBREW_BORINGTUN_TARGET_DIR}"
-                "${CARGO_EXECUTABLE}" build --release --manifest-path "${RBREW_BORINGTUN_DIR}/Cargo.toml"
+                "${CARGO_EXECUTABLE}" ${RBREW_BORINGTUN_CARGO_ARGS}
         DEPENDS "${RBREW_BORINGTUN_DIR}/Cargo.toml" "${RBREW_BORINGTUN_DIR}/src/lib.rs"
                 "${RBREW_BORINGTUN_SRC}/boringtun/Cargo.toml"
         COMMENT "Building boringtun_client static library"
