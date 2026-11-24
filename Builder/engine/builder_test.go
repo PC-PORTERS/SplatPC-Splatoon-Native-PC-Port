@@ -3,6 +3,7 @@ package engine
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -115,4 +116,16 @@ func TestFindVolkConfigNotFound(t *testing.T) {
 	// If system has volk, it might find it, but if not, it should error cleanly
 	// The function should not panic regardless
 	_ = err
+}
+
+func TestVersionDefines(t *testing.T) {
+	if got, want := versionDefines(""), []string{"-DRBREW_APP_VERSION=", "-DRBREW_BUILD_VERSION=dev"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("empty release tag: got %v, want %v", got, want)
+	}
+	if got, want := versionDefines("  \t\n "), []string{"-DRBREW_APP_VERSION=", "-DRBREW_BUILD_VERSION=dev"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("whitespace release tag: got %v, want %v", got, want)
+	}
+	if got, want := versionDefines(" v1.0.10 "), []string{"-DRBREW_APP_VERSION=v1.0.10", "-DRBREW_BUILD_VERSION=v1.0.10"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("release tag: got %v, want %v", got, want)
+	}
 }

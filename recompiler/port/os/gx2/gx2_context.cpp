@@ -66,13 +66,21 @@ static bool s_tv_enabled = true;
 static constexpr int DRC_W = 854;
 static constexpr int DRC_H = 480;
 
+static const char* build_version() {
+#ifdef RBREW_BUILD_VERSION
+    const char* version = RBREW_BUILD_VERSION;
+    if (version && *version) return version;
+#endif
+    return "dev";
+}
+
 // Frame statistics live in the ImGui performance overlay (F3); the title
-// only shows the view mode.
+// only shows the build version and view mode.
 static void update_window_title() {
     if (!s_window) return;
-    char title_buf[128];
-    std::snprintf(title_buf, sizeof(title_buf), "Splatoon | %s | Vulkan [F3=overlay | Tab=view | %s]%s",
-                  g_screen_mode == ScreenMode::TV ? "TV" : "Gamepad",
+    char title_buf[256];
+    std::snprintf(title_buf, sizeof(title_buf), "Splatoon (%s) | %s | Vulkan [F3=overlay | Tab=view | %s]%s",
+                  build_version(), g_screen_mode == ScreenMode::TV ? "TV" : "Gamepad",
                   gx2env::online_mode() ? "F4=social" : "F11=window",
                   rbrew_camtrace::active() ? "  >>> REC camera (F10 to stop) <<<" : "");
     SDL_SetWindowTitle(s_window, title_buf);
@@ -207,9 +215,11 @@ static bool gx2_platform_open_window() {
     // mode avoids a second refresh wait (see gx2_vk.cpp create_swapchain).
     SDL_DisplayMode desktop{};
     if (SDL_GetDesktopDisplayMode(0, &desktop) != 0 || desktop.w <= 0 || desktop.h <= 0) return false;
-    s_window = SDL_CreateWindow(
-        "Splatoon Native PC Port", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, desktop.w, desktop.h,
-        SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_FULLSCREEN_DESKTOP);
+    char initial_title[128];
+    std::snprintf(initial_title, sizeof(initial_title), "Splatoon Native PC Port (%s)", build_version());
+    s_window = SDL_CreateWindow(initial_title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, desktop.w, desktop.h,
+                                SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI |
+                                    SDL_WINDOW_FULLSCREEN_DESKTOP);
     if (!s_window) {
         RBREW_LOG_ERROR("gx2", "SDL_CreateWindow(SDL_WINDOW_VULKAN) failed: %s\n", SDL_GetError());
         return false;
