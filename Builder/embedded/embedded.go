@@ -137,8 +137,8 @@ func ExtractEmbeddedAssets(targetDir string) error {
 		if mode == 0 {
 			mode = 0644
 		}
-		// Ensure executability for scripts and manifests
-		if strings.HasSuffix(cleanName, ".sh") || strings.HasSuffix(cleanName, ".py") {
+		// Ensure executability for Python helper tools
+		if strings.HasSuffix(cleanName, ".py") {
 			mode |= 0755
 		}
 

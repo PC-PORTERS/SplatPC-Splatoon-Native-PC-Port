@@ -13,9 +13,12 @@
 #include "runtime/rebrewu_runtime.h"
 #include "runtime/host_process.h"
 #include "runtime/discord_rpc.h"
+#include "online/online_boot.h"
 #include "runtime/splatoon_diagnostics.h"
 #include "runtime/port_settings.h"
 #include "runtime/mod_loader.h"
+#include "runtime/online_settings.h"
+#include "runtime/online_identity.h"
 #include "os/erreula/erreula.h"
 #include "os/coreinit/coreinit_overlay.h"
 #include "os/coreinit/coreinit_system_settings.h"
@@ -249,6 +252,9 @@ static void start_profiler() {
     // F9 (ManualCapture) also profiles 4 s into the snapshot folder: a stuck
     // scene then shows what each thread runs, without any setup.
     SplatoonDiagnostics::SetManualProfiler([](const std::string& path) {
+        // Online: the sampler suspends every thread (network and P2P included) every 2 ms for 4 s,
+        // which a match would feel as lag. F9 still saves its snapshot.
+        if (rbrew_online::config().online) return;
         static std::atomic<bool> busy{false};
         if (busy.exchange(true)) return;
         std::thread([path] {
@@ -415,6 +421,7 @@ int main(int argc, char** argv) {
         return early_exit;
     }
     rbrew::discord_rpc_init();
+    rbrew_native::online_boot(); // SpotPass files and saved-token relay: native on Windows and Linux
     RBREW_LOG_INFO("BOOT", "Splatoon launch runtime; RPX header entry=0x%08X\n", rebrewu_generated::Gambit_entry_point);
     RBREW_LOG_INFO("FS", "RBREW_CONTENT_DIR=%s\n",
                    getenv("RBREW_CONTENT_DIR") ? getenv("RBREW_CONTENT_DIR") : "./content");
@@ -503,8 +510,13 @@ int main(int argc, char** argv) {
         // These match the selected local reference profile, independently of
         // title region. Neither the provider nor guest code depends on Cemu.
         RbrewUcSystemProfile uc_profile{1, 0};
-        if (const char* value = getenv("RBREW_CONSOLE_LANGUAGE"); value && *value)
-            uc_profile.language = rbrew_parse_native_uc_scalar(value, 11);
+        // language= of settings.ini (written by the online login) counts in online mode only.
+        const char* language_env = getenv("RBREW_CONSOLE_LANGUAGE");
+        if (const std::string value = rbrew_online::config().online
+                                          ? rbrew_online_cfg::resolved("RBREW_CONSOLE_LANGUAGE", "language", "1")
+                                          : std::string(language_env ? language_env : "");
+            !value.empty())
+            uc_profile.language = rbrew_parse_native_uc_scalar(value.c_str(), 11);
         if (const char* value = getenv("RBREW_COUNTRY_REGISTRATION"); value && *value)
             uc_profile.country_registration = rbrew_parse_native_uc_scalar(value, 255);
         rbrew_uc_configure_profile(&cpu_reg, uc_profile);
@@ -730,6 +742,7 @@ int main(int argc, char** argv) {
     // them until process termination. Do not free them underneath live workers.
     rbrew_mod::shutdown_mods();
     rbrew::discord_rpc_shutdown();
+    rbrew_native::online_shutdown();
     return result;
 }
 

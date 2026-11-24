@@ -10,6 +10,11 @@ if(NOT RBREW_GAME_REVISION MATCHES "^[0-9]+$")
     message(FATAL_ERROR "Unsupported title revision")
 endif()
 add_compile_definitions(RBREW_GAME_REVISION=${RBREW_GAME_REVISION})
+# MinGW headers (the Builder's userspace clang) default to Windows 7 and hide Windows 10 APIs such as
+# BCryptHash; the MSVC SDK already targets Windows 10.
+if(MINGW)
+    add_compile_definitions(_WIN32_WINNT=0x0A00)
+endif()
 
 # Windowing & input: require the audited static SDL2 Vulkan-only profile.
 find_package(SDL2 CONFIG REQUIRED)
@@ -222,6 +227,60 @@ if(RBREW_PLT_GENERATED)
         VERBATIM)
 endif()
 
+# Native online mode (Windows and Linux): SpotPass files, interactive login, saved tokens,
+# and friends relay built directly into the game (online/online_boot.h).
+set(RBREW_NLOHMANN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party")
+if(NOT EXISTS "${RBREW_NLOHMANN_DIR}/nlohmann/json.hpp")
+    # Same header and hash as the recompiler (recompiler/CMakeLists.txt).
+    file(DOWNLOAD https://github.com/nlohmann/json/releases/download/v3.11.3/json.hpp
+         "${RBREW_NLOHMANN_DIR}/nlohmann/json.hpp"
+         EXPECTED_HASH SHA256=9bea4c8066ef4a1c206b2be5a36302f8926f7fdc6087af5d20b417d0cf103ea6)
+endif()
+add_library(gambit_online STATIC
+    online/boss_schedule.cpp
+    online/byaml.cpp
+    online/friends_relay.cpp
+    online/hashing.cpp
+    online/integrity_proof.cpp
+    online/online_boot.cpp
+    online/online_login.cpp
+    online/py_random.cpp
+    online/social_http.cpp
+)
+target_include_directories(gambit_online PRIVATE ${RBREW_NLOHMANN_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+get_filename_component(RBREW_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
+set(RBREW_APP_VERSION "" CACHE STRING "Client release version injected from release tag")
+if(NOT RBREW_APP_VERSION)
+    find_package(Git QUIET)
+    if(GIT_FOUND)
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" describe --tags --abbrev=0
+            WORKING_DIRECTORY "${RBREW_REPO_ROOT}"
+            RESULT_VARIABLE _rbrew_tag_res
+            OUTPUT_VARIABLE _rbrew_tag_out
+            ERROR_QUIET)
+        if(_rbrew_tag_res EQUAL 0)
+            string(STRIP "${_rbrew_tag_out}" RBREW_APP_VERSION)
+        endif()
+    endif()
+endif()
+if(RBREW_APP_VERSION MATCHES "([0-9]+(\\.[0-9]+)+)")
+    set(RBREW_APP_VERSION "${CMAKE_MATCH_1}")
+else()
+    set(RBREW_APP_VERSION "")
+endif()
+set_property(SOURCE online/online_boot.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+    RBREW_DEFAULT_INTEGRITY_ROOT="${RBREW_REPO_ROOT}"
+    RBREW_APP_VERSION="${RBREW_APP_VERSION}")
+if(WIN32)
+    target_link_libraries(gambit_online PUBLIC winhttp bcrypt)
+else()
+    target_link_libraries(gambit_online PUBLIC CURL::libcurl)
+endif()
+if(MSVC)
+    target_compile_options(gambit_online PRIVATE /utf-8)
+endif()
+
 file(GLOB_RECURSE GAMBIT_RUNTIME_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/os/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/hooks/*.cpp"
@@ -251,6 +310,7 @@ target_compile_definitions(gambit_runtime PUBLIC HAVE_SDL2)
 option(RBREW_DIAGNOSTIC_RUNTIME "Keep diagnostics in the runtime for a one-off diagnostic copy" OFF)
 if(NOT RBREW_DIAGNOSTIC_RUNTIME)
     target_compile_definitions(gambit_runtime PRIVATE RBREW_DISABLE_LOGGING)
+    target_compile_definitions(gambit_online PRIVATE RBREW_DISABLE_LOGGING)
     target_compile_definitions(cemu_shader PRIVATE RBREW_DISABLE_LOGGING)
     set_property(SOURCE main.cpp APPEND PROPERTY COMPILE_DEFINITIONS RBREW_DISABLE_LOGGING)
 endif()
@@ -293,6 +353,7 @@ endif()
 
 target_link_libraries(gambit_runtime PUBLIC
     cemu_shader
+    gambit_online
     ${SDL2_LIBRARIES}
 
     CURL::libcurl
@@ -303,7 +364,7 @@ target_link_libraries(gambit_runtime PUBLIC
 target_link_libraries(gambit_runtime PRIVATE imgui)
 
 if(WIN32)
-    target_link_libraries(gambit_runtime PUBLIC ws2_32 winmm ole32 windowscodecs psapi)
+    target_link_libraries(gambit_runtime PUBLIC ws2_32 winmm bcrypt iphlpapi windowscodecs ole32 psapi)
     if(HAVE_MINIAUDIO)
         target_link_libraries(gambit_runtime PUBLIC ksuser)
     endif()
@@ -324,6 +385,16 @@ endif()
 
 set(GAMBIT_GENERATED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../Gambit" CACHE PATH
     "Directory containing RebrewU-generated Gambit C++")
+# Unit tests, and the commands the Python cross-checks run (tools/tests/test_online_native.py).
+if(RBREW_BUILD_TESTS)
+    add_executable(gambit_online_tests ../tests/test_online_native.cpp)
+    target_include_directories(gambit_online_tests PRIVATE ${RBREW_NLOHMANN_DIR} ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(gambit_online_tests PRIVATE gambit_online)
+    if(MSVC)
+        target_compile_options(gambit_online_tests PRIVATE /utf-8)
+    endif()
+endif()
+
 set(RBREW_GAME_DEFAULT OFF)
 if(EXISTS "${GAMBIT_GENERATED_DIR}/Gambit_data.cpp")
     set(RBREW_GAME_DEFAULT ON)
@@ -384,6 +455,9 @@ target_include_directories(Gambit PRIVATE
 )
 
 target_link_libraries(Gambit PRIVATE gambit_generated gambit_runtime)
+if(TARGET gambit_online)
+    target_link_libraries(Gambit PRIVATE gambit_online)
+endif()
 set_target_properties(Gambit PROPERTIES OUTPUT_NAME Splatoon)
 endif()
 if(WIN32)
@@ -399,7 +473,7 @@ if(WIN32)
     endif()
     add_library(splport_host SHARED EXCLUDE_FROM_ALL main.cpp runtime/splport_host.def)
     target_compile_definitions(splport_host PRIVATE RBREW_DISTRIBUTABLE_RUNTIME RBREW_DISABLE_LOGGING)
-    target_link_libraries(splport_host PRIVATE gambit_runtime)
+    target_link_libraries(splport_host PRIVATE gambit_runtime gambit_online)
     if(MSVC)
         target_compile_options(splport_host PRIVATE /utf-8)
     endif()
@@ -548,6 +622,9 @@ if(RBREW_BUILD_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/include
     )
     add_test(NAME mod_api COMMAND gambit_mod_api_tests $<TARGET_FILE:gambit_test_mod>)
+    if(TARGET gambit_online_tests)
+        add_test(NAME native_online COMMAND gambit_online_tests)
+    endif()
     # Local developer tests/tools below are optional (not in the public tree).
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../tests/test_frame_pacing.cpp")
         add_executable(gambit_frame_pacing_tests ../tests/test_frame_pacing.cpp)
@@ -687,6 +764,20 @@ if(RBREW_BUILD_TESTS)
             set_tests_properties(compatibility_${case} PROPERTIES TIMEOUT 30)
         endforeach()
     endif()
+endif()
+
+# Online mode: network confinement policy and local identity (header-only, no guest code).
+if(RBREW_BUILD_TESTS)
+    add_executable(gambit_net_policy_tests ../tests/test_net_policy.cpp)
+    target_include_directories(gambit_net_policy_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME net_policy COMMAND gambit_net_policy_tests)
+    add_executable(gambit_online_identity_tests ../tests/test_online_identity.cpp)
+    target_include_directories(gambit_online_identity_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+    if(WIN32)
+        target_link_libraries(gambit_online_identity_tests PRIVATE bcrypt)
+    endif()
+    add_test(NAME online_identity COMMAND gambit_online_identity_tests)
+    add_test(NAME online_native COMMAND gambit_online_tests)
 endif()
 
 # The developer test sources are not part of the public tree.

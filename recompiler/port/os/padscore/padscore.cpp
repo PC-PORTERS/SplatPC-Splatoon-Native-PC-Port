@@ -41,7 +41,7 @@ static void write_kpad_pro_status(uint8_t* mem, uint32_t buf, uint32_t pro_hold,
     rbrew_write8(mem, buf + 0x5C, 31u); // extensionType = WPAD_EXT_PRO_CONTROLLER
     rbrew_write8(mem, buf + 0x5D, 0u);  // error = 0
     rbrew_write8(mem, buf + 0x5E, 1u);  // posValid = 1
-    rbrew_write8(mem, buf + 0x5F, 0u);  // format = 0
+    rbrew_write8(mem, buf + 0x5F, 22u); // format = WPAD_FMT_PRO_CONTROLLER
 
     rbrew_write32(mem, buf + 0x60, pro_hold);
     rbrew_write32(mem, buf + 0x64, pro_trigger);
@@ -88,13 +88,21 @@ static void WPADProbe(CPUState* cpu) {
     RET = (uint32_t)-1; // WPAD_ERR_NOT_READY / WPAD_ERR_NO_CONTROLLER
 }
 
-// KPADReadEx(chan, buffer, count) → samplesRead
+// KPADReadEx(chan, buffer, count, error) → samplesRead
+// KPADError, written through KPADReadEx's fourth argument.
+constexpr int32_t kKpadOk = 0, kKpadInvalidController = -2;
+
 static void KPADReadEx(CPUState* cpu) {
     uint32_t chan = ARG0;
     uint32_t buf = ARG1;
     uint32_t count = ARG2;
+    const uint32_t error_ptr = ARG3;
+    const auto set_error = [&](int32_t error) {
+        if (error_ptr && rbrew_memory_accessible(MEM, error_ptr, 4)) rbrew_write32(MEM, error_ptr, uint32_t(error));
+    };
 
     if (!buf || count == 0 || !rbrew_memory_accessible(MEM, buf, 0xF0)) {
+        set_error(kKpadInvalidController);
         RET = 0;
         return;
     }
@@ -106,6 +114,7 @@ static void KPADReadEx(CPUState* cpu) {
             uint32_t dummy_prev = 0;
             uint32_t& prev_hold = (chan < 4) ? s_mod_prev_hold[chan] : dummy_prev;
             write_kpad_pro_status(MEM, buf, mod_pad.hold, mod_pad.lx, mod_pad.ly, mod_pad.rx, mod_pad.ry, prev_hold);
+            set_error(kKpadOk);
             RET = 1;
             return;
         }
@@ -114,6 +123,7 @@ static void KPADReadEx(CPUState* cpu) {
     if (chan != 0) {
         // Battle Dojo uses WPAD / KPAD channel 0 for Player 2
         for (uint32_t i = 0; i < 0xF0; i += 4) rbrew_write32(MEM, buf + i, 0u);
+        set_error(kKpadInvalidController);
         RET = 0;
         return;
     }
@@ -156,6 +166,7 @@ static void KPADReadEx(CPUState* cpu) {
         static uint32_t s_p2_prev_hold = 0;
         write_kpad_pro_status(MEM, buf, pro_hold, lx, ly, rx, ry, s_p2_prev_hold);
 
+        set_error(kKpadOk);
         RET = 1; // 1 sample read
         return;
     }
@@ -163,6 +174,7 @@ static void KPADReadEx(CPUState* cpu) {
 
     // Not connected: clear first entry
     for (uint32_t i = 0; i < 0xF0; i += 4) rbrew_write32(MEM, buf + i, 0u);
+    set_error(kKpadInvalidController);
     RET = 0;
 }
 

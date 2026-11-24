@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -179,10 +180,15 @@ func (v *StepDoneView) show(title, description string, buildRow [2]string, appIm
 		hdStatus = "Enabled"
 	}
 
+	onlineStatus := "Disabled (offline)"
+	if cfg.EnableOnline && strings.TrimSpace(cfg.OnlineServer) != "" {
+		onlineStatus = "Enabled (" + strings.TrimSpace(cfg.OnlineServer) + ")"
+	}
 	rows := [][2]string{
 		{"Game folder", cfg.OutputDir},
 		{"Executable", engine.GameExecutable(cfg.OutputDir)},
 		{"Player name", cfg.PlayerName},
+		{"Online", onlineStatus},
 		{"Resolution", fmt.Sprintf("%s at %d FPS", cfg.Resolution, cfg.FrameRate)},
 		{"Language", languageName(cfg.LanguageID)},
 		{"Region", cfg.ConsoleRegion},

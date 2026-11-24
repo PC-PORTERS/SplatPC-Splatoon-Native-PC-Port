@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"runtime"
+	"strings"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
@@ -10,17 +11,22 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
+	"splatpc-builder/roms"
 	"splatpc-builder/settings"
 )
 
 type StepSettingsView struct {
-	wizard *Wizard
+	wizard        *Wizard
+	syncingOnline bool
 
 	container *fyne.Container
 
-	pseudoEntry      *widget.Entry
-	langSelect       *widget.Select
-	resSelect        *widget.Select
+	pseudoEntry       *widget.Entry
+	langSelect        *widget.Select
+	onlineCheck       *widget.Check
+	onlineServerEntry *widget.Entry
+	onlineErrorLabel  *widget.Label
+	resSelect         *widget.Select
 	fpsSelect        *widget.Select
 	plaza60Check     *widget.Check
 	shaderSelect     *widget.Select
@@ -109,7 +115,70 @@ func (v *StepSettingsView) initUI() {
 		),
 	)
 
-	// 2. Display & Graphics
+	// 2. Online Multiplayer (Community Server)
+	v.onlineServerEntry = widget.NewEntry()
+	v.onlineServerEntry.SetText(cfg.OnlineServer)
+	v.onlineServerEntry.SetPlaceHolder(settings.FallbackOnlineServer)
+	v.onlineServerEntry.OnChanged = func(s string) {
+		cfg.OnlineServer = strings.TrimSpace(s)
+	}
+
+	v.onlineErrorLabel = widget.NewLabelWithStyle(
+		"⚠️ Online requires the latest game version (v288). Add the v288 update in Step 1 (ROMs) to enable online play.",
+		fyne.TextAlignLeading,
+		fyne.TextStyle{Bold: true},
+	)
+	v.onlineErrorLabel.Wrapping = fyne.TextWrapWord
+	v.onlineErrorLabel.Importance = widget.DangerImportance
+	v.onlineErrorLabel.Hide()
+
+	v.onlineCheck = widget.NewCheck("Enable Online (requires v288)", func(b bool) {
+		if v.syncingOnline {
+			return
+		}
+		if b && !roms.HasV288(v.wizard.config.BaseDumpPath, v.wizard.overlays, v.wizard.config.OutputDir) {
+			v.wizard.config.EnableOnline = false
+			v.syncingOnline = true
+			v.onlineCheck.SetChecked(false)
+			v.syncingOnline = false
+			if v.onlineServerEntry != nil {
+				v.onlineServerEntry.Disable()
+			}
+			v.onlineErrorLabel.Show()
+			if v.wizard.window != nil {
+				dialog.ShowError(
+					fmt.Errorf("Online multiplayer requires the latest game version (v288).\n\nGo back to Step 1 (ROMs) and add the official v288 update (or select a merged v288 dump)."),
+					v.wizard.window,
+				)
+			}
+			return
+		}
+		v.wizard.config.EnableOnline = b
+		if v.onlineServerEntry == nil {
+			return
+		}
+		if b {
+			v.onlineServerEntry.Enable()
+			v.onlineErrorLabel.Hide()
+		} else {
+			v.onlineServerEntry.Disable()
+		}
+	})
+
+	onlineHelp := widget.NewLabelWithStyle("Requires Splatoon v288. Automatic authentication linked to your PC (online_identity.ini). In-game friends overlay: Press F4.", fyne.TextAlignLeading, fyne.TextStyle{Italic: true})
+	onlineHelp.Wrapping = fyne.TextWrapWord
+
+	onlineCard := widget.NewCard("🌐 Online Multiplayer (Community Server)", "",
+		container.NewVBox(
+			v.onlineCheck,
+			v.onlineErrorLabel,
+			widget.NewLabelWithStyle("Server Address (Host:Port):", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+			v.onlineServerEntry,
+			onlineHelp,
+		),
+	)
+
+	// 3. Display & Graphics
 	v.resSelect = widget.NewSelect([]string{"720p", "1080p", "1440p", "native"}, func(s string) {
 		cfg.Resolution = s
 	})
@@ -297,6 +366,8 @@ func (v *StepSettingsView) initUI() {
 			container.NewVBox(
 				accountCard,
 				widget.NewSeparator(),
+				onlineCard,
+				widget.NewSeparator(),
 				graphicsCard,
 				widget.NewSeparator(),
 				controlsCard,
@@ -308,8 +379,30 @@ func (v *StepSettingsView) initUI() {
 }
 
 func (v *StepSettingsView) SyncUIFromConfig() {
-	cfg := v.wizard.config
+	cfg := &v.wizard.config
 	v.pseudoEntry.SetText(cfg.PlayerName)
+
+	hasV288 := roms.HasV288(cfg.BaseDumpPath, v.wizard.overlays, cfg.OutputDir)
+	hasSource := cfg.BaseDumpPath != "" || roms.HasMetaFile(cfg.OutputDir)
+	if !hasV288 {
+		if hasSource {
+			cfg.EnableOnline = false
+		}
+		v.onlineErrorLabel.Show()
+	} else {
+		v.onlineErrorLabel.Hide()
+	}
+
+	effectiveOnline := cfg.EnableOnline && hasV288
+	v.syncingOnline = true
+	v.onlineCheck.SetChecked(effectiveOnline)
+	v.syncingOnline = false
+	v.onlineServerEntry.SetText(cfg.OnlineServer)
+	if effectiveOnline {
+		v.onlineServerEntry.Enable()
+	} else {
+		v.onlineServerEntry.Disable()
+	}
 
 	for i, l := range settings.SupportedLanguages {
 		if l.ID == cfg.LanguageID {

@@ -17,6 +17,10 @@ import (
 	"splatpc-builder/settings"
 )
 
+// ReleaseTag is injected at build time via -ldflags="-X splatpc-builder/engine.ReleaseTag=..."
+// from the Git release/CI tag so CMake embeds the client version without a VERSION file.
+var ReleaseTag string
+
 type StepInfo struct {
 	Index       int
 	Total       int
@@ -74,9 +78,15 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 	}
 
 	failDone := func(err error) {
-		log("ERROR: %v", err)
+		if ctx.Err() != nil {
+			log("Build cancelled by user.")
+			err = ctx.Err()
+		} else {
+			log("ERROR: %v", err)
+			err = fmt.Errorf("%w\n\nFull log: %s", err, logPath)
+		}
 		if cb.OnDone != nil {
-			cb.OnDone(false, fmt.Errorf("%w\n\nFull log: %s", err, logPath), time.Since(startTime), "")
+			cb.OnDone(false, err, time.Since(startTime), "")
 		}
 	}
 
@@ -108,11 +118,15 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 		stagingROM := filepath.Join(buildDir, "staging-rom")
 		log("Overlays/mods detected. Merging into %s...", stagingROM)
 		_ = os.RemoveAll(stagingROM)
-		if err := roms.CombineROMs(cfg.BaseDumpPath, overlays, stagingROM, log); err != nil {
+		if err := roms.CombineROMsContext(ctx, cfg.BaseDumpPath, overlays, stagingROM, log); err != nil {
 			failDone(fmt.Errorf("merging ROMs: %w", err))
 			return
 		}
 		gameSourceDump = stagingROM
+	}
+	if err := ctx.Err(); err != nil {
+		failDone(err)
+		return
 	}
 
 	rpxPath := filepath.Join(gameSourceDump, "code", "Gambit.rpx")
@@ -160,8 +174,12 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 	// STEP 2: Wii U Folders & Resources
 	progress(2, "Wii U Resources & Fonts", "Initializing Wii U folders and Cemu replacement fonts", 0.15)
 	log("=== Step 2/8: Initializing Wii U Resources ===")
-	if err := PrepareWiiUResources(cfg.OutputDir, repoRoot, downloadsDir, log); err != nil {
+	if err := PrepareWiiUResourcesContext(ctx, cfg.OutputDir, repoRoot, downloadsDir, log); err != nil {
 		failDone(fmt.Errorf("preparing resources: %w", err))
+		return
+	}
+	if err := ctx.Err(); err != nil {
+		failDone(err)
 		return
 	}
 
@@ -169,6 +187,10 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 	progress(3, "Graphics Libraries", "Downloading and building SDL2 and glslang", 0.25)
 	log("=== Step 3/8: SDL2 & glslang Dependencies ===")
 	if err := buildVulkanGraphicsDeps(ctx, buildDir, downloadsDir, depsDir, recompilerDir, cmake, python, log); err != nil {
+		failDone(err)
+		return
+	}
+	if err := ctx.Err(); err != nil {
 		failDone(err)
 		return
 	}
@@ -180,12 +202,20 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 		failDone(err)
 		return
 	}
+	if err := ctx.Err(); err != nil {
+		failDone(err)
+		return
+	}
 
 	// STEP 5: Build RebrewU recompiler
 	progress(5, "RebrewU Recompiler", "Building the RebrewU recompiler executable", 0.45)
 	log("=== Step 5/8: RebrewU Recompiler ===")
 	rebrewuExe, err := buildRebrewu(ctx, recompilerDir, buildDir, cmake, libs, log)
 	if err != nil {
+		failDone(err)
+		return
+	}
+	if err := ctx.Err(); err != nil {
 		failDone(err)
 		return
 	}
@@ -205,6 +235,10 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 		failDone(fmt.Errorf("RPX recompilation failed: %w", err))
 		return
 	}
+	if err := ctx.Err(); err != nil {
+		failDone(err)
+		return
+	}
 	log("C++ code successfully generated in %s", generatedDir)
 
 	// STEP 7: Build the game
@@ -221,6 +255,9 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 		"-DRBREW_DIAGNOSTIC_RUNTIME=OFF",
 		"-DRBREW_TEXTURE_DIAGNOSTICS=OFF",
 	)
+	if tag := strings.TrimSpace(ReleaseTag); tag != "" {
+		gameDefines = append(gameDefines, fmt.Sprintf("-DRBREW_APP_VERSION=%s", tag))
+	}
 	if cmake.isWindowsMinGW() {
 		gameDefines = append(gameDefines, "-DCMAKE_EXE_LINKER_FLAGS=-static")
 	}
@@ -229,10 +266,18 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 		failDone(fmt.Errorf("CMake configuration of the game failed: %w", err))
 		return
 	}
+	if err := ctx.Err(); err != nil {
+		failDone(err)
+		return
+	}
 
 	cmdGameBuild := proc.CommandContext(ctx, cmake.exe, cmake.buildArgs(gameBuild, "Gambit")...)
 	if err := runCmdWithLog(cmdGameBuild, log); err != nil {
 		failDone(fmt.Errorf("compiling Splatoon executable: %w", err))
+		return
+	}
+	if err := ctx.Err(); err != nil {
+		failDone(err)
 		return
 	}
 
@@ -255,8 +300,14 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 
 	// Copy content and meta
 	log("Copying game content (content/ and meta/)...")
-	_ = copyDirectoryTreeSimple(filepath.Join(gameSourceDump, "content"), filepath.Join(cfg.OutputDir, "content"))
-	_ = copyDirectoryTreeSimple(filepath.Join(gameSourceDump, "meta"), filepath.Join(cfg.OutputDir, "meta"))
+	if err := copyDirectoryTreeContext(ctx, filepath.Join(gameSourceDump, "content"), filepath.Join(cfg.OutputDir, "content")); err != nil && ctx.Err() != nil {
+		failDone(ctx.Err())
+		return
+	}
+	if err := copyDirectoryTreeContext(ctx, filepath.Join(gameSourceDump, "meta"), filepath.Join(cfg.OutputDir, "meta")); err != nil && ctx.Err() != nil {
+		failDone(ctx.Err())
+		return
+	}
 
 	if cfg.UpscaleTextures {
 		log("HD Texturing enabled: preparing textures/ and texture-dump/ folders...")
@@ -264,14 +315,17 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 		_ = os.MkdirAll(filepath.Join(cfg.OutputDir, "texture-dump"), 0755)
 	}
 
-	// Write settings.ini and launcher script
+	// Write settings.ini (native binary reads online & gameplay settings directly; no wrapper scripts)
 	log("Writing custom settings (player nickname: %s)...", cfg.PlayerName)
+	if cfg.EnableOnline && strings.TrimSpace(cfg.OnlineServer) != "" {
+		log("Online multiplayer configured: server %s (pseudo: '%s')", strings.TrimSpace(cfg.OnlineServer), cfg.PlayerName)
+	}
 	if err := settings.WriteSettingsIni(cfg, cfg.OutputDir); err != nil {
 		log("Warning: Failed to write settings.ini: %v", err)
 	}
-	if err := settings.WriteLauncherScript(cfg, cfg.OutputDir); err != nil {
-		log("Warning: Failed to write launch script: %v", err)
-	}
+	// Remove legacy launcher scripts if present from earlier builds
+	_ = os.Remove(filepath.Join(cfg.OutputDir, "Splatoon.sh"))
+	_ = os.Remove(filepath.Join(cfg.OutputDir, "Launch_Splatoon.bat"))
 
 	var appImagePath string
 	// Optional STEP 9: AppImage for Linux
@@ -368,20 +422,26 @@ func RunRuntimeBuild(ctx context.Context, repoRoot string, cfg settings.Configur
 }
 
 func buildVulkanGraphicsDeps(ctx context.Context, buildDir, downloadsDir, depsDir, recompilerDir string, cmake cmakeProject, python prereq.Python, log logFunc) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	sdlZip := filepath.Join(downloadsDir, "SDL2-2.32.10.zip")
 	glslangTar := filepath.Join(downloadsDir, "glslang-16.4.0.tar.gz")
 
 	if _, err := os.Stat(sdlZip); err != nil {
 		log("Downloading SDL2...")
-		if err := downloadFile("https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-2.32.10.zip", sdlZip); err != nil {
+		if err := downloadFile(ctx, "https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-2.32.10.zip", sdlZip); err != nil {
 			return err
 		}
 	}
 	if _, err := os.Stat(glslangTar); err != nil {
 		log("Downloading glslang...")
-		if err := downloadFile("https://github.com/KhronosGroup/glslang/archive/refs/tags/16.4.0.tar.gz", glslangTar); err != nil {
+		if err := downloadFile(ctx, "https://github.com/KhronosGroup/glslang/archive/refs/tags/16.4.0.tar.gz", glslangTar); err != nil {
 			return err
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	sdlSource := filepath.Join(downloadsDir, "SDL2-2.32.10")

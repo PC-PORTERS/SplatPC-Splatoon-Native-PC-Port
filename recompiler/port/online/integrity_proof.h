@@ -1,0 +1,18 @@
+// integrity_proof.h - the proof sent with each sign-in: this install's version and the hash of its code.
+// Same result as scripts/integrity.py attestation() for the same folder (tools/tests/test_online_native.py).
+#pragma once
+#include <filesystem>
+#include <string>
+
+namespace rbrew_native {
+
+struct Attestation {
+    std::string version; // client version (from release tag); empty when unavailable
+    std::string code;    // sha256 of the manifest text this PC's files give; empty without a manifest
+};
+
+std::filesystem::path resolve_integrity_root(const std::filesystem::path& game_dir,
+                                             const std::filesystem::path& default_root = {});
+Attestation attest(const std::filesystem::path& root, std::string version = {});
+
+} // namespace rbrew_native

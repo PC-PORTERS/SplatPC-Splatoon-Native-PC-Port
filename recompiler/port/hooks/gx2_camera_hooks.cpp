@@ -2,6 +2,7 @@
 // camera, free fly camera, fly spots, the spawn hack and the mouse aim (v288).
 #include "gx2_camera_hooks.h"
 #include "gx2_guest_memory.h"
+#include "../os/gx2/gx2_env_light.h" // online_mode()
 #include "../runtime/camtrace.h"
 #include "camera_nan_guard.h"
 #include "player_nan_guard.h"
@@ -389,10 +390,10 @@ void register_hooks() {
 }
 
 void set_fly_camera(bool on) {
-    s_fly.store(on);
+    s_fly.store(on && !online_mode());
 }
 bool fly_camera() {
-    return s_fly.load();
+    return s_fly.load() && !online_mode();
 }
 void fly_zoom(float steps) {
     s_fly_fov.store(std::clamp(s_fly_fov.load() - steps * 3.f, 15.f, 110.f));
@@ -605,7 +606,7 @@ void camera_frame(const CameraFrameContext& context) {
         const Uint8* keys = SDL_GetKeyboardState(nullptr);
         static bool f7_was = false;
         const bool f7 = keys && keys[SDL_SCANCODE_F7];
-        if (f7 && !f7_was) {
+        if (f7 && !f7_was && !online_mode()) {
             s_fly.store(!s_fly.load());
             RBREW_LOG_INFO("camera", "fly camera %s", s_fly.load() ? "on" : "off");
         }

@@ -34,6 +34,8 @@
 #include "../../runtime/native_control_defaults.h"
 #include "../../runtime/discord_rpc.h"
 #include "../../runtime/mod_loader.h"
+#include "../../runtime/online_identity.h"
+#include "../../online/online_boot.h"
 #include "../nn_nfp/nn_nfp.h"
 #include <cstdlib>
 #include <string>
@@ -41,8 +43,6 @@
 #include <cstdio>
 #include <atomic>
 #include <thread>
-#include <array>
-#include <vector>
 
 // Definitions for shared screen-mode state (declared in screen_mode.h)
 ScreenMode g_screen_mode = ScreenMode::TV;
@@ -77,8 +77,9 @@ static void update_window_title() {
         return;
     }
     char title_buf[128];
-    std::snprintf(title_buf, sizeof(title_buf), "Splatoon | %s | Vulkan [F3=overlay | Tab=view | F11=window]%s",
+    std::snprintf(title_buf, sizeof(title_buf), "Splatoon | %s | Vulkan [F3=overlay | Tab=view | %s]%s",
                   g_screen_mode == ScreenMode::TV ? "TV" : "Gamepad",
+                  gx2env::online_mode() ? "F4=social" : "F11=window",
                   rbrew_camtrace::active() ? "  >>> REC camera (F10 to stop) <<<" : "");
     SDL_SetWindowTitle(s_window, title_buf);
 }
@@ -911,7 +912,61 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
     static frame_clock::time_point s_prev_swap_tp{};
     const frame_clock::time_point swap_start_tp = frame_clock::now();
     check_controller_hotplug_periodic();
-    if (s_swap_count.fetch_add(1) == 0) RBREW_LOG_INFO("gx2", "GX2SwapScanBuffers called for the first time\n");
+    if (s_swap_count.fetch_add(1) == 0) {
+        RBREW_LOG_INFO("gx2", "GX2SwapScanBuffers called for the first time\n");
+#if defined(HAVE_SDL2)
+        if (s_window && rbrew_native::needs_startup_login()) {
+            gx2_imgui::open_startup_login();
+            SDL_SetRelativeMouseMode(SDL_FALSE);
+            SDL_ShowCursor(SDL_ENABLE);
+            auto present_now = [&](bool gp) {
+                if (gx2_native_async_active()) {
+                    struct Present final : Gx2AsyncWork {
+                        SDL_Window* window;
+                        bool gamepad;
+                        Present(SDL_Window* w, bool g) : window(w), gamepad(g) {}
+                        bool replayable() const override { return false; }
+                        void run() override {
+                            struct Done {
+                                ~Done() {
+                                    s_presents_done.fetch_add(1, std::memory_order_release);
+                                    s_presents_done.notify_all();
+                                }
+                            } done;
+                            gx2_render_present(window, gamepad);
+                        }
+                    };
+                    const uint64_t posted = s_presents_posted.fetch_add(1) + 1;
+                    gx2_native_post(new Present(s_window, gp));
+                    for (uint64_t done = s_presents_done.load(std::memory_order_acquire); done < posted;
+                         done = s_presents_done.load(std::memory_order_acquire))
+                        s_presents_done.wait(done, std::memory_order_acquire);
+                } else {
+                    gx2_native_run(true, [&] { gx2_render_present(s_window, gp); });
+                }
+            };
+            while (gx2_imgui::startup_login_active()) {
+                SDL_Event ev;
+                while (SDL_PollEvent(&ev)) {
+                    if (ev.type == SDL_QUIT ||
+                        (ev.type == SDL_WINDOWEVENT && ev.window.event == SDL_WINDOWEVENT_CLOSE &&
+                         ev.window.windowID == SDL_GetWindowID(s_window)))
+                        gx2_close_requested();
+                    if (ev.type == SDL_KEYDOWN && !ev.key.repeat && ev.key.keysym.scancode == SDL_SCANCODE_F11) {
+                        auto settings = rbrew_settings::get();
+                        settings.fullscreen = !window_fullscreen();
+                        set_window_fullscreen(settings.fullscreen);
+                        rbrew_settings::set(settings);
+                    }
+                    gx2_imgui::process_event(ev);
+                }
+                present_now(false);
+                SDL_Delay(16);
+            }
+            sync_overlay_mouse_mode();
+        }
+#endif
+    }
     rbrew_benchmark::frame.store(s_swap_count.load(), std::memory_order_relaxed);
     rbrew_benchmark::frame_draws.store(rbrew_benchmark::guest_draws.exchange(0, std::memory_order_relaxed),
                                        std::memory_order_relaxed);
