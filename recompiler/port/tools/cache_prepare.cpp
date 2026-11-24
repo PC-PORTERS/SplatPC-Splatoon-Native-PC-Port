@@ -14,17 +14,22 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <map>
 #include <mutex>
 #include <set>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -172,19 +177,21 @@ size_t resolve_rel(std::span<const uint8_t> buf, size_t field_off) {
 }
 
 bool read_file_bytes(const fs::path& path, std::vector<uint8_t>& out) {
+    std::error_code ec;
+    const auto sz = fs::file_size(path, ec);
+    if (ec || sz > (16ull << 30) || sz > SIZE_MAX) return false;
     std::FILE* f = std::fopen(path.string().c_str(), "rb");
     if (!f) return false;
-    std::fseek(f, 0, SEEK_END);
-    const long size = std::ftell(f);
-    std::fseek(f, 0, SEEK_SET);
-    if (size < 0) {
-        std::fclose(f);
-        return false;
+    out.resize(size_t(sz));
+    size_t pos = 0;
+    while (pos < out.size()) {
+        const size_t chunk = std::min<size_t>(out.size() - pos, 64u << 20);
+        const size_t n = std::fread(out.data() + pos, 1, chunk, f);
+        if (n == 0) break;
+        pos += n;
     }
-    out.resize(size_t(size));
-    const bool ok = size == 0 || std::fread(out.data(), 1, out.size(), f) == out.size();
     std::fclose(f);
-    return ok;
+    return pos == out.size();
 }
 
 bool write_file_atomic(const fs::path& path, const void* data, size_t size) {
@@ -621,16 +628,14 @@ public:
                         const std::array<uint32_t, 0x10000>& regs, const std::vector<R700FetchAttribute>& attributes,
                         uint32_t num_attribs, uint32_t rect, uint32_t points, const char* origin = "unknown",
                         std::string_view label = {}, PretranslatedVs* cached_vs = nullptr) {
+        (void)label;
         if (vs_bc.empty() || ps_bc.empty() || (vs_bc.size() & 7) || (ps_bc.size() & 7)) return false;
         const ProgramKeys keys = compute_program_keys(vs_bc, ps_bc, regs, attributes, num_attribs, rect, points);
         if (keys.reads.vs_parameter_mask || keys.reads.vs_texture_mask || keys.reads.ps_texture_mask) {
             masks_.try_emplace(keys.exact_base, keys.reads);
         }
 
-        auto existing = canon_to_body_.find(keys.canon_key);
-        if (existing != canon_to_body_.end()) {
-            const uint32_t body_id = existing->second;
-            key_to_body_.try_emplace(keys.exact_key, body_id);
+        if (canon_to_body_.find(keys.canon_key) != canon_to_body_.end()) {
             return true;
         }
 
@@ -707,7 +712,6 @@ public:
         const uint32_t body_id = intern_body(std::move(blob));
         canon_to_body_.emplace(keys.canon_key, body_id);
         key_to_body_.try_emplace(keys.canon_key, body_id);
-        key_to_body_.try_emplace(keys.exact_key, body_id);
 
         const uint64_t warm_dedup = bytes_hash(&keys.canon_key, 8) ^ (uint64_t(rect) << 1) ^ points;
         if (warm_dedup_.insert(warm_dedup).second) {
@@ -799,7 +803,11 @@ public:
                     const auto& body = bodies_[sorted[i].second];
                     std::snprintf(name, sizeof(name), "%s%016llx.tl", kCachePrefix, (unsigned long long)key);
                     const fs::path p = translated_dir / name;
-                    if (fs::exists(p, ec) && fs::file_size(p, ec) == body.size()) continue;
+                    std::error_code local_ec;
+                    if (fs::exists(p, local_ec) && !local_ec) {
+                        const auto existing_sz = fs::file_size(p, local_ec);
+                        if (!local_ec && existing_sz == body.size()) continue;
+                    }
                     blob = body;
                     if (blob.size() >= 16) std::memcpy(blob.data() + 8, &key, 8);
                     if (!write_file_atomic(p, blob.data(), blob.size())) tl_ok.store(false);
@@ -1509,6 +1517,7 @@ int run_aot(const fs::path& rom_or_content, const fs::path& cache_dir) {
     }
 
     const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    (void)secs;
     RBREW_LOG_INFO("aot", "AOT shader preparation completed in %.2f s (%spack.bin & %swarm.bin)\n", secs, kCachePrefix,
                    kCachePrefix);
     return spirv_ok && collector.stats_.translation_failures == 0 ? 0 : 6;

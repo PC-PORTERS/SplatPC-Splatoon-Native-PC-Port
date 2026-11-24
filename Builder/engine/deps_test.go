@@ -1,10 +1,15 @@
 package engine
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestInstalledDirNeedsTheReleaseStamp(t *testing.T) {
@@ -112,5 +117,51 @@ func TestBuildLogWritesTheFile(t *testing.T) {
 	}
 	if strings.TrimSpace(string(data)) != "=== Step 5/8 ===" || len(shown) != 1 {
 		t.Errorf("expected the line in the file and the UI, got %q and %v", data, shown)
+	}
+}
+
+func TestDownloadFileRetriesTransient503(t *testing.T) {
+	prevDelay := downloadRetryBaseDelay
+	downloadRetryBaseDelay = time.Millisecond
+	defer func() { downloadRetryBaseDelay = prevDelay }()
+
+	var attempts atomic.Int32
+	var notFoundAttempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/flaky":
+			if attempts.Add(1) < 3 {
+				http.Error(w, "busy", http.StatusServiceUnavailable)
+				return
+			}
+			_, _ = w.Write([]byte("ok"))
+		default:
+			notFoundAttempts.Add(1)
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	dest := filepath.Join(t.TempDir(), "header.h")
+	if err := downloadFile(context.Background(), srv.URL+"/flaky", dest); err != nil {
+		t.Fatalf("downloadFile failed after retries: %v", err)
+	}
+	if attempts.Load() != 3 {
+		t.Errorf("expected 3 attempts, got %d", attempts.Load())
+	}
+	data, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "ok" {
+		t.Errorf("expected content %q, got %q", "ok", string(data))
+	}
+
+	missingDest := filepath.Join(t.TempDir(), "missing.h")
+	if err := downloadFile(context.Background(), srv.URL+"/missing", missingDest); err == nil {
+		t.Errorf("expected 404 error")
+	}
+	if notFoundAttempts.Load() != 1 {
+		t.Errorf("expected 404 not to be retried, got %d attempts", notFoundAttempts.Load())
 	}
 }

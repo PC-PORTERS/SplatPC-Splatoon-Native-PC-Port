@@ -331,10 +331,12 @@ Page build_main_rows(rs::Values& v, bool& dirty) {
     ImGui::SameLine();
     if (button("Weather & time (experimental)", "Weather, time of day, day/night cycle and clouds."))
         open = Page::Weather;
-    if (button("Camera & mouse", "Mouse aiming, field of view, camera distance, wiggle.")) open = Page::Camera;
-    ImGui::SameLine();
-    if (button("Cinema, photo & hacks (experimental)", "Cinema mode, photos, focus blur, free camera, spawn."))
-        open = Page::Cinema;
+    if (!gx2env::online_mode()) {
+        if (button("Camera & mouse", "Mouse aiming, field of view, camera distance, wiggle.")) open = Page::Camera;
+        ImGui::SameLine();
+        if (button("Cinema, photo & hacks (experimental)", "Cinema mode, photos, focus blur, free camera, spawn."))
+            open = Page::Cinema;
+    }
     return open;
 }
 
