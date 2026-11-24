@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 var fontNames = []string{"CafeCn.ttf", "CafeKr.ttf", "CafeStd.ttf", "CafeTw.ttf"}
@@ -112,43 +113,89 @@ func PrepareWiiUResourcesContext(ctx context.Context, gameFolder, repoRoot, cach
 	return nil
 }
 
+const downloadMaxAttempts = 4
+
+var downloadRetryBaseDelay = 2 * time.Second
+
+func isRetryableHTTPStatus(code int) bool {
+	return code == http.StatusRequestTimeout || code == http.StatusTooManyRequests ||
+		(code >= http.StatusInternalServerError && code < 600)
+}
+
+func sleepWithContext(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return ctx.Err()
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
 func downloadFile(ctx context.Context, url, dest string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	var err error
+	delay := downloadRetryBaseDelay
+	for attempt := 1; attempt <= downloadMaxAttempts; attempt++ {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		var retryable bool
+		retryable, err = downloadFileOnce(ctx, url, dest)
+		if err == nil {
+			return nil
+		}
+		if !retryable || attempt == downloadMaxAttempts {
+			return err
+		}
+		if sleepErr := sleepWithContext(ctx, delay); sleepErr != nil {
+			return sleepErr
+		}
+		delay *= 2
+	}
+	return err
+}
+
+func downloadFileOnce(ctx context.Context, url, dest string) (bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return err
+		return false, err
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return err
+		return ctx.Err() == nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("HTTP error %s", resp.Status)
+		return isRetryableHTTPStatus(resp.StatusCode), fmt.Errorf("HTTP error %s", resp.Status)
 	}
 
 	tmpFile := dest + ".part"
 	out, err := os.Create(tmpFile)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	if _, err := io.Copy(out, resp.Body); err != nil {
 		out.Close()
 		_ = os.Remove(tmpFile)
-		return err
+		return ctx.Err() == nil, err
 	}
 	if err := out.Close(); err != nil {
 		_ = os.Remove(tmpFile)
-		return err
+		return false, err
 	}
 	if err := ctx.Err(); err != nil {
 		_ = os.Remove(tmpFile)
-		return err
+		return false, err
 	}
-	return os.Rename(tmpFile, dest)
+	return false, os.Rename(tmpFile, dest)
 }
 
 func fileHash(path string) (string, error) {
