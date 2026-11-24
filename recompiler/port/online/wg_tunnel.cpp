@@ -33,7 +33,7 @@ namespace {
 
 bool parse_ipv4_host(const std::string& text, uint32_t& out) {
     struct in_addr addr{};
-    if (inet_pton(AF_INET, text.c_str(), &addr) != 1) return false;
+    if (text.empty() || inet_pton(AF_INET, text.c_str(), &addr) != 1) return false;
     out = ntohl(addr.s_addr);
     return true;
 }
@@ -85,6 +85,16 @@ uint16_t udp_checksum(uint32_t src_ip, uint32_t dst_ip, const uint8_t* udp_pkt, 
     while (sum >> 16) sum = (sum & 0xFFFFu) + (sum >> 16);
     const uint16_t res = uint16_t(~sum & 0xFFFFu);
     return res == 0 ? 0xFFFFu : res;
+}
+
+void send_wg_datagram(intptr_t sock, const uint8_t* buf, int len) {
+    if (sock < 0 || len <= 0) return;
+#if defined(_WIN32)
+    send((SOCKET)sock, reinterpret_cast<const char*>(buf), len, 0);
+#else
+    const ssize_t ignored = send((int)sock, buf, size_t(len), 0);
+    (void)ignored;
+#endif
 }
 
 bool create_wake_pair(intptr_t& read_fd, intptr_t& write_fd) {
@@ -185,12 +195,13 @@ bool generate_wg_keypair(std::string& priv_b64_out, std::string& pub_b64_out) {
 }
 
 bool fetch_wg_config(Transport& transport, const std::string& wg_path, const std::string& token,
-                     const std::string& public_key, WgConfig& out, std::string& error_out) {
+                     const std::string& public_key, WgConfig& out, std::string& error_out, int* out_http_status) {
     error_out.clear();
     nlohmann::json body = {{"token", token}};
     if (!public_key.empty()) body["public_key"] = public_key;
 
     const Reply r = transport.request("POST", wg_path.empty() ? "/social/wg" : wg_path, &body);
+    if (out_http_status) *out_http_status = r.status;
     if (r.status == 0) {
         error_out = "WireGuard key request failed: server unreachable.";
         return false;
@@ -211,6 +222,7 @@ bool fetch_wg_config(Transport& transport, const std::string& wg_path, const std
     out.client_ip = r.body.value("client_ip", std::string());
     out.subnet = r.body.value("subnet", std::string());
     out.server_ip = r.body.value("server_ip", std::string());
+    out.nncs2_ip = r.body.value("nncs2_ip", out.server_ip);
     out.server_public_key = r.body.value("server_public_key", std::string());
     out.endpoint = r.body.value("endpoint", std::string());
     out.persistent_keepalive = uint16_t(r.body.value("persistent_keepalive", 25));
@@ -248,8 +260,15 @@ bool WgTunnel::start(const WgConfig& cfg) {
                        cfg.subnet.c_str());
         return false;
     }
-    uint32_t server_ip = 0;
+    uint32_t server_ip = 0, nncs2_ip = 0;
     if (!cfg.server_ip.empty()) parse_ipv4_host(cfg.server_ip, server_ip);
+    if (!cfg.nncs2_ip.empty()) parse_ipv4_host(cfg.nncs2_ip, nncs2_ip);
+    if (nncs2_ip == 0) nncs2_ip = server_ip;
+
+    uint32_t pub_srv = 0, pub_n1 = 0, pub_n2 = 0;
+    parse_ipv4_host(cfg.public_server_ip, pub_srv);
+    parse_ipv4_host(cfg.public_nncs1_ip, pub_n1);
+    parse_ipv4_host(cfg.public_nncs2_ip, pub_n2);
 
     std::string ep_host, ep_port;
     if (!parse_endpoint(cfg.endpoint, ep_host, ep_port)) {
@@ -307,12 +326,24 @@ bool WgTunnel::start(const WgConfig& cfg) {
 
     client_ip_ = client_ip;
     server_ip_ = server_ip;
+    nncs2_ip_ = nncs2_ip;
     subnet_net_ = net;
     subnet_mask_ = mask;
+    public_server_ip_ = pub_srv;
+    public_nncs1_ip_ = pub_n1;
+    public_nncs2_ip_ = pub_n2;
+    server_ip_str_ = cfg.server_ip;
+    nncs2_ip_str_ = cfg.nncs2_ip.empty() ? cfg.server_ip : cfg.nncs2_ip;
     bt_tun_ = tun;
     udp_sock_ = sock;
     stop_requested_.store(false, std::memory_order_release);
     active_.store(true, std::memory_order_release);
+
+    // Initiate the WireGuard handshake right away before game sockets start talking.
+    std::array<uint8_t, 512> hs_buf{};
+    const int hs_len = boringtun_force_handshake(tun, hs_buf.data(), hs_buf.size());
+    if (hs_len > 0) send_wg_datagram(sock, hs_buf.data(), hs_len);
+
     io_thread_ = std::thread(&WgTunnel::io_loop, this);
 
     RBREW_LOG_INFO("wireguard", "boringtun tunnel started: client=%s subnet=%s endpoint=%s\n", cfg.client_ip.c_str(),
@@ -346,6 +377,26 @@ void WgTunnel::stop() {
 
 bool WgTunnel::contains_ip(uint32_t ip_host) const {
     return active() && ((ip_host & subnet_mask_) == subnet_net_);
+}
+
+std::string WgTunnel::server_ip_str() const {
+    return server_ip_str_;
+}
+
+std::string WgTunnel::nncs2_ip_str() const {
+    return nncs2_ip_str_;
+}
+
+uint32_t WgTunnel::rewrite_destination(uint32_t dst_ip_host) const {
+    if (!active()) return dst_ip_host;
+    if (server_ip_ != 0 && ((public_server_ip_ != 0 && dst_ip_host == public_server_ip_) ||
+                            (public_nncs1_ip_ != 0 && dst_ip_host == public_nncs1_ip_))) {
+        return server_ip_;
+    }
+    if (nncs2_ip_ != 0 && public_nncs2_ip_ != 0 && dst_ip_host == public_nncs2_ip_) {
+        return nncs2_ip_;
+    }
+    return dst_ip_host;
 }
 
 void WgTunnel::register_udp_socket(int guest_fd, uint16_t local_port_host) {
@@ -397,11 +448,11 @@ int WgTunnel::send_udp(int guest_fd, uint16_t local_port_host, uint32_t dst_ip_h
     (void)len;
     return -1;
 #else
-    if (!active() || !bt_tun_ || udp_sock_ < 0 || len > 1400) return -1;
+    if (!active() || !bt_tun_ || udp_sock_ < 0 || len > 1472) return -1;
     if (local_port_host != 0) register_udp_socket(guest_fd, local_port_host);
 
     const size_t total = 20 + 8 + len;
-    std::array<uint8_t, 1500> ip_pkt{};
+    std::array<uint8_t, 1600> ip_pkt{};
     ip_pkt[0] = 0x45;
     ip_pkt[1] = 0x00;
     ip_pkt[2] = uint8_t(total >> 8);
@@ -447,14 +498,7 @@ int WgTunnel::send_udp(int guest_fd, uint16_t local_port_host, uint32_t dst_ip_h
             boringtun_encapsulate(static_cast<BtTunnel*>(bt_tun_), ip_pkt.data(), total, wg_buf.data(), wg_buf.size());
     }
     if (enc_len < 0) return -1;
-    if (enc_len > 0) {
-#if defined(_WIN32)
-        send((SOCKET)udp_sock_, reinterpret_cast<const char*>(wg_buf.data()), enc_len, 0);
-#else
-        const ssize_t ignored = send((int)udp_sock_, wg_buf.data(), size_t(enc_len), 0);
-        (void)ignored;
-#endif
-    }
+    if (enc_len > 0) send_wg_datagram(udp_sock_, wg_buf.data(), enc_len);
     return int(len);
 #endif
 }
@@ -547,18 +591,21 @@ void WgTunnel::io_loop() {
                     if (!bt_tun_) break;
                     dec_len = boringtun_decapsulate(static_cast<BtTunnel*>(bt_tun_), net_buf.data(), size_t(r),
                                                     tun_buf.data(), tun_buf.size(), &action);
-                }
-                if (dec_len > 0) {
-                    if (action == BT_ACTION_WRITE_TO_NETWORK) {
-#if defined(_WIN32)
-                        send((SOCKET)udp_sock_, reinterpret_cast<const char*>(tun_buf.data()), dec_len, 0);
-#else
-                        const ssize_t ignored = send((int)udp_sock_, tun_buf.data(), size_t(dec_len), 0);
-                        (void)ignored;
-#endif
-                    } else if (action == BT_ACTION_WRITE_TO_TUNNEL_IPV4) {
-                        deliver_ipv4_packet(tun_buf.data(), size_t(dec_len));
+                    if (dec_len > 0 && action == BT_ACTION_WRITE_TO_NETWORK) {
+                        send_wg_datagram(udp_sock_, tun_buf.data(), dec_len);
+                        // Drain any packets queued while the handshake was in progress.
+                        for (;;) {
+                            int q_action = BT_ACTION_DONE;
+                            const int q_len = boringtun_decapsulate(static_cast<BtTunnel*>(bt_tun_), nullptr, 0,
+                                                                    tun_buf.data(), tun_buf.size(), &q_action);
+                            if (q_len <= 0 || q_action != BT_ACTION_WRITE_TO_NETWORK) break;
+                            send_wg_datagram(udp_sock_, tun_buf.data(), q_len);
+                        }
+                        continue;
                     }
+                }
+                if (dec_len > 0 && action == BT_ACTION_WRITE_TO_TUNNEL_IPV4) {
+                    deliver_ipv4_packet(tun_buf.data(), size_t(dec_len));
                 }
             }
         }
@@ -569,14 +616,7 @@ void WgTunnel::io_loop() {
             if (!bt_tun_) break;
             timer_len = boringtun_update_timers(static_cast<BtTunnel*>(bt_tun_), tun_buf.data(), tun_buf.size());
         }
-        if (timer_len > 0) {
-#if defined(_WIN32)
-            send((SOCKET)udp_sock_, reinterpret_cast<const char*>(tun_buf.data()), timer_len, 0);
-#else
-            const ssize_t ignored = send((int)udp_sock_, tun_buf.data(), size_t(timer_len), 0);
-            (void)ignored;
-#endif
-        }
+        if (timer_len > 0) send_wg_datagram(udp_sock_, tun_buf.data(), timer_len);
     }
 #endif
 }

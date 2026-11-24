@@ -19,9 +19,13 @@ struct WgConfig {
     std::string client_ip;
     std::string subnet;
     std::string server_ip;
+    std::string nncs2_ip;
     std::string server_public_key;
     std::string endpoint;
     std::string private_key;
+    std::string public_server_ip;
+    std::string public_nncs1_ip;
+    std::string public_nncs2_ip;
     uint16_t persistent_keepalive = 25;
     uint16_t mtu = 1420;
 };
@@ -33,8 +37,10 @@ std::string derive_wg_path(const std::string& register_path);
 bool generate_wg_keypair(std::string& priv_b64_out, std::string& pub_b64_out);
 
 // Requests a WireGuard peer allocation and server endpoint config from POST <wg_path>.
+// Sets *out_http_status (0 if unreachable) when non-null.
 bool fetch_wg_config(Transport& transport, const std::string& wg_path, const std::string& token,
-                     const std::string& public_key, WgConfig& out, std::string& error_out);
+                     const std::string& public_key, WgConfig& out, std::string& error_out,
+                     int* out_http_status = nullptr);
 
 struct WgUdpPacket {
     uint32_t src_ip_host = 0;
@@ -53,6 +59,13 @@ public:
     bool contains_ip(uint32_t ip_host) const;
     uint32_t client_ip_host() const { return client_ip_; }
     uint32_t server_ip_host() const { return server_ip_; }
+    uint32_t nncs2_ip_host() const { return nncs2_ip_; }
+    uint32_t subnet_mask_host() const { return subnet_mask_; }
+    std::string server_ip_str() const;
+    std::string nncs2_ip_str() const;
+
+    // Rewrites configured public NEX/NNCS destinations to their WireGuard tunnel endpoints.
+    uint32_t rewrite_destination(uint32_t dst_ip_host) const;
 
     void register_udp_socket(int guest_fd, uint16_t local_port_host);
     void unregister_socket(int guest_fd);
@@ -87,8 +100,14 @@ private:
 
     uint32_t client_ip_ = 0;
     uint32_t server_ip_ = 0;
+    uint32_t nncs2_ip_ = 0;
     uint32_t subnet_net_ = 0;
     uint32_t subnet_mask_ = 0;
+    uint32_t public_server_ip_ = 0;
+    uint32_t public_nncs1_ip_ = 0;
+    uint32_t public_nncs2_ip_ = 0;
+    std::string server_ip_str_;
+    std::string nncs2_ip_str_;
     std::atomic<uint16_t> ip_id_{1};
 
     void* bt_tun_ = nullptr; // BtTunnel*

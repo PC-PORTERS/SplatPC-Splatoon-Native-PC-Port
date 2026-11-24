@@ -41,6 +41,10 @@ int boringtun_decapsulate(BtTunnel* tun, const uint8_t* src, size_t src_len, uin
 // Returns > 0 (bytes in dst to send to server), 0 (nothing to send), or < 0 (error).
 int boringtun_update_timers(BtTunnel* tun, uint8_t* dst, size_t dst_cap);
 
+// Forces an immediate handshake initiation packet into dst.
+// Returns > 0 (bytes in dst to send to server), 0 (handshake already in progress), or < 0 (error).
+int boringtun_force_handshake(BtTunnel* tun, uint8_t* dst, size_t dst_cap);
+
 #ifdef __cplusplus
 }
 #endif

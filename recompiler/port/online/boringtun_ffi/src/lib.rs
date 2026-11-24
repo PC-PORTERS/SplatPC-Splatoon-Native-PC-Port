@@ -148,11 +148,15 @@ pub extern "C" fn boringtun_decapsulate(
     dst_cap: usize,
     out_action: *mut c_int,
 ) -> c_int {
-    if tun.is_null() || src.is_null() || dst.is_null() {
+    if tun.is_null() || dst.is_null() || (src_len > 0 && src.is_null()) {
         return -1;
     }
     let tun = unsafe { &mut *tun };
-    let src_slice = unsafe { slice::from_raw_parts(src, src_len) };
+    let src_slice = if src_len == 0 {
+        &[]
+    } else {
+        unsafe { slice::from_raw_parts(src, src_len) }
+    };
     let dst_slice = unsafe { slice::from_raw_parts_mut(dst, dst_cap) };
     let action_ref = if out_action.is_null() {
         None
@@ -174,6 +178,20 @@ pub extern "C" fn boringtun_update_timers(
     let tun = unsafe { &mut *tun };
     let dst_slice = unsafe { slice::from_raw_parts_mut(dst, dst_cap) };
     map_result(tun.inner.update_timers(dst_slice), None)
+}
+
+#[no_mangle]
+pub extern "C" fn boringtun_force_handshake(
+    tun: *mut BtTunnel,
+    dst: *mut u8,
+    dst_cap: usize,
+) -> c_int {
+    if tun.is_null() || dst.is_null() {
+        return -1;
+    }
+    let tun = unsafe { &mut *tun };
+    let dst_slice = unsafe { slice::from_raw_parts_mut(dst, dst_cap) };
+    map_result(tun.inner.format_handshake_initiation(dst_slice, true), None)
 }
 
 #[cfg(test)]
