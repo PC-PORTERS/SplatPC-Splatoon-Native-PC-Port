@@ -326,8 +326,38 @@ if(RBREW_ENABLE_BORINGTUN AND CARGO_EXECUTABLE)
         set(RBREW_BORINGTUN_LIB "${RBREW_BORINGTUN_TARGET_DIR}/release/libboringtun_client.a")
     endif()
     set(RBREW_BORINGTUN_ENV "CARGO_TARGET_DIR=${RBREW_BORINGTUN_TARGET_DIR}")
-    if(NOT MINGW)
-        # Avoid leaking userspace wrapper compilers (e.g. Zig cc) into cargo's cc-rs build scripts.
+    if(UNIX AND NOT APPLE)
+        # Prefer system gcc/clang over userspace Zig cc (whose CLI rejects Rust target triples like x86_64-unknown-linux-gnu).
+        find_program(RBREW_SYSTEM_CC NAMES gcc clang PATHS /usr/bin /usr/local/bin /bin NO_DEFAULT_PATH)
+        find_program(RBREW_SYSTEM_AR NAMES gcc-ar ar PATHS /usr/bin /usr/local/bin /bin NO_DEFAULT_PATH)
+        if(RBREW_SYSTEM_CC)
+            list(APPEND RBREW_BORINGTUN_ENV "CC=${RBREW_SYSTEM_CC}")
+            if(RBREW_SYSTEM_AR)
+                list(APPEND RBREW_BORINGTUN_ENV "AR=${RBREW_SYSTEM_AR}")
+            endif()
+        else()
+            set(_rbrew_zig_cc_wrapper "${CMAKE_CURRENT_BINARY_DIR}/boringtun_cc_wrapper.sh")
+            file(WRITE "${_rbrew_zig_cc_wrapper}"
+"#!/bin/sh
+n=$#
+i=0
+while [ $i -lt $n ]; do
+    a=$1
+    shift
+    case \"$a\" in
+        --target=x86_64-unknown-linux-gnu) set -- \"$@\" -target x86_64-linux-gnu ;;
+        --target=aarch64-unknown-linux-gnu) set -- \"$@\" -target aarch64-linux-gnu ;;
+        --target=*) ;;
+        *) set -- \"$@\" \"$a\" ;;
+    esac
+    i=$((i + 1))
+done
+exec \"${CMAKE_C_COMPILER}\" \"$@\"
+")
+            file(CHMOD "${_rbrew_zig_cc_wrapper}" PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+            list(APPEND RBREW_BORINGTUN_ENV "CC=${_rbrew_zig_cc_wrapper}")
+        endif()
+    elseif(NOT MINGW)
         list(APPEND RBREW_BORINGTUN_ENV --unset=CC --unset=CXX)
     endif()
     add_custom_command(
