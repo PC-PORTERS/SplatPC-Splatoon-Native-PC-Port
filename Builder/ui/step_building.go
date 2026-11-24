@@ -26,6 +26,8 @@ type StepBuildingView struct {
 
 	logBox     *widget.Entry
 	cancelBtn  *widget.Button
+	backBtn    *widget.Button
+	retryBtn   *widget.Button
 	copyLogBtn *widget.Button
 	timerLabel *widget.Label
 
@@ -78,12 +80,23 @@ func (v *StepBuildingView) initUI() {
 
 	v.cancelBtn = widget.NewButtonWithIcon("Cancel Build", theme.CancelIcon(), func() {
 		dialog.ShowConfirm("Confirmation", "Are you sure you want to cancel the build in progress?", func(confirm bool) {
-			if confirm {
-				v.wizard.CancelBuild()
+			if confirm && v.wizard.CancelBuild() {
+				v.SetCancelling()
 			}
 		}, v.wizard.window)
 	})
 	v.cancelBtn.Importance = widget.DangerImportance
+
+	v.backBtn = widget.NewButtonWithIcon("Back to Config", theme.NavigateBackIcon(), func() {
+		v.wizard.GoToStep(StepBuildConfig)
+	})
+	v.backBtn.Hide()
+
+	v.retryBtn = widget.NewButtonWithIcon("Retry Build", theme.ViewRefreshIcon(), func() {
+		v.wizard.StartBuild()
+	})
+	v.retryBtn.Importance = widget.HighImportance
+	v.retryBtn.Hide()
 
 	progressRow := container.NewBorder(
 		nil, nil,
@@ -101,7 +114,7 @@ func (v *StepBuildingView) initUI() {
 
 	bottomBar := container.NewBorder(
 		nil, nil,
-		v.cancelBtn,
+		container.NewHBox(v.cancelBtn, v.backBtn, v.retryBtn),
 		v.copyLogBtn,
 	)
 
@@ -127,6 +140,11 @@ func (v *StepBuildingView) Reset() {
 	v.percentLabel.SetText("0%")
 	v.stepTitle.SetText("Step 5: Compiling Splatoon")
 	v.stepDesc.SetText("Starting build pipeline...")
+	v.cancelBtn.SetText("Cancel Build")
+	v.cancelBtn.Enable()
+	v.cancelBtn.Show()
+	v.backBtn.Hide()
+	v.retryBtn.Hide()
 
 	stop := make(chan struct{})
 	v.stop = stop
@@ -149,6 +167,32 @@ func (v *StepBuildingView) Reset() {
 			}
 		}
 	}()
+}
+
+// SetCancelling updates the build page right away when cancellation is requested
+// so the user gets immediate feedback while child processes stop. Runs on the UI thread.
+func (v *StepBuildingView) SetCancelling() {
+	v.cancelBtn.SetText("Cancelling...")
+	v.cancelBtn.Disable()
+	v.stepDesc.SetText("Cancelling build and stopping active processes...")
+}
+
+// SetFailed switches the build page into a failed state with Retry Build and
+// Back to Config buttons instead of Cancel Build. Runs on the UI thread.
+func (v *StepBuildingView) SetFailed(err error) {
+	v.StopTimer()
+	v.stepTitle.SetText("Build Failed")
+	desc := "The build did not complete. Check the log below or retry."
+	if err != nil {
+		first := strings.TrimSpace(strings.SplitN(err.Error(), "\n", 2)[0])
+		if first != "" {
+			desc = first
+		}
+	}
+	v.stepDesc.SetText(desc)
+	v.cancelBtn.Hide()
+	v.backBtn.Show()
+	v.retryBtn.Show()
 }
 
 // StopTimer ends the build page updates and shows the last log lines. Runs on

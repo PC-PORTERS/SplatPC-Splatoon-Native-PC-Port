@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 )
@@ -96,6 +95,13 @@ func LoadSettingsIni(filePath string, cfg *Configuration) error {
 			}
 		case "hd_textures", "upscale_textures":
 			cfg.UpscaleTextures = (val != "0")
+		case "online_server":
+			cfg.OnlineServer = val
+			cfg.EnableOnline = (val != "")
+		case "pseudo":
+			if val != "" {
+				cfg.PlayerName = val
+			}
 		}
 	}
 	return nil
@@ -107,8 +113,15 @@ func LoadSettingsIni(filePath string, cfg *Configuration) error {
 func WriteSettingsIni(cfg Configuration, outFolder string) error {
 	filePath := filepath.Join(outFolder, "settings.ini")
 
+	onlineServerVal := ""
+	if cfg.EnableOnline {
+		onlineServerVal = strings.TrimSpace(cfg.OnlineServer)
+	}
+
 	managedValues := map[string]string{
 		"player_name":       cfg.PlayerName,
+		"pseudo":            cfg.PlayerName,
+		"online_server":     onlineServerVal,
 		"resolution":        cfg.Resolution,
 		"plaza_60fps":       strconv.Itoa(boolToInt(cfg.Plaza60FPS)),
 		"frame_rate":        strconv.Itoa(cfg.FrameRate),
@@ -179,6 +192,8 @@ func WriteSettingsIni(cfg Configuration, outFolder string) error {
 	content := fmt.Sprintf(`# Splatoon PC port settings (ESC menu)
 # Configured via SplatPC Builder
 player_name=%s
+pseudo=%s
+online_server=%s
 resolution=%s
 plaza_60fps=%d
 frame_rate=%d
@@ -232,6 +247,8 @@ cinema_mode=0
 bindings=2
 `,
 		cfg.PlayerName,
+		cfg.PlayerName,
+		onlineServerVal,
 		cfg.Resolution,
 		boolToInt(cfg.Plaza60FPS),
 		cfg.FrameRate,
@@ -272,37 +289,6 @@ func RegionMask(region string) string {
 		return region
 	}
 	return ""
-}
-
-func WriteLauncherScript(cfg Configuration, outFolder string) error {
-	texDumpLineWin := ""
-	texDumpLineLinux := ""
-	if cfg.UpscaleTextures {
-		texDumpLineWin = "set \"RBREW_TEXTURE_DUMP=%~dp0texture-dump\"\n"
-		texDumpLineLinux = "export RBREW_TEXTURE_DUMP=\"$HERE/texture-dump\"\n"
-	}
-
-	if runtime.GOOS == "windows" {
-		scriptPath := filepath.Join(outFolder, "Launch_Splatoon.bat")
-		content := fmt.Sprintf(`@echo off
-set "RBREW_PLAYER_NAME=%s"
-set "RBREW_CONSOLE_LANGUAGE=%d"
-set "RBREW_CONSOLE_REGION=%s"
-%sstart "" "%%~dp0Splatoon.exe" %%*
-`, cfg.PlayerName, cfg.LanguageID, RegionMask(cfg.ConsoleRegion), texDumpLineWin)
-		return os.WriteFile(scriptPath, []byte(content), 0755)
-	}
-
-	// Linux launcher
-	scriptPath := filepath.Join(outFolder, "Splatoon.sh")
-	content := fmt.Sprintf(`#!/usr/bin/env bash
-HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-export RBREW_PLAYER_NAME="%s"
-export RBREW_CONSOLE_LANGUAGE="%d"
-export RBREW_CONSOLE_REGION="%s"
-%sexec "$HERE/Splatoon" "$@"
-`, cfg.PlayerName, cfg.LanguageID, RegionMask(cfg.ConsoleRegion), texDumpLineLinux)
-	return os.WriteFile(scriptPath, []byte(content), 0755)
 }
 
 func boolToInt(b bool) int {

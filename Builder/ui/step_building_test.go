@@ -35,3 +35,38 @@ func TestBuildLogKeepsUpWithAFastCompiler(t *testing.T) {
 		t.Errorf("last shown line = %q, expected the newest one", last)
 	}
 }
+
+func TestStepBuildingViewCancelAndRetryStates(t *testing.T) {
+	test.NewApp()
+	v := NewStepBuildingView(&Wizard{})
+	defer v.StopTimer()
+
+	v.Reset()
+	if !v.cancelBtn.Visible() || v.cancelBtn.Disabled() || v.cancelBtn.Text != "Cancel Build" {
+		t.Errorf("expected enabled 'Cancel Build' button after Reset")
+	}
+	if v.retryBtn.Visible() || v.backBtn.Visible() {
+		t.Errorf("expected Retry/Back buttons hidden during build")
+	}
+
+	v.SetCancelling()
+	if !v.cancelBtn.Disabled() || v.cancelBtn.Text != "Cancelling..." {
+		t.Errorf("expected disabled 'Cancelling...' button after SetCancelling")
+	}
+
+	v.SetFailed(fmt.Errorf("cmake failed\nfirst error line"))
+	if v.cancelBtn.Visible() {
+		t.Errorf("expected Cancel button hidden after failure")
+	}
+	if !v.retryBtn.Visible() || !v.backBtn.Visible() {
+		t.Errorf("expected Retry Build and Back to Config buttons visible after failure")
+	}
+	if v.stepTitle.Text != "Build Failed" || v.stepDesc.Text != "cmake failed" {
+		t.Errorf("unexpected failed header: title=%q desc=%q", v.stepTitle.Text, v.stepDesc.Text)
+	}
+
+	v.Reset()
+	if !v.cancelBtn.Visible() || v.cancelBtn.Disabled() || v.retryBtn.Visible() || v.backBtn.Visible() {
+		t.Errorf("expected Reset on retry to restore Cancel Build and hide Retry/Back")
+	}
+}

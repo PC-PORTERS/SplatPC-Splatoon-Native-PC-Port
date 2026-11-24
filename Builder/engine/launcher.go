@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
+
 	"splatpc-builder/settings"
 )
 
@@ -34,6 +36,9 @@ func LaunchGame(gameDir string, cfg settings.Configuration, log func(string, ...
 		return nil, fmt.Errorf("executable not found: %s", exePath)
 	}
 
+	// Persist latest settings.ini before launching directly into the binary
+	_ = settings.WriteSettingsIni(cfg, gameDir)
+
 	cmd := exec.Command(exePath)
 	cmd.Dir = gameDir
 
@@ -50,6 +55,17 @@ func LaunchGame(gameDir string, cfg settings.Configuration, log func(string, ...
 		dumpDir := filepath.Join(gameDir, "texture-dump")
 		_ = os.MkdirAll(dumpDir, 0755)
 		cmd.Env = append(cmd.Env, fmt.Sprintf("RBREW_TEXTURE_DUMP=%s", dumpDir))
+	}
+
+	if cfg.EnableOnline && strings.TrimSpace(cfg.OnlineServer) != "" {
+		server := strings.TrimSpace(cfg.OnlineServer)
+		cmd.Env = append(cmd.Env,
+			fmt.Sprintf("RBREW_ONLINE_SERVER=%s", server),
+			fmt.Sprintf("RBREW_PSEUDO=%s", cfg.PlayerName),
+		)
+		if log != nil {
+			log("Online multiplayer active: server %s (pseudo: '%s')", server, cfg.PlayerName)
+		}
 	}
 
 	if log != nil {

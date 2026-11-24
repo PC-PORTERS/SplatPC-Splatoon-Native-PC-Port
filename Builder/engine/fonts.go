@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -46,6 +47,13 @@ func InitializeWiiUFolders(gameFolder string) error {
 }
 
 func PrepareWiiUResources(gameFolder, repoRoot, cacheFolder string, log func(string, ...interface{})) error {
+	return PrepareWiiUResourcesContext(context.Background(), gameFolder, repoRoot, cacheFolder, log)
+}
+
+func PrepareWiiUResourcesContext(ctx context.Context, gameFolder, repoRoot, cacheFolder string, log func(string, ...interface{})) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if err := InitializeWiiUFolders(gameFolder); err != nil {
 		return fmt.Errorf("initializing Wii U folders: %w", err)
 	}
@@ -62,6 +70,9 @@ func PrepareWiiUResources(gameFolder, repoRoot, cacheFolder string, log func(str
 	}
 
 	for i, name := range fontNames {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		destFile := filepath.Join(fontCache, name)
 		valid := false
 		if _, err := os.Stat(destFile); err == nil {
@@ -73,7 +84,7 @@ func PrepareWiiUResources(gameFolder, repoRoot, cacheFolder string, log func(str
 		if !valid {
 			log("Downloading Cemu replacement font: %s", name)
 			url := fmt.Sprintf("%s/%s", fontBaseURL, name)
-			if err := downloadFile(url, destFile); err != nil {
+			if err := downloadFile(ctx, url, destFile); err != nil {
 				return fmt.Errorf("error downloading %s: %w", name, err)
 			}
 			h, err := fileHash(destFile)
@@ -101,8 +112,15 @@ func PrepareWiiUResources(gameFolder, repoRoot, cacheFolder string, log func(str
 	return nil
 }
 
-func downloadFile(url, dest string) error {
-	resp, err := http.Get(url)
+func downloadFile(ctx context.Context, url, dest string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -122,7 +140,14 @@ func downloadFile(url, dest string) error {
 		_ = os.Remove(tmpFile)
 		return err
 	}
-	out.Close()
+	if err := out.Close(); err != nil {
+		_ = os.Remove(tmpFile)
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		_ = os.Remove(tmpFile)
+		return err
+	}
 	return os.Rename(tmpFile, dest)
 }
 
