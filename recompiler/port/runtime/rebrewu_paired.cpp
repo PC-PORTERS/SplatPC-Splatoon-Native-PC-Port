@@ -18,10 +18,12 @@
 #include <string>
 #include <type_traits>
 
-extern "C" const bool rbrew_paired_inline_enabled = [] {
+static bool paired_inline_from_env() {
     const char* v = std::getenv("RBREW_PAIRED_INLINE");
     return !(v && v[0] == '0');
-}();
+}
+
+extern "C" const bool rbrew_paired_inline_enabled = paired_inline_from_env();
 
 namespace {
 uint32_t bits(uint32_t w, unsigned first, unsigned last) { // IBM bit numbering
