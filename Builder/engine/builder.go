@@ -21,6 +21,20 @@ import (
 // from the Git release/CI tag so CMake embeds the client version without a VERSION file.
 var ReleaseTag string
 
+func versionDefines(releaseTag string) []string {
+	tag := strings.TrimSpace(releaseTag)
+	if tag != "" {
+		return []string{
+			fmt.Sprintf("-DRBREW_APP_VERSION=%s", tag),
+			fmt.Sprintf("-DRBREW_BUILD_VERSION=%s", tag),
+		}
+	}
+	return []string{
+		"-DRBREW_APP_VERSION=",
+		"-DRBREW_BUILD_VERSION=dev",
+	}
+}
+
 type StepInfo struct {
 	Index       int
 	Total       int
@@ -255,9 +269,7 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 		"-DRBREW_DIAGNOSTIC_RUNTIME=OFF",
 		"-DRBREW_TEXTURE_DIAGNOSTICS=OFF",
 	)
-	if tag := strings.TrimSpace(ReleaseTag); tag != "" {
-		gameDefines = append(gameDefines, fmt.Sprintf("-DRBREW_APP_VERSION=%s", tag))
-	}
+	gameDefines = append(gameDefines, versionDefines(ReleaseTag)...)
 	if cmake.isWindowsMinGW() {
 		gameDefines = append(gameDefines, "-DCMAKE_EXE_LINKER_FLAGS=-static")
 	}
@@ -406,6 +418,7 @@ func RunRuntimeBuild(ctx context.Context, repoRoot string, cfg settings.Configur
 		"-DRBREW_BUILD_GAME=OFF",
 		"-DRBREW_BUILD_TESTS="+testsFlag,
 	)
+	portDefines = append(portDefines, versionDefines(ReleaseTag)...)
 	if cmake.isWindowsMinGW() {
 		portDefines = append(portDefines, "-DCMAKE_EXE_LINKER_FLAGS=-static")
 	}
