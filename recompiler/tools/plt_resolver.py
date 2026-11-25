@@ -388,11 +388,44 @@ def manifest_summary(m):
     return text
 
 
+def _disambiguate_matches(image_path, candidates):
+    """Narrow tied image matches using sibling app.xml / meta/meta.xml metadata."""
+    derived = identity_from_image(image_path)
+    if not derived:
+        return candidates
+    fields = ("title_id", "product_code", "region", "title_version", "app_version")
+    scored = []
+    for m in candidates:
+        matches = 0
+        conflicts = 0
+        for key in fields:
+            expected = derived.get(key, "").strip()
+            actual = m.identity_string(key)
+            if not expected or not actual:
+                continue
+            if key in ("title_id", "title_version"):
+                same = normalize_atom(expected) == normalize_atom(actual)
+            else:
+                same = expected.lower() == actual.lower()
+            if same:
+                matches += 1
+            else:
+                conflicts += 1
+        scored.append((matches, conflicts, m))
+    clean = [(matches, m) for matches, conflicts, m in scored if conflicts == 0 and matches > 0]
+    if not clean:
+        return candidates
+    best_score = max(matches for matches, _ in clean)
+    winners = [m for matches, m in clean if matches == best_score]
+    return winners if len(winners) == 1 else candidates
+
+
 def select_manifest(image_path, manifests):
     """The manifest whose [identity] describes this image.
 
-    An exact SHA-256 match wins over a size-only match. Several matches of the
-    same strength are ambiguous: the caller must pick with --manifest.
+    An exact SHA-256 match wins over a size-only match. When several manifests
+    match the same RPX binary (e.g. multi-region releases sharing one RPX),
+    sibling app.xml / meta.xml metadata disambiguates them. Remaining ties fail.
     """
     image = Path(image_path)
     if not image.is_file():
@@ -414,6 +447,11 @@ def select_manifest(image_path, manifests):
             size_only.append(m)
         else:
             rejected.append(m)
+
+    if len(exact) > 1:
+        exact = _disambiguate_matches(image, exact)
+    elif not exact and len(size_only) > 1:
+        size_only = _disambiguate_matches(image, size_only)
 
     if len(exact) == 1:
         return exact[0]
@@ -638,12 +676,11 @@ def identity_from_image(image):
     title_version = read_xml_field(app, "title_version")
     if title_version:
         try:
-            info["title_version"] = "0x%04X" % int(title_version, 16)
+            ver_num = int(title_version, 16)
+            info["title_version"] = "0x%04X" % ver_num
+            info["app_version"] = str(ver_num)
         except ValueError:
             pass
-    version = read_xml_field(app, "version")
-    if version and version.isdigit():
-        info["app_version"] = version
 
     meta = code_dir.parent / "meta" / "meta.xml"
     product = read_xml_field(meta, "product_code")   # e.g. WUP-P-AGMP
@@ -652,6 +689,16 @@ def identity_from_image(image):
         short = product.rsplit("-", 1)[-1]
         if short and short[-1] in REGION_BY_LETTER:
             info["region"] = REGION_BY_LETTER[short[-1]]
+    if "region" not in info:
+        region_mask = read_xml_field(meta, "region")
+        if region_mask:
+            try:
+                mask = int(region_mask, 16)
+                info["region"] = {1: "JPN", 2: "USA", 4: "EUR"}.get(mask, "")
+                if not info["region"]:
+                    del info["region"]
+            except ValueError:
+                pass
     if "app_version" not in info:
         meta_version = read_xml_field(meta, "title_version")
         if meta_version and meta_version.isdigit():

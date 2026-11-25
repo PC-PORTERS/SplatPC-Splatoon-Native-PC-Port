@@ -206,6 +206,57 @@ int main() {
         std::filesystem::remove_all(temp_dir);
     }
 
+    {
+        const std::filesystem::path temp_dir = std::filesystem::temp_directory_path() / "rebrewu_test_select";
+        std::filesystem::remove_all(temp_dir);
+        std::filesystem::create_directories(temp_dir / "Manifest");
+        std::filesystem::create_directories(temp_dir / "usa_dump" / "code");
+        std::filesystem::create_directories(temp_dir / "usa_dump" / "meta");
+
+        const std::string rpx_bytes = "SHARED_RPX_BYTES";
+        {
+            std::ofstream out(temp_dir / "usa_dump" / "code" / "Gambit.rpx", std::ios::binary);
+            out << rpx_bytes;
+        }
+        {
+            std::ofstream out(temp_dir / "bare_Gambit.rpx", std::ios::binary);
+            out << rpx_bytes;
+        }
+        {
+            std::ofstream out(temp_dir / "usa_dump" / "code" / "app.xml", std::ios::binary);
+            out << "<app><version>16</version><title_id>0005000E10176900</title_id>"
+                   "<title_version>0120</title_version></app>\n";
+        }
+        {
+            std::ofstream out(temp_dir / "usa_dump" / "meta" / "meta.xml", std::ios::binary);
+            out << "<menu><product_code>WUP-P-AGME</product_code><title_version>288</title_version>"
+                   "<region>00000002</region></menu>\n";
+        }
+
+        const std::string sha = rebrewu::manifest::file_sha256((temp_dir / "bare_Gambit.rpx").string(), nullptr);
+        const auto write_manifest = [&](const std::string& filename, const std::string& id, const std::string& tid,
+                                        const std::string& region, const std::string& product) {
+            std::ofstream out(temp_dir / "Manifest" / filename, std::ios::binary);
+            out << "[manifest]\nformat = rebrew-manifest/1\nid = " << id << "\n"
+                << "[identity]\nhash = Undefined\ntitle_id = " << tid << "\ntitle_version = 0x0120\n"
+                << "app_version = 288\nregion = " << region << "\nproduct_code = " << product << "\n"
+                << "image_size = 0x10\nimage_sha256 = " << sha << "\n";
+        };
+        write_manifest("Gambit_v288.manifest", "gambit-eur-v288", "0x0005000E10176A00", "EUR", "WUP-P-AGMP");
+        write_manifest("Gambit_usa_v288.manifest", "gambit-usa-v288", "0x0005000E10176900", "USA", "WUP-P-AGME");
+
+        std::string select_err;
+        const auto selected = rebrewu::manifest::select_for_image(
+            (temp_dir / "usa_dump" / "code" / "Gambit.rpx").string(), {temp_dir.string()}, &select_err);
+        check(selected.has_value() && selected->id == "gambit-usa-v288",
+              "select_for_image failed to disambiguate USA dump");
+
+        const auto ambiguous = rebrewu::manifest::select_for_image((temp_dir / "bare_Gambit.rpx").string(),
+                                                                   {temp_dir.string()}, &select_err);
+        check(!ambiguous.has_value(), "bare RPX without XML metadata should remain ambiguous");
+        std::filesystem::remove_all(temp_dir);
+    }
+
     if (failures == 0) std::printf("manifest patches: all checks passed\n");
     return failures == 0 ? 0 : 1;
 }
