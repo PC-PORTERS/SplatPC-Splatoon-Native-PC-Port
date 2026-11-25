@@ -72,10 +72,10 @@ inline std::optional<Identity> parse(std::istream& in) {
     }
     return valid(id) ? std::optional<Identity>(id) : std::nullopt;
 }
-template <class Rng> Identity create(Rng& rng) {
+template <class Rng> Identity create(Rng& rng, uint32_t pid_base = 0x10000000u, uint32_t pid_span = 0x6FFFFFFFu) {
     static constexpr char kAlphabet[] = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
     Identity id;
-    id.pid = 0x10000000u + uint32_t(rng() % 0x6FFFFFFFu); // non-zero, positive as int32
+    id.pid = pid_base + uint32_t(rng() % pid_span); // non-zero, positive as int32
     for (int i = 0; i < 16; ++i) id.password += kAlphabet[rng() % 62];
     return id;
 }
@@ -105,7 +105,8 @@ struct SecureRandom {
 };
 // Existing invalid/unreadable files are preserved. Failure never returns an
 // unpersisted identity, which would change the account on the next launch.
-inline Identity load_or_create(const std::filesystem::path& file) {
+inline Identity load_or_create(const std::filesystem::path& file, uint32_t pid_base = 0x10000000u,
+                               uint32_t pid_span = 0x6FFFFFFFu) {
     std::error_code ec;
     if (std::filesystem::exists(file, ec)) {
         std::ifstream in(file);
@@ -115,7 +116,7 @@ inline Identity load_or_create(const std::filesystem::path& file) {
     }
     if (ec) throw std::runtime_error("Cannot inspect online identity");
     SecureRandom rng;
-    const Identity id = create(rng);
+    const Identity id = create(rng, pid_base, pid_span);
     char suffix[48];
     std::snprintf(suffix, sizeof suffix, ".tmp.%016llx", (unsigned long long)rng());
     auto tmp = file;
@@ -229,6 +230,17 @@ inline void fill_nex_token(uint8_t* out, std::string_view token, std::string_vie
 }
 
 inline constexpr std::string_view kPublicServer = "173.249.46.125:60000";
+// online_server=protarium: Protarium Network's Splatoon server. The PC account (protarium_identity.ini,
+// PID in the server's PC range 0x7F000000..0x7FFFFFFF) gets a real NEX token from kProtariumAccount.
+inline constexpr std::string_view kProtariumServer = "protarium";
+inline constexpr std::string_view kProtariumHost = "57.129.155.198";
+inline constexpr uint16_t kProtariumPort = 25300;
+inline constexpr std::string_view kProtariumAccount = "https://account.protarium.online";
+inline constexpr std::string_view kProtariumBoss = "https://npts.app.protarium.online"; // /pc/boss/<region>/<task>/<file>
+inline constexpr uint32_t kProtariumPidBase = 0x7F000000u, kProtariumPidSpan = 0x01000000u;
+inline bool protarium_selected() {
+    return rbrew_online_cfg::resolved("RBREW_ONLINE_SERVER", "online_server", "") == kProtariumServer;
+}
 inline constexpr std::string_view kPublicNncs1 = "173.249.46.125";
 inline constexpr std::string_view kPublicNncs2 = "13.140.129.165";
 inline constexpr std::string_view kPublicRegister = "https://splatoonline.duckdns.org/register";
@@ -258,6 +270,7 @@ struct Config {
     bool online = false;
     std::string host;
     uint16_t port = 0;
+    bool protarium = false; // NEX token from the Protarium account server, no social server
 };
 inline const Identity& identity();
 // Reads the environment and settings.ini (uncached; config() keeps the result until the settings change).
@@ -266,7 +279,12 @@ inline Config read_config() {
     // RBREW_OFFLINE=1: offline whatever settings.ini or RBREW_ONLINE_SERVER names.
     if (const char* off = std::getenv("RBREW_OFFLINE"); off && off[0] == '1') return c;
     const std::string server = rbrew_online_cfg::resolved("RBREW_ONLINE_SERVER", "online_server", "");
-    c.online = !server.empty() && parse_server(server, c.host, c.port);
+    if (server == kProtariumServer) {
+        c.online = c.protarium = true;
+        c.host = std::string(kProtariumHost);
+        c.port = kProtariumPort;
+    } else
+        c.online = !server.empty() && parse_server(server, c.host, c.port);
     if (c.online && !valid(identity())) c.online = false; // failed persistence stays offline, with no invented account
     return c;
 }
@@ -402,7 +420,10 @@ inline void clear_session_token(const std::filesystem::path& file = session_toke
 inline const Identity& identity() {
     static const Identity id = [] {
         try {
-            return load_or_create(rbrew_online_cfg::settings_path().parent_path() / "online_identity.ini");
+            const auto dir = rbrew_online_cfg::settings_path().parent_path();
+            if (protarium_selected())
+                return load_or_create(dir / "protarium_identity.ini", kProtariumPidBase, kProtariumPidSpan);
+            return load_or_create(dir / "online_identity.ini");
         } catch (const std::exception& e) {
             rbrew_net_note("identity unavailable", e.what());
             return Identity{};

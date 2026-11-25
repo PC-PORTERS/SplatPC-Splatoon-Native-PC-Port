@@ -90,6 +90,49 @@ bool valid_ipv4(const std::string& s) {
     return a <= 255 && b <= 255 && c <= 255 && d <= 255;
 }
 
+// online_server=protarium: the SpotPass files are Protarium's (what consoles get from its BOSS server, served
+// decrypted), not the generated ones. A file that cannot be fetched keeps its previous copy.
+std::vector<std::string> fetch_protarium_boss(const fs::path& boss_dir) {
+    static constexpr std::pair<const char*, const char*> kFiles[] = {{"schdat2", "VSSetting.byaml"},
+                                                                     {"optdat2", "Festival.byaml"},
+                                                                     {"optdat2", "HapTexture.bfres"},
+                                                                     {"optdat2", "PanelTexture.bfres"}};
+    std::vector<std::string> problems;
+    const auto transport = make_http_transport(std::string(rbrew_online::kProtariumBoss), kTimeoutMs);
+    if (!transport) return {"cannot initialize HTTP transport"};
+    for (const auto& [task, name] : kFiles) {
+        const Reply r = transport->request("GET", std::string("/pc/boss/eur/") + task + "/" + name, nullptr);
+        if (r.http_status != 200 || r.raw.empty()) {
+            problems.push_back(std::string("Protarium ") + name + ": " +
+                               (r.http_status ? "HTTP " + std::to_string(r.http_status) : "unreachable"));
+            continue;
+        }
+        std::error_code ec;
+        fs::create_directories(boss_dir / task, ec);
+        const fs::path out = boss_dir / task / name, tmp = boss_dir / task / (std::string(name) + ".tmp");
+        {
+            std::ofstream file(tmp, std::ios::binary | std::ios::trunc);
+            file.write(r.raw.data(), std::streamsize(r.raw.size()));
+            if (!file.flush()) {
+                problems.push_back(std::string("cannot write ") + name);
+                continue;
+            }
+        }
+        fs::rename(tmp, out, ec);
+        if (ec) {
+            fs::remove(tmp, ec);
+            problems.push_back(std::string("cannot write ") + name);
+        }
+    }
+    return problems;
+}
+
+std::vector<std::string> refresh_boss_files(const fs::path& game_dir) {
+    const fs::path dir = env_path("RBREW_BOSS_DIR", game_dir / "boss");
+    if (rbrew_online::config().protarium) return fetch_protarium_boss(dir);
+    return write_boss_files(dir, unix_micros_now());
+}
+
 bool marker_matches(const fs::path& game_dir, const std::string& register_url) {
     if (register_url.empty()) return false;
     std::ifstream in(game_dir / "online_registered.txt", std::ios::binary);
@@ -210,7 +253,7 @@ void online_boot() {
     if (!cfg.online) return;
     const fs::path game_dir = rbrew_online_cfg::settings_path().parent_path();
 
-    for (const auto& problem : write_boss_files(env_path("RBREW_BOSS_DIR", game_dir / "boss"), unix_micros_now()))
+    for (const auto& problem : refresh_boss_files(game_dir))
         RBREW_LOG_WARN("boss", "%s\n", problem.c_str());
 
     const std::string url = rbrew_online::resolve_register_url(cfg);
@@ -252,8 +295,37 @@ void online_shutdown() {
     if (s_login_thread.joinable()) s_login_thread.join();
 }
 
+bool fetch_protarium_nex_token(uint32_t game_server_id, uint32_t pid, const std::string& password, NexToken& out,
+                               std::string& error_out) {
+    const auto transport = make_http_transport(std::string(rbrew_online::kProtariumAccount), kTimeoutMs);
+    if (!transport) {
+        error_out = "cannot initialize HTTP transport";
+        return false;
+    }
+    char path[96];
+    std::snprintf(path, sizeof path, "/v1/api/provider/nex_token/@me?game_server_id=%08X", game_server_id);
+    const nlohmann::json body = {{"pid", pid}, {"password", password}};
+    const Reply r = transport->request("POST", path, &body);
+    if (r.status != 200 || !r.body.is_object()) {
+        error_out = r.status ? "server refused (" + std::to_string(r.status) + ")" : "server unreachable";
+        return false;
+    }
+    try {
+        out.host = r.body.at("host").get<std::string>();
+        out.port = r.body.at("port").get<uint16_t>();
+        out.nex_password = r.body.at("nex_password").get<std::string>();
+        out.token = r.body.at("token").get<std::string>();
+        if (r.body.at("pid").get<uint32_t>() != pid) throw std::runtime_error("pid mismatch");
+    } catch (const std::exception& e) {
+        error_out = std::string("bad answer: ") + e.what();
+        return false;
+    }
+    return true;
+}
+
 bool needs_startup_login() {
     if (rbrew_online::is_session_offline()) return false;
+    if (rbrew_online::protarium_selected()) return false; // no social server: the NEX token is the login
     const std::string raw_server = rbrew_online_cfg::resolved("RBREW_ONLINE_SERVER", "online_server", "");
     if (raw_server.empty()) return false;
     std::lock_guard lock(s_mu);
@@ -382,7 +454,7 @@ void start_interactive_login(const LoginFormValues& raw_form) {
                                                                     form.pseudo, int64_t(std::time(nullptr))},
                                          game_dir / "online_session.ini");
 
-        for (const auto& problem : write_boss_files(env_path("RBREW_BOSS_DIR", game_dir / "boss"), unix_micros_now()))
+        for (const auto& problem : refresh_boss_files(game_dir))
             RBREW_LOG_WARN("boss", "%s\n", problem.c_str());
 
         const fs::path friends_dir = rbrew_online::friends_dir();

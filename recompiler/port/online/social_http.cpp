@@ -118,7 +118,10 @@ private:
             text.append(chunk.data(), read);
             if (text.size() > (1u << 20)) return reply; // no answer of the server is this large
         }
-        return parse_json_reply(int(status), text);
+        Reply parsed = parse_json_reply(int(status), text);
+        parsed.http_status = int(status);
+        parsed.raw = std::move(text);
+        return parsed;
     }
 
     Handle session_;
@@ -195,7 +198,10 @@ private:
         if (headers) curl_slist_free_all(headers);
         curl_easy_cleanup(curl);
         if (res != CURLE_OK || status <= 0) return reply;
-        return parse_json_reply(int(status), response);
+        Reply parsed = parse_json_reply(int(status), response);
+        parsed.http_status = int(status);
+        parsed.raw = std::move(response);
+        return parsed;
     }
 
     std::string base_, origin_, prefix_;
