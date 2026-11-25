@@ -29,6 +29,9 @@
 #ifndef SIO_UDP_CONNRESET
 #define SIO_UDP_CONNRESET _WSAIOW(IOC_VENDOR, 12)
 #endif
+#ifndef SIO_UDP_NETRESET
+#define SIO_UDP_NETRESET _WSAIOW(IOC_VENDOR, 15)
+#endif
 #pragma comment(lib, "ws2_32")
 typedef int socklen_t;
 typedef unsigned short sa_family_t;
@@ -384,6 +387,9 @@ static int map_so_option(int wii_opt) {
     }
 }
 
+static constexpr int kWiiIpTtl = 4;    // IP_TTL in the Wii U numbering (2 on Linux)
+static constexpr int kDefaultTtl = 64; // the TTL a Wii U sends with
+
 // ---------------------------------------------------------------------------
 // select() fd_set conversion
 // Wii U fd_set: big-endian uint32 bitmap (bit N = fd N, from LSB)
@@ -437,6 +443,23 @@ static void set_resolver_allocator(CPUState* cpu) {
     (void)cpu;
 }
 
+#if defined(_WIN32)
+// Windows fails the next recvfrom of a UDP socket when an ICMP error comes back, a Wii U never does.
+// PIA punches NATs with low-TTL probes: the "TTL exceeded" reply gave WSAENETRESET (10052), PIA took
+// its socket for dead and the host dropped the match. Port unreachable (WSAECONNRESET) is the same case.
+static void ignore_udp_icmp_errors(SOCKET s) {
+    static constexpr std::pair<DWORD, const char*> kControls[] = {{SIO_UDP_CONNRESET, "SIO_UDP_CONNRESET"},
+                                                                  {SIO_UDP_NETRESET, "SIO_UDP_NETRESET"}};
+    for (const auto& [control, name] : kControls) {
+        BOOL off = FALSE;
+        DWORD bytes = 0;
+        if (WSAIoctl(s, control, &off, sizeof off, nullptr, 0, &bytes, nullptr, nullptr) != 0)
+            RBREW_LOG_WARN("nsysnet", "%s could not be turned off (error %d): ICMP errors may break P2P\n", name,
+                           WSAGetLastError());
+    }
+}
+#endif
+
 // ---------------------------------------------------------------------------
 // mw_socket / socketclose
 // On Windows, SOCKET is UINT_PTR but games always get small FD numbers so
@@ -476,11 +499,7 @@ static void mw_socket(CPUState* cpu) {
     state.nonblocking = false;
     ++state.generation;
 #if defined(_WIN32)
-    if (type == SOCK_DGRAM) {
-        BOOL off = FALSE;
-        DWORD bytes = 0;
-        WSAIoctl(s, SIO_UDP_CONNRESET, &off, sizeof off, nullptr, 0, &bytes, nullptr, nullptr);
-    }
+    if (type == SOCK_DGRAM) ignore_udp_icmp_errors(s);
 #endif
     net_result(cpu, fd);
 }
@@ -836,8 +855,12 @@ static void setsockopt_(CPUState* cpu) {
         net_fail(cpu, kErrInvalid);
         return;
     }
-    const int option = level == SOL_SOCKET ? map_so_option(int(opt)) : int(opt);
+    const bool ttl = level == IPPROTO_IP && opt == kWiiIpTtl;
+    const int option = level == SOL_SOCKET ? map_so_option(int(opt)) : ttl ? IP_TTL : int(opt);
     int value = int(rbrew_read32(MEM, vp));
+    // PIA restores the TTL after its low-TTL NAT probes with IP_TTL 0, the Wii U default. Windows kept the
+    // probe TTL (4) instead, so no packet of the host got past a few routers.
+    if (ttl && value == 0) value = kDefaultTtl;
     if (level == SOL_SOCKET && opt == 0x80) {
         const uint32_t seconds = rbrew_read32(MEM, vp + 4);
         if (seconds > 65535) {

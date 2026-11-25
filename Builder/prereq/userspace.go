@@ -16,7 +16,6 @@ import (
 	"runtime"
 	"slices"
 	"strings"
-	"time"
 
 	"splatpc-builder/proc"
 )
@@ -529,96 +528,43 @@ func installAppImageTool(ctx context.Context, archivePath, destDir string) error
 	return os.WriteFile(wrapperPath, []byte(script), 0755)
 }
 
-const downloadMaxAttempts = 4
-
-var downloadRetryBaseDelay = 2 * time.Second
-
-func isRetryableHTTPStatus(code int) bool {
-	return code == http.StatusRequestTimeout || code == http.StatusTooManyRequests ||
-		(code >= http.StatusInternalServerError && code < 600)
-}
-
-func sleepWithContext(ctx context.Context, d time.Duration) error {
-	if d <= 0 {
-		return ctx.Err()
-	}
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
-}
-
 func downloadVerified(ctx context.Context, url, dest, expectedSHA256 string) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	var err error
-	delay := downloadRetryBaseDelay
-	for attempt := 1; attempt <= downloadMaxAttempts; attempt++ {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return ctxErr
-		}
-		var retryable bool
-		retryable, err = downloadVerifiedOnce(ctx, url, dest, expectedSHA256)
-		if err == nil {
-			return nil
-		}
-		if !retryable || attempt == downloadMaxAttempts {
-			return err
-		}
-		if sleepErr := sleepWithContext(ctx, delay); sleepErr != nil {
-			return sleepErr
-		}
-		delay *= 2
-	}
-	return err
-}
-
-func downloadVerifiedOnce(ctx context.Context, url, dest, expectedSHA256 string) (bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return false, err
+		return err
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return ctx.Err() == nil, err
+		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return isRetryableHTTPStatus(resp.StatusCode), fmt.Errorf("HTTP %s", resp.Status)
+		return fmt.Errorf("HTTP %s", resp.Status)
 	}
 
 	tmp := dest + ".part"
 	out, err := os.Create(tmp)
 	if err != nil {
-		return false, err
+		return err
 	}
 	hasher := sha256.New()
 	if _, err := io.Copy(io.MultiWriter(out, hasher), resp.Body); err != nil {
 		out.Close()
 		_ = os.Remove(tmp)
-		return ctx.Err() == nil, err
+		return err
 	}
 	if err := out.Close(); err != nil {
 		_ = os.Remove(tmp)
-		return false, err
-	}
-	if err := ctx.Err(); err != nil {
-		_ = os.Remove(tmp)
-		return false, err
+		return err
 	}
 	if expectedSHA256 != "" {
 		actual := hex.EncodeToString(hasher.Sum(nil))
 		if !strings.EqualFold(actual, expectedSHA256) {
 			_ = os.Remove(tmp)
-			return false, fmt.Errorf("SHA-256 mismatch for %s: got %s, expected %s", filepath.Base(dest), actual, expectedSHA256)
+			return fmt.Errorf("SHA-256 mismatch for %s: got %s, expected %s", filepath.Base(dest), actual, expectedSHA256)
 		}
 	}
-	return false, os.Rename(tmp, dest)
+	return os.Rename(tmp, dest)
 }
 
 func stripArchiveTopComponent(name string, strip bool) (string, bool) {

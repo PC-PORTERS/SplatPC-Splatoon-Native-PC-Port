@@ -66,13 +66,21 @@ static bool s_tv_enabled = true;
 static constexpr int DRC_W = 854;
 static constexpr int DRC_H = 480;
 
+static const char* build_version() {
+#ifdef RBREW_BUILD_VERSION
+    const char* version = RBREW_BUILD_VERSION;
+    if (version && *version) return version;
+#endif
+    return "dev";
+}
+
 // Frame statistics live in the ImGui performance overlay (F3); the title
-// only shows the view mode.
+// only shows the build version and view mode.
 static void update_window_title() {
     if (!s_window) return;
-    char title_buf[128];
-    std::snprintf(title_buf, sizeof(title_buf), "Splatoon | %s | Vulkan [F3=overlay | Tab=view | %s]%s",
-                  g_screen_mode == ScreenMode::TV ? "TV" : "Gamepad",
+    char title_buf[256];
+    std::snprintf(title_buf, sizeof(title_buf), "Splatoon (%s) | %s | Vulkan [F3=overlay | Tab=view | %s]%s",
+                  build_version(), g_screen_mode == ScreenMode::TV ? "TV" : "Gamepad",
                   gx2env::online_mode() ? "F4=social" : "F11=window",
                   rbrew_camtrace::active() ? "  >>> REC camera (F10 to stop) <<<" : "");
     SDL_SetWindowTitle(s_window, title_buf);
@@ -109,13 +117,38 @@ static void toggle_screen_mode() {
 static bool window_fullscreen() {
     return s_window && (SDL_GetWindowFlags(s_window) & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0;
 }
+static bool s_borderless = false;
+// Windowed, no border, covering the desktop: alt-tab like a normal window (no exclusive fullscreen).
+static void set_window_borderless(bool on) {
+    if (!s_window) return;
+    s_borderless = on;
+    if (window_fullscreen()) SDL_SetWindowFullscreen(s_window, 0);
+    if (on) {
+        SDL_Rect r{};
+        const int d = std::max(SDL_GetWindowDisplayIndex(s_window), 0);
+        if (SDL_GetDisplayBounds(d, &r) != 0) return;
+        SDL_SetWindowBordered(s_window, SDL_FALSE);
+        SDL_SetWindowPosition(s_window, r.x, r.y);
+        // 1 pixel taller than the screen: a window that covers the monitor exactly is promoted to
+        // fullscreen by Windows (black screen on alt-tab); this one stays a normal window.
+        SDL_SetWindowSize(s_window, r.w, r.h + 1);
+    } else {
+        SDL_SetWindowBordered(s_window, SDL_TRUE);
+        SDL_SetWindowSize(s_window, 1280, 720);
+        SDL_SetWindowPosition(s_window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+    }
+    update_window_title();
+}
 static void set_window_fullscreen(bool full) {
     if (!s_window || window_fullscreen() == full) return;
     if (!full) {
         SDL_SetWindowFullscreen(s_window, 0);
+        SDL_SetWindowBordered(s_window, SDL_TRUE);
+        s_borderless = false;
         SDL_SetWindowSize(s_window, 1280, 720);
         SDL_SetWindowPosition(s_window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
     } else {
+        s_borderless = false;
         SDL_SetWindowFullscreen(s_window, SDL_WINDOW_FULLSCREEN_DESKTOP);
     }
     update_window_title();
@@ -205,11 +238,16 @@ static bool gx2_platform_open_window() {
     // Vulkan presentation: no GPU attributes or context. The device and
     // swapchain are created by gx2_render_init for this window; the present
     // mode avoids a second refresh wait (see gx2_vk.cpp create_swapchain).
+    // Borderless fullscreen: do not minimize on focus loss (that caused the black flash and the
+    // delay when alt-tabbing back). Only with the borderless setting on, otherwise as on main.
+    if (rbrew_settings::get().borderless) SDL_SetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0");
     SDL_DisplayMode desktop{};
     if (SDL_GetDesktopDisplayMode(0, &desktop) != 0 || desktop.w <= 0 || desktop.h <= 0) return false;
-    s_window = SDL_CreateWindow(
-        "Splatoon Native PC Port", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, desktop.w, desktop.h,
-        SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_FULLSCREEN_DESKTOP);
+    char initial_title[128];
+    std::snprintf(initial_title, sizeof(initial_title), "Splatoon Native PC Port (%s)", build_version());
+    s_window = SDL_CreateWindow(initial_title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, desktop.w, desktop.h,
+                                SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI |
+                                    SDL_WINDOW_FULLSCREEN_DESKTOP);
     if (!s_window) {
         RBREW_LOG_ERROR("gx2", "SDL_CreateWindow(SDL_WINDOW_VULKAN) failed: %s\n", SDL_GetError());
         return false;
@@ -251,7 +289,11 @@ static bool gx2_platform_open_window() {
         // Saved window and overlay choices (the ImGui interface reads and
         // writes rbrew_settings directly).
         const auto settings = rbrew_settings::get();
-        if (!settings.fullscreen) set_window_fullscreen(false);
+        if (!settings.fullscreen) {
+            set_window_fullscreen(false);
+            if (settings.borderless) set_window_borderless(true);
+        }
+        gx2_imgui::note_borderless(s_borderless);
         set_overlay_display(settings.fps_overlay);
         gx2_imgui::set_simple_overlay(settings.simple_overlay);
         gx2_imgui::note_fullscreen(window_fullscreen());
@@ -946,6 +988,8 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
                     if (ev.type == SDL_KEYDOWN && !ev.key.repeat && ev.key.keysym.scancode == SDL_SCANCODE_F11) {
                         auto settings = rbrew_settings::get();
                         settings.fullscreen = !window_fullscreen();
+                        settings.borderless = false;
+                        gx2_imgui::note_borderless(false);
                         set_window_fullscreen(settings.fullscreen);
                         rbrew_settings::set(settings);
                     }
@@ -991,6 +1035,8 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
                 } else if (ev.key.keysym.scancode == SDL_SCANCODE_F11) {
                     auto settings = rbrew_settings::get();
                     settings.fullscreen = !window_fullscreen();
+                    settings.borderless = false;
+                    gx2_imgui::note_borderless(false);
                     set_window_fullscreen(settings.fullscreen);
                     rbrew_settings::set(settings);
                 } else if (ev.key.keysym.scancode == SDL_SCANCODE_F3) {
@@ -1210,6 +1256,13 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
     if (s_window) {
         bool fullscreen = false;
         if (gx2_imgui::consume_fullscreen_request(fullscreen)) set_window_fullscreen(fullscreen);
+        bool borderless = false;
+        if (gx2_imgui::consume_borderless_request(borderless)) {
+            if (borderless)
+                set_window_borderless(true);
+            else if (s_borderless)
+                set_window_fullscreen(false), set_window_borderless(false);
+        }
         if (gx2_imgui::consume_quit_request()) gx2_close_requested();
         if (rbrew_nfp::consume_search_started()) gx2_imgui::open_amiibo_picker();
         if (gx2_imgui::consume_menu_changed()) sync_overlay_mouse_mode();

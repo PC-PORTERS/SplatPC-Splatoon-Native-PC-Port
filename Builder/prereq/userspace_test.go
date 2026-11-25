@@ -14,9 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync/atomic"
 	"testing"
-	"time"
 )
 
 func TestToolSpecsCoverSupportedPlatforms(t *testing.T) {
@@ -241,36 +239,4 @@ func writeZipEntry(t *testing.T, zw *zip.Writer, name string, data []byte) {
 func sha256Hex(b []byte) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
-}
-
-func TestDownloadVerifiedRetriesTransient503(t *testing.T) {
-	prevDelay := downloadRetryBaseDelay
-	downloadRetryBaseDelay = time.Millisecond
-	defer func() { downloadRetryBaseDelay = prevDelay }()
-
-	payload := []byte("verified archive payload")
-	var attempts atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if attempts.Add(1) < 3 {
-			http.Error(w, "busy", http.StatusServiceUnavailable)
-			return
-		}
-		_, _ = w.Write(payload)
-	}))
-	defer srv.Close()
-
-	dest := filepath.Join(t.TempDir(), "tool.tar.gz")
-	if err := downloadVerified(context.Background(), srv.URL+"/tool.tar.gz", dest, sha256Hex(payload)); err != nil {
-		t.Fatalf("downloadVerified failed after retries: %v", err)
-	}
-	if attempts.Load() != 3 {
-		t.Errorf("expected 3 attempts, got %d", attempts.Load())
-	}
-	data, err := os.ReadFile(dest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(data, payload) {
-		t.Errorf("expected payload %q, got %q", payload, data)
-	}
 }

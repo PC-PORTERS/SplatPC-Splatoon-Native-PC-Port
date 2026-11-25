@@ -48,9 +48,11 @@ bool menu_blocks_input(bool any_input_held);
 // Mailbox: requested on the render thread (menu widgets), applied on the GX2
 // thread in GX2SwapScanBuffers.
 bool consume_fullscreen_request(bool& fullscreen);
+bool consume_borderless_request(bool& borderless);
 bool consume_quit_request();
 // Mirror of the live window state, refreshed by the GX2 thread every swap.
 void note_fullscreen(bool fullscreen);
+void note_borderless(bool borderless);
 
 // Performance / debug overlay visibility (F3), persisted as `fps_overlay` in
 // settings.ini (RBREW_FPS_OVERLAY=1 starts visible; hidden by default). Any
