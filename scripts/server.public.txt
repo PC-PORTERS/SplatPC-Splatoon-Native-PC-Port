@@ -1,0 +1,6 @@
+# Default community server used by SplatPC Builder and the game.
+server=173.249.46.125:60000
+nncs1=173.249.46.125
+nncs2=13.140.129.165
+# Sign-up address (HTTPS): used on first online launch.
+register=https://splatoonline.duckdns.org/register

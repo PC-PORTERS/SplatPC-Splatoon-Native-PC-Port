@@ -90,6 +90,44 @@ func ValidateDump(dumpPath string) DumpInfo {
 	return info
 }
 
+func HasMetaFile(dir string) bool {
+	if dir == "" {
+		return false
+	}
+	s, err := os.Stat(filepath.Join(dir, "meta", "meta.xml"))
+	return err == nil && !s.IsDir()
+}
+
+// ReadMetaVersion reads <title_version> from <dir>/meta/meta.xml, or "" if unavailable.
+func ReadMetaVersion(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "meta", "meta.xml"))
+	if err != nil {
+		return ""
+	}
+	var meta metaXml
+	if err := xml.Unmarshal(data, &meta); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(meta.TitleVersion)
+}
+
+// HasV288 reports whether the selected base dump + overlays (or an existing build in outputDir) is v288.
+func HasV288(baseDumpPath string, overlays []RomLayer, outputDir string) bool {
+	for _, layer := range overlays {
+		if layer.IsV288 {
+			return true
+		}
+	}
+	if strings.TrimSpace(baseDumpPath) != "" {
+		return ValidateDump(baseDumpPath).IsV288
+	}
+	v := ReadMetaVersion(outputDir)
+	return v == "288" || v == "v288"
+}
+
 func computeSHA256(filePath string) (string, error) {
 	file, err := os.Open(filePath)
 	if err != nil {

@@ -159,8 +159,18 @@ func createValidPNGIcon(destPath string) error {
 }
 
 func copyDirectoryTreeSimple(src, dst string) error {
+	return copyDirectoryTreeContext(context.Background(), src, dst)
+}
+
+func copyDirectoryTreeContext(ctx context.Context, src, dst string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
 			return err
 		}
 		rel, err := filepath.Rel(src, path)

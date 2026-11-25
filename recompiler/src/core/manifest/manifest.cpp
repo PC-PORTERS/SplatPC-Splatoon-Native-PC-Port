@@ -678,6 +678,135 @@ std::string describe_identity(const Manifest& m) {
     return text;
 }
 
+std::optional<std::string> read_xml_field(const std::filesystem::path& path, std::string_view tag) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) return std::nullopt;
+    std::ostringstream buffer;
+    buffer << file.rdbuf();
+    const std::string text = buffer.str();
+    const std::string open_prefix = "<" + std::string(tag);
+    const std::string close_tag = "</" + std::string(tag) + ">";
+    std::size_t pos = 0;
+    while ((pos = text.find(open_prefix, pos)) != std::string::npos) {
+        const std::size_t after = pos + open_prefix.size();
+        if (after < text.size() && (text[after] == '>' || std::isspace(static_cast<unsigned char>(text[after])))) {
+            const std::size_t body = text.find('>', after);
+            const std::size_t end = body == std::string::npos ? std::string::npos : text.find(close_tag, body + 1);
+            if (body != std::string::npos && end != std::string::npos)
+                return trim(std::string_view(text).substr(body + 1, end - body - 1));
+            return std::nullopt;
+        }
+        pos = after;
+    }
+    return std::nullopt;
+}
+
+std::string region_from_product_code(std::string_view product) {
+    const auto dash = product.rfind('-');
+    const std::string_view suffix = dash == std::string_view::npos ? product : product.substr(dash + 1);
+    if (suffix.empty()) return {};
+    switch (static_cast<char>(std::toupper(static_cast<unsigned char>(suffix.back())))) {
+    case 'J': return "JPN";
+    case 'E': return "USA";
+    case 'P': return "EUR";
+    case 'D': return "GER";
+    case 'F': return "FRA";
+    case 'I': return "ITA";
+    case 'S': return "ESP";
+    case 'H': return "NED";
+    case 'K': return "KOR";
+    case 'W': return "TWN";
+    case 'R': return "RUS";
+    case 'A': return "AUS";
+    case 'T': return "CHT";
+    default: return {};
+    }
+}
+
+std::map<std::string, std::string> sibling_dump_identity(const std::string& rpx_path) {
+    std::map<std::string, std::string> info;
+    const std::filesystem::path code_dir = std::filesystem::path(rpx_path).parent_path();
+    const std::filesystem::path app_xml = code_dir / "app.xml";
+    const std::filesystem::path meta_xml = code_dir.parent_path() / "meta" / "meta.xml";
+
+    if (const auto title_id = read_xml_field(app_xml, "title_id"); title_id && !title_id->empty())
+        info["title_id"] = "0x" + *title_id;
+    if (const auto title_ver = read_xml_field(app_xml, "title_version")) {
+        uint32_t parsed = 0;
+        if (parse_hex_u32(*title_ver, parsed)) {
+            char buf[16];
+            std::snprintf(buf, sizeof(buf), "0x%04X", parsed);
+            info["title_version"] = buf;
+            info["app_version"] = std::to_string(parsed);
+        }
+    }
+
+    if (const auto product = read_xml_field(meta_xml, "product_code"); product && !product->empty()) {
+        info["product_code"] = *product;
+        const std::string derived_region = region_from_product_code(*product);
+        if (!derived_region.empty()) info["region"] = derived_region;
+    }
+    if (!info.contains("region")) {
+        if (const auto mask_str = read_xml_field(meta_xml, "region")) {
+            uint32_t mask = 0;
+            if (parse_hex_u32(*mask_str, mask)) {
+                if (mask == 1)
+                    info["region"] = "JPN";
+                else if (mask == 2)
+                    info["region"] = "USA";
+                else if (mask == 4)
+                    info["region"] = "EUR";
+            }
+        }
+    }
+    if (!info.contains("app_version")) {
+        if (const auto meta_ver = read_xml_field(meta_xml, "title_version");
+            meta_ver && !meta_ver->empty() &&
+            std::all_of(meta_ver->begin(), meta_ver->end(), [](unsigned char c) { return std::isdigit(c); })) {
+            info["app_version"] = *meta_ver;
+        }
+    }
+    return info;
+}
+
+std::vector<ImageMatch*> disambiguate_winners(const std::string& rpx_path, std::vector<ImageMatch*>& winners) {
+    const auto derived = sibling_dump_identity(rpx_path);
+    if (derived.empty()) return winners;
+
+    static constexpr const char* kKeys[] = {"title_id", "product_code", "region", "title_version", "app_version"};
+    int best_matches = 0;
+    std::vector<std::pair<int, ImageMatch*>> clean;
+    for (ImageMatch* candidate : winners) {
+        int matches = 0;
+        int conflicts = 0;
+        for (const char* key : kKeys) {
+            const auto it = derived.find(key);
+            const std::string actual = candidate->manifest.identity_string(key);
+            if (it == derived.end() || it->second.empty() || actual.empty()) continue;
+            bool same = false;
+            if (std::strcmp(key, "title_id") == 0 || std::strcmp(key, "title_version") == 0) {
+                same = normalize_atom(it->second) == normalize_atom(actual);
+            } else {
+                same = lower(it->second) == lower(actual);
+            }
+            if (same)
+                ++matches;
+            else
+                ++conflicts;
+        }
+        if (conflicts == 0 && matches > 0) {
+            best_matches = std::max(best_matches, matches);
+            clean.emplace_back(matches, candidate);
+        }
+    }
+
+    std::vector<ImageMatch*> narrowed;
+    for (const auto& [matches, candidate] : clean) {
+        if (matches == best_matches) narrowed.push_back(candidate);
+    }
+    return narrowed.size() == 1 ? narrowed : winners;
+}
+
 } // namespace
 
 std::string identity_summary(const Manifest& m) {
@@ -736,6 +865,7 @@ std::optional<Manifest> select_for_image_from(const std::string& rpx_path,
     for (ImageMatch& match : matches) {
         if ((best == 2 && match.exact()) || (best == 1 && match.size_only())) winners.push_back(&match);
     }
+    if (winners.size() > 1) winners = disambiguate_winners(rpx_path, winners);
 
     if (notes) {
         for (const ImageMatch& match : matches) {

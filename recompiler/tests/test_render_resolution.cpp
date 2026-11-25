@@ -297,6 +297,35 @@ void check_resolution(VkExtent2D display) {
     gx2_render_set_color_buffer(1, mem.data(), blocks.data(), 0);
     require(s.color_targets[0]->image.desc.width == 320 && s.color_targets[0]->image.desc.height == 180,
             "integer/block data allocation was resized");
+    if (display.width >= 1280 && display.height >= 720) {
+        const auto drc_scan = surface(0xB00000, 854, 480, 0x1A);
+        gx2_render_set_color_buffer(1, mem.data(), drc_scan.data(), 0);
+        require(s.color_targets[0]->image.desc.width == display.width &&
+                    s.color_targets[0]->image.desc.height == display.height && s.color_targets[0]->width == 854 &&
+                    s.color_targets[0]->height == 480,
+                "GamePad output target did not scale to display resolution");
+        gx2_render_set_scan_format(true, 0x41A);
+        gx2_render_copy_to_scan(0xB00000, 4, mem.data(), drc_scan.data());
+        require(s.scan_w[1] == display.width && s.scan_h[1] == display.height,
+                "GamePad scan-out stays at console resolution instead of display resolution");
+        const auto drc_color = surface(0xB10000, 848, 480, 0x1A);
+        gx2_render_set_color_buffer(1, mem.data(), drc_color.data(), 0);
+        require(s.color_targets[0]->image.desc.width == display.width &&
+                    s.color_targets[0]->image.desc.height == display.height,
+                "GamePad 3D color target did not scale to display resolution");
+        const auto drc_depth = surface(0xB20000, 848, 480, 0x80E, true);
+        gx2_render_set_depth_buffer(1, mem.data(), drc_depth.data());
+        require(s.depth_target->image.desc.width == display.width &&
+                    s.depth_target->image.desc.height == display.height,
+                "GamePad 3D depth target did not scale to display resolution");
+        for (const uint32_t hw : {427u, 424u}) {
+            const auto drc_half = surface(0xB30000 + hw, hw, 240, 0x1A);
+            gx2_render_set_color_buffer(1, mem.data(), drc_half.data(), 0);
+            require(s.color_targets[0]->image.desc.width == std::max(1u, display.width >> 1) &&
+                        s.color_targets[0]->image.desc.height == std::max(1u, display.height >> 1),
+                    "GamePad post-processing target did not follow display resolution");
+        }
+    }
     require(!gx2_render_set_display_resolution(800, 600), "startup-only resolution changed live cached targets");
     require(gx2vk::finish(), "native-resolution GPU commands failed");
     gx2_render_shutdown();

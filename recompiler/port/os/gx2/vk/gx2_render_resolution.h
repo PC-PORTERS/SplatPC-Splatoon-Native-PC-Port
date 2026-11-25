@@ -13,6 +13,16 @@ inline VkExtent2D screen_target_extent(uint32_t width, uint32_t height, VkExtent
     for (unsigned level = 0; level < 8; ++level)
         if (width == (1280u >> level) && height == (720u >> level))
             return {std::max(1u, display.width >> level), std::max(1u, display.height >> level)};
+    if (display.width >= 1280u && display.height >= 720u) {
+        constexpr uint32_t kDrcWidths[] = {848u, 854u, 856u, 864u};
+        for (unsigned level = 0; level < 4; ++level) {
+            if (height != (480u >> level)) continue;
+            const uint32_t round = (1u << level) - 1u;
+            for (uint32_t base : kDrcWidths)
+                if (width == (base >> level) || width == ((base + round) >> level))
+                    return {std::max(1u, display.width >> level), std::max(1u, display.height >> level)};
+        }
+    }
     return {width, height};
 }
 inline std::array<float, 2> image_coordinate_scale(const gx2vk::Image& image, uint32_t width, uint32_t height) {

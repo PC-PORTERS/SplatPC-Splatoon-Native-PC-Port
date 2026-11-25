@@ -18,5 +18,6 @@ func Command(name string, args ...string) *exec.Cmd {
 func CommandContext(ctx context.Context, name string, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, name, args...)
 	hideWindow(cmd)
+	configureCancel(cmd)
 	return cmd
 }

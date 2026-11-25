@@ -65,6 +65,7 @@ struct Values {
     bool gsync = false;      // frames go to the display at once (IMMEDIATE) for G-Sync/FreeSync
     bool fullscreen = true;
     bool borderless = false;        // windowed, no border, desktop size (used when fullscreen is off)
+    bool rumble = false;            // GamePad rumble on the controller (vpad.cpp; RBREW_RUMBLE=0/1 wins)
     bool fps_overlay = false;       // debug overlay (F3), hidden at launch; RBREW_FPS_OVERLAY
     bool simple_overlay = false;    // FPS / frame time / max FPS readout; RBREW_SIMPLE_OVERLAY
     bool confirm_quit = true;       // confirmation popup before quitting
@@ -134,6 +135,7 @@ inline std::atomic<bool> g_fps120{false}; // 120 or 180: in-between frames
 inline std::atomic<bool> g_fps180{false}; // 180: two in-between frames per step
 inline std::atomic<bool> g_fps30{false};  // 30: two steps per drawn frame
 inline std::atomic<bool> g_gsync{false};
+inline std::atomic<bool> g_rumble{false};
 inline std::atomic<bool> g_gyro{true};
 inline std::atomic<bool> g_gyro_invert_pitch{false};
 inline std::atomic<float> g_gyro_scale{1.0f};
