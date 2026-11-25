@@ -10,6 +10,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -42,37 +43,97 @@ constexpr uint32_t kTranslationPackMagic = 0x50544252u; // "RBTP"
 constexpr uint32_t kTranslationPackVersion = 2u;
 constexpr uint32_t kWarmMagic = 0x4D574252u; // "RBWM"
 constexpr uint32_t kWarmVersion = 1u;
-constexpr uint32_t kExactKeyTag = 0x45584B33u;     // "EXK3"
-constexpr uint32_t kCanonicalKeyTag = 0x43414E31u; // "CAN1"
+constexpr uint32_t kExactKeyTag = 0x45584B33u; // "EXK3"
 constexpr uint32_t kCompatibility = 2u;
 constexpr const char* kCachePrefix = "v2_c1_";
 
-constexpr unsigned kExactKeyRegisterCount = gx2_translator_register_count();
+class ProgressReporter {
+public:
+    ProgressReporter(const char* label, const std::atomic<size_t>& current, size_t total,
+                     std::chrono::milliseconds interval = std::chrono::seconds(2))
+        : label_(label), current_(current), total_(total), interval_(interval),
+          start_(std::chrono::steady_clock::now()), last_time_(start_) {
+        if (total_ > 0) thread_ = std::thread([this] { run(); });
+    }
+
+    ~ProgressReporter() { stop(); }
+
+    ProgressReporter(const ProgressReporter&) = delete;
+    ProgressReporter& operator=(const ProgressReporter&) = delete;
+
+    void stop() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (stopped_) return;
+            stopped_ = true;
+        }
+        cv_.notify_all();
+        if (thread_.joinable()) thread_.join();
+    }
+
+private:
+    void run() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        while (!stopped_) {
+            if (cv_.wait_for(lock, interval_, [this] { return stopped_; })) break;
+            lock.unlock();
+            report(false);
+            lock.lock();
+        }
+        lock.unlock();
+        report(true);
+    }
+
+    void report(bool final_call) {
+        const auto now = std::chrono::steady_clock::now();
+        const size_t done = std::min(current_.load(std::memory_order_relaxed), total_);
+        if (final_call && done == last_reported_) return;
+        last_reported_ = done;
+        const double elapsed = std::chrono::duration<double>(now - start_).count();
+        const double dt = std::chrono::duration<double>(now - last_time_).count();
+        if (dt > 0.05 && done > last_done_) {
+            const double inst_rate = double(done - last_done_) / dt;
+            // Reset smoothing if a fast disk-cache burst transitions into real work.
+            if (smoothed_rate_ <= 0.0 || inst_rate < smoothed_rate_ * 0.25) {
+                smoothed_rate_ = inst_rate;
+            } else {
+                smoothed_rate_ = 0.35 * inst_rate + 0.65 * smoothed_rate_;
+            }
+            last_done_ = done;
+            last_time_ = now;
+        }
+        const double pct = total_ ? (100.0 * double(done) / double(total_)) : 100.0;
+        if (!final_call && done < total_ && smoothed_rate_ > 0.0) {
+            const double eta = double(total_ - done) / smoothed_rate_;
+            RBREW_LOG_INFO("aot", "%s: %zu/%zu (%.1f%%) | elapsed %.0fs | ETA %.0fs\n", label_, done, total_, pct,
+                           elapsed, eta);
+        } else {
+            RBREW_LOG_INFO("aot", "%s: %zu/%zu (%.1f%%) | elapsed %.1fs\n", label_, done, total_, pct, elapsed);
+        }
+    }
+
+    const char* label_;
+    const std::atomic<size_t>& current_;
+    size_t total_;
+    std::chrono::milliseconds interval_;
+    std::chrono::steady_clock::time_point start_;
+    std::chrono::steady_clock::time_point last_time_;
+    size_t last_done_ = 0;
+    size_t last_reported_ = ~size_t(0);
+    double smoothed_rate_ = 0.0;
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    bool stopped_ = false;
+    std::thread thread_;
+};
+
+constexpr unsigned kExactKeyRegisterCount = kGx2ExactKeyRegisterCount;
 
 constexpr unsigned exact_word_index(uint32_t r) {
-    unsigned i = 0;
-    for (const auto& range : kGx2TranslatorRegisters) {
-        if (r >= range.first && r <= range.last) return i + (r - range.first);
-        i += range.last - range.first + 1u;
-    }
-    return ~0u;
+    return gx2_exact_word_index(r);
 }
 
-constexpr std::array<uint16_t, kExactKeyRegisterCount> kExactKeyRegisters = [] {
-    std::array<uint16_t, kExactKeyRegisterCount> regs{};
-    unsigned i = 0;
-    for (const auto& range : kGx2TranslatorRegisters)
-        for (uint32_t r = range.first; r <= range.last; ++r) regs[i++] = uint16_t(r);
-    return regs;
-}();
-
-constexpr std::array<uint32_t, kExactKeyRegisterCount> kCanonicalWordBits = [] {
-    std::array<uint32_t, kExactKeyRegisterCount> bits{};
-    unsigned i = 0;
-    for (const auto& range : kGx2TranslatorRegisters)
-        for (uint32_t r = range.first; r <= range.last; ++r) bits[i++] = gx2_translator_register_bits(r);
-    return bits;
-}();
+constexpr const auto& kExactKeyRegisters = kGx2ExactKeyRegisters;
 
 // Must stay byte-for-byte identical to KeyHash in gx2_render_vk_draw.cpp.
 struct KeyHash {
@@ -443,8 +504,8 @@ ProgramKeys compute_program_keys(std::span<const uint8_t> vs_bc, std::span<const
     h.add(ps_bc.data(), ps_bc.size());
     h.add(&rect, sizeof(rect));
     h.add(&points, sizeof(points));
+    const KeyHash canon_base = h;
     h.add(&num_attribs, sizeof(num_attribs));
-    const KeyHash code = h;
 
     KeyHash base = h;
     for (unsigned i = 0; i < kExactKeyRegisterCount; ++i)
@@ -473,20 +534,9 @@ ProgramKeys compute_program_keys(std::span<const uint8_t> vs_bc, std::span<const
     h.add(texture_bits.data(), sizeof(texture_bits));
     out.exact_key = h.finish();
 
-    KeyHash c = code;
-    c.add(&kCanonicalKeyTag, sizeof(kCanonicalKeyTag));
-    for (unsigned i = 0; i < kExactKeyRegisterCount; ++i) {
-        const uint32_t w = words[i] & kCanonicalWordBits[i];
-        c.add(&w, sizeof(w));
-    }
-    c.add(texture_bits.data(), sizeof(texture_bits));
-    const uint32_t attribute_count = uint32_t(attributes.size());
-    c.add(&attribute_count, sizeof(attribute_count));
-    for (const auto& a : attributes) {
-        const uint32_t data[] = {a.semantic,           a.format,      a.endian,
-                                 a.destination_select, a.offset & 3u, a.buffer >= 16 ? 1u : 0u};
-        c.add(data, sizeof(data));
-    }
+    KeyHash c = canon_base;
+    gx2_hash_canonical_state(c, words.data(), texture_bits.data(), &attributes,
+                             [](uint32_t fmt) { return r700_native_attribute(fmt).default_endian; });
     out.canon_key = c.finish();
     return out;
 }
@@ -639,6 +689,14 @@ public:
             return true;
         }
 
+        std::unique_ptr<std::array<uint32_t, 0x10000>> point_regs;
+        const uint32_t* active_regs = regs.data();
+        if (points != 0u && regs[0x2256] != 1u) {
+            point_regs = std::make_unique<std::array<uint32_t, 0x10000>>(regs);
+            (*point_regs)[0x2256] = 1u;
+            active_regs = point_regs->data();
+        }
+
         std::array<R700TranslationInfo, 2> info{};
         char* owned_vs = nullptr;
         const char* vs_glsl = nullptr;
@@ -651,7 +709,7 @@ public:
             vi.size = uint32_t(vs_bc.size());
             vi.is_pixel = false;
             vi.num_attribs = num_attribs;
-            vi.context_registers = regs.data();
+            vi.context_registers = active_regs;
             vi.attributes = attributes;
             vi.info = &info[0];
             vi.vulkan = true;
@@ -671,7 +729,7 @@ public:
             pi.data = ps_bc.data();
             pi.size = uint32_t(ps_bc.size());
             pi.is_pixel = true;
-            pi.context_registers = regs.data();
+            pi.context_registers = active_regs;
             pi.info = &info[1];
             pi.vulkan = true;
             ps_glsl = r700_to_glsl(pi);
@@ -753,31 +811,42 @@ public:
 
     bool compile_all_spirv() {
         stats_.unique_spirv_stages = spirv_stages_.size();
+        const uint64_t initial_hits = gx2vk::shader_disk_hits();
+        const uint64_t initial_compiles = gx2vk::shader_compile_count();
         std::atomic<size_t> next{0};
+        std::atomic<size_t> done{0};
         std::atomic<size_t> compiled{0};
         std::atomic<size_t> failed{0};
         const unsigned workers = std::clamp(std::thread::hardware_concurrency(), 2u, 16u);
         std::vector<std::thread> pool;
         pool.reserve(workers);
-        for (unsigned w = 0; w < workers; ++w) {
-            pool.emplace_back([&] {
-                for (size_t idx; (idx = next.fetch_add(1, std::memory_order_relaxed)) < spirv_stages_.size();) {
-                    const auto& item = spirv_stages_[idx];
-                    std::vector<uint32_t> spirv;
-                    std::string log;
-                    if (gx2vk::compile_glsl(item.first, item.second, spirv, &log)) {
-                        compiled.fetch_add(1, std::memory_order_relaxed);
-                    } else {
-                        const size_t n = failed.fetch_add(1, std::memory_order_relaxed);
-                        if (n < 16)
-                            RBREW_LOG_ERROR("aot", "SPIR-V compile failed (stage %d): %s\n", int(item.first),
-                                            log.c_str());
+        {
+            ProgressReporter progress("Compiling SPIR-V", done, spirv_stages_.size());
+            for (unsigned w = 0; w < workers; ++w) {
+                pool.emplace_back([&] {
+                    for (size_t idx; (idx = next.fetch_add(1, std::memory_order_relaxed)) < spirv_stages_.size();) {
+                        const auto& item = spirv_stages_[idx];
+                        std::vector<uint32_t> spirv;
+                        std::string log;
+                        if (gx2vk::compile_glsl(item.first, item.second, spirv, &log)) {
+                            compiled.fetch_add(1, std::memory_order_relaxed);
+                        } else {
+                            const size_t n = failed.fetch_add(1, std::memory_order_relaxed);
+                            if (n < 16)
+                                RBREW_LOG_ERROR("aot", "SPIR-V compile failed (stage %d): %s\n", int(item.first),
+                                                log.c_str());
+                        }
+                        done.fetch_add(1, std::memory_order_relaxed);
                     }
-                }
-            });
+                });
+            }
+            for (auto& t : pool) t.join();
+            progress.stop();
         }
-        for (auto& t : pool) t.join();
         stats_.spirv_failures = failed.load();
+        RBREW_LOG_INFO("aot", "SPIR-V summary: compiled=%llu cached=%llu failed=%zu\n",
+                       (unsigned long long)(gx2vk::shader_compile_count() - initial_compiles),
+                       (unsigned long long)(gx2vk::shader_disk_hits() - initial_hits), stats_.spirv_failures);
         return stats_.spirv_failures == 0;
     }
 
@@ -791,33 +860,44 @@ public:
         std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
 
         std::atomic<size_t> next{0};
+        std::atomic<size_t> written{0};
         std::atomic<bool> tl_ok{true};
         const unsigned workers = std::clamp(std::thread::hardware_concurrency(), 2u, 8u);
         std::vector<std::thread> pool;
-        for (unsigned w = 0; w < workers; ++w) {
-            pool.emplace_back([&] {
-                std::vector<uint8_t> blob;
-                char name[64];
-                for (size_t i; (i = next.fetch_add(1, std::memory_order_relaxed)) < sorted.size();) {
-                    const uint64_t key = sorted[i].first;
-                    const auto& body = bodies_[sorted[i].second];
-                    std::snprintf(name, sizeof(name), "%s%016llx.tl", kCachePrefix, (unsigned long long)key);
-                    const fs::path p = translated_dir / name;
-                    std::error_code local_ec;
-                    if (fs::exists(p, local_ec) && !local_ec) {
-                        const auto existing_sz = fs::file_size(p, local_ec);
-                        if (!local_ec && existing_sz == body.size()) continue;
+        {
+            ProgressReporter progress("Writing .tl cache", written, sorted.size());
+            for (unsigned w = 0; w < workers; ++w) {
+                pool.emplace_back([&] {
+                    std::vector<uint8_t> blob;
+                    char name[64];
+                    for (size_t i; (i = next.fetch_add(1, std::memory_order_relaxed)) < sorted.size();) {
+                        const uint64_t key = sorted[i].first;
+                        const auto& body = bodies_[sorted[i].second];
+                        std::snprintf(name, sizeof(name), "%s%016llx.tl", kCachePrefix, (unsigned long long)key);
+                        const fs::path p = translated_dir / name;
+                        std::error_code local_ec;
+                        if (fs::exists(p, local_ec) && !local_ec) {
+                            const auto existing_sz = fs::file_size(p, local_ec);
+                            if (!local_ec && existing_sz == body.size()) {
+                                written.fetch_add(1, std::memory_order_relaxed);
+                                continue;
+                            }
+                        }
+                        blob = body;
+                        if (blob.size() >= 16) std::memcpy(blob.data() + 8, &key, 8);
+                        if (!write_file_atomic(p, blob.data(), blob.size())) tl_ok.store(false);
+                        written.fetch_add(1, std::memory_order_relaxed);
                     }
-                    blob = body;
-                    if (blob.size() >= 16) std::memcpy(blob.data() + 8, &key, 8);
-                    if (!write_file_atomic(p, blob.data(), blob.size())) tl_ok.store(false);
-                }
-            });
+                });
+            }
+            for (auto& t : pool) t.join();
+            progress.stop();
         }
-        for (auto& t : pool) t.join();
         if (!tl_ok.load()) return false;
 
         // 2. Write RBTP v2 pack.bin.
+        RBREW_LOG_INFO("aot", "Writing %spack.bin (%zu keys, %zu bodies)...\n", kCachePrefix, sorted.size(),
+                       bodies_.size());
         const fs::path pack_path = translated_dir / (std::string(kCachePrefix) + "pack.bin");
         const fs::path pack_tmp = pack_path.string() + ".tmp";
         {
@@ -843,6 +923,8 @@ public:
         }
 
         // 3. Write RBWM v1 warm.bin.
+        RBREW_LOG_INFO("aot", "Writing %swarm.bin (%zu masks, %zu programs)...\n", kCachePrefix, masks_.size(),
+                       warm_programs_.size());
         const fs::path warm_path = translated_dir / (std::string(kCachePrefix) + "warm.bin");
         const fs::path warm_tmp = warm_path.string() + ".tmp";
         {
@@ -906,64 +988,153 @@ private:
     std::unordered_map<uint64_t, std::vector<size_t>> spirv_seen_;
 };
 
-std::vector<std::vector<R700FetchAttribute>> extract_fvtx_layouts(std::span<const uint8_t> fres,
-                                                                  const std::vector<size_t>& fvtx_offsets,
-                                                                  const std::map<std::string, uint8_t>& name_to_loc,
-                                                                  const std::array<uint32_t, 0x10000>& regs) {
-    std::vector<std::vector<R700FetchAttribute>> result;
-    std::set<std::vector<uint32_t>> seen;
+struct FshaAttrDef {
+    std::string name;
+    uint8_t semantic = 0xFFu;
+    uint8_t var_type = 11u;
+    bool valid = false;
+};
 
-    std::array<bool, 256> active_semantics{};
-    for (uint32_t i = 0; i < 32; ++i) {
-        const uint32_t s = regs[0xA0E0 + i];
-        if (s < 255) active_semantics[s] = true;
-    }
+struct FvtxLayout {
+    std::vector<R700FetchAttribute> attrs;
+    bool synthesized_uv = false;
+};
+
+std::vector<FvtxLayout> extract_fvtx_layouts(std::span<const uint8_t> fres, const std::vector<size_t>& fvtx_offsets,
+                                             const std::vector<uint32_t>& secondary_uv_formats,
+                                             const std::vector<FshaAttrDef>& attr_defs, uint32_t attrib_mask,
+                                             const std::array<bool, 256>& vs_uses) {
+    std::vector<FvtxLayout> result;
+    std::set<std::vector<uint32_t>> seen;
 
     for (size_t pos : fvtx_offsets) {
         const uint8_t num_attr = fres[pos + 4];
         const size_t arr = resolve_rel(fres, pos + 0x10);
         if (!num_attr || num_attr > 32 || !arr || arr + size_t(num_attr) * 12 > fres.size()) continue;
 
-        std::vector<R700FetchAttribute> attrs;
-        std::vector<uint32_t> sig;
+        struct FvtxAttr {
+            std::string name;
+            uint8_t buffer = 0;
+            uint8_t divisor = 0;
+            uint16_t offset = 0;
+            uint32_t format = 0;
+        };
+        std::vector<FvtxAttr> fvtx_attrs;
+        fvtx_attrs.reserve(num_attr);
+        uint32_t u0_format = 0;
         for (uint8_t i = 0; i < num_attr; ++i) {
             const size_t entry = arr + size_t(i) * 12;
             const size_t name_off = resolve_rel(fres, entry);
             if (!name_off) continue;
-            const std::string name = read_cstr(fres, name_off);
-            const auto loc_it = name_to_loc.find(name);
-            if (loc_it == name_to_loc.end()) continue;
-            const uint8_t sem = loc_it->second;
-            if (!active_semantics[sem]) continue;
-
             const uint8_t buf = fres[entry + 4];
+            const uint8_t div = fres[entry + 5];
             const uint16_t offset = read_u16_be(fres.data() + entry + 6);
             const uint32_t fmt = read_u32_be(fres.data() + entry + 8);
             if ((fmt & 0x3Fu) >= 20u || buf >= 16u) continue;
-
-            R700FetchAttribute a{};
-            a.semantic = sem;
-            a.buffer = buf;
-            a.offset = offset;
-            a.format = fmt;
-            a.endian = r700_native_attribute(fmt).default_endian;
-            a.destination_select = default_dest_select_for_format(fmt);
-            attrs.push_back(a);
-            sig.push_back(a.semantic);
-            sig.push_back(a.format);
-            sig.push_back(a.offset & 3u);
-            sig.push_back(a.destination_select);
+            std::string attr_name = read_cstr(fres, name_off);
+            if (attr_name == "_u0") u0_format = fmt;
+            fvtx_attrs.push_back({std::move(attr_name), buf, div, offset, fmt});
         }
-        if (!attrs.empty() && seen.insert(sig).second) result.push_back(std::move(attrs));
+
+        const uint32_t primary_uv_fmt = u0_format ? u0_format : 0x7u;
+        auto append_layout = [&](uint32_t missing_uv_fmt, uint32_t missing_u3_fmt,
+                                 bool override_u2_with_u0 = false) -> bool {
+            // Match nw::g3d attribute order: iterate FSHA aarr 0..num_attribs-1, gated by pp+0x04 attrib_mask.
+            std::vector<R700FetchAttribute> attrs;
+            std::vector<uint32_t> sig;
+            bool synthesized_uv = false;
+            bool synthesized_u23 = false;
+            bool overrode_u2 = false;
+            bool synthesized_u3 = false;
+            for (size_t a = 0; a < attr_defs.size(); ++a) {
+                if (!attr_defs[a].valid || (a < 32 && ((attrib_mask >> a) & 1u) == 0)) continue;
+                const FvtxAttr* found = nullptr;
+                for (const auto& candidate : fvtx_attrs) {
+                    if (candidate.name == attr_defs[a].name) {
+                        found = &candidate;
+                        break;
+                    }
+                }
+                R700FetchAttribute attr{};
+                if (found) {
+                    const uint32_t fmt = (override_u2_with_u0 && attr_defs[a].name == "_u2" && u0_format != 0u &&
+                                          found->format != u0_format)
+                                             ? u0_format
+                                             : found->format;
+                    if (fmt != found->format) overrode_u2 = true;
+                    attr.semantic = attr_defs[a].semantic;
+                    attr.buffer = found->buffer;
+                    attr.offset = found->offset;
+                    attr.format = fmt;
+                    attr.divisor = found->divisor;
+                    attr.endian = r700_native_attribute(fmt).default_endian;
+                    attr.destination_select = default_dest_select_for_format(fmt);
+                } else if (missing_uv_fmt != 0u && vs_uses[attr_defs[a].semantic] &&
+                           attr_defs[a].name.starts_with("_u") && attr_defs[a].name != "_u0") {
+                    // Models lacking secondary UV streams (e.g. _u2, _u3) bind a default 2D format at draw time;
+                    // _u1 always matches _u0, while _u2/_u3 may also use 0x207/0x808.
+                    const bool is_u1 = attr_defs[a].name == "_u1";
+                    const uint32_t fmt =
+                        is_u1
+                            ? primary_uv_fmt
+                            : ((attr_defs[a].name == "_u3" && missing_u3_fmt != 0u) ? missing_u3_fmt : missing_uv_fmt);
+                    if (attr_defs[a].name == "_u3") synthesized_u3 = true;
+                    if (!is_u1) synthesized_u23 = true;
+                    attr.semantic = attr_defs[a].semantic;
+                    attr.format = fmt;
+                    attr.endian = r700_native_attribute(fmt).default_endian;
+                    attr.destination_select = default_dest_select_for_format(fmt);
+                    synthesized_uv = true;
+                } else {
+                    continue;
+                }
+                attrs.push_back(attr);
+                sig.push_back(attr.semantic);
+                sig.push_back(attr.format);
+                sig.push_back(attr.endian);
+                sig.push_back(attr.destination_select);
+                sig.push_back(attr.buffer >= 16 ? 1u : 0u);
+            }
+            if (override_u2_with_u0 && (!overrode_u2 || !synthesized_u3)) return false;
+            if (!attrs.empty() && seen.insert(sig).second) result.push_back({std::move(attrs), synthesized_uv});
+            return synthesized_u23;
+        };
+
+        // Always keep the un-synthesized FVTX layout (also enables alpha=0xE cutout variants).
+        append_layout(0u, 0u);
+        if (append_layout(primary_uv_fmt, primary_uv_fmt)) {
+            for (uint32_t fallback_fmt : secondary_uv_formats) {
+                if (fallback_fmt != primary_uv_fmt) append_layout(fallback_fmt, fallback_fmt);
+            }
+            if (u0_format != 0u) append_layout(u0_format, 0x808u, true);
+        }
     }
     return result;
 }
 
 void extract_fres_shaders(std::span<const uint8_t> data, AotCollector& collector) {
     std::vector<size_t> fvtx_offsets;
+    std::vector<uint32_t> secondary_uv_formats;
+    std::set<uint32_t> seen_uv_fmts;
     for (size_t fpos = 0; fpos + 28 <= data.size(); fpos += 4) {
-        if (std::memcmp(data.data() + fpos, "FVTX", 4) == 0) fvtx_offsets.push_back(fpos);
+        if (std::memcmp(data.data() + fpos, "FVTX", 4) != 0) continue;
+        fvtx_offsets.push_back(fpos);
+        const uint8_t num_attr = data[fpos + 4];
+        const size_t arr = resolve_rel(data, fpos + 0x10);
+        if (!num_attr || num_attr > 32 || !arr || arr + size_t(num_attr) * 12 > data.size()) continue;
+        for (uint8_t i = 0; i < num_attr; ++i) {
+            const size_t entry = arr + size_t(i) * 12;
+            const size_t name_off = resolve_rel(data, entry);
+            const uint32_t fmt = read_u32_be(data.data() + entry + 8);
+            if (!name_off || (fmt & 0x3Fu) >= 20u) continue;
+            const std::string attr_name = read_cstr(data, name_off);
+            if (attr_name.starts_with("_u") && attr_name != "_u0" && (fmt == 0x7u || fmt == 0x207u || fmt == 0x808u) &&
+                seen_uv_fmts.insert(fmt).second) {
+                secondary_uv_formats.push_back(fmt);
+            }
+        }
     }
+    if (secondary_uv_formats.empty()) secondary_uv_formats.push_back(0x7u);
 
     size_t pos = 0;
     while (pos + 8 <= data.size()) {
@@ -985,7 +1156,7 @@ void extract_fres_shaders(std::span<const uint8_t> data, AotCollector& collector
                 const uint8_t num_samplers = data[mpos + 0x09];
                 const uint16_t num_progs = read_u16_be(data.data() + mpos + 0x06);
 
-                std::map<std::string, uint8_t> attrib_name_to_loc;
+                std::vector<FshaAttrDef> attr_defs(num_attribs);
                 const size_t aarr = resolve_rel(data, mpos + 0x3C);
                 const size_t adict = resolve_rel(data, mpos + 0x40);
                 if (aarr && adict && num_attribs > 0) {
@@ -994,14 +1165,39 @@ void extract_fres_shaders(std::span<const uint8_t> data, AotCollector& collector
                         if (de + 16 > data.size() || aarr + size_t(a) * 4 + 4 > data.size()) break;
                         const size_t n_off = resolve_rel(data, de + 8);
                         if (!n_off) continue;
-                        attrib_name_to_loc[read_cstr(data, n_off)] = data[aarr + size_t(a) * 4 + 3];
+                        const size_t ptr = resolve_rel(data, de + 12);
+                        const size_t idx =
+                            (ptr >= aarr && ptr < aarr + size_t(num_attribs) * 4 && ((ptr - aarr) % 4) == 0)
+                                ? (ptr - aarr) / 4
+                                : size_t(a);
+                        if (idx < num_attribs) {
+                            attr_defs[idx] = {read_cstr(data, n_off), data[aarr + idx * 4 + 3],
+                                              data[aarr + idx * 4 + 1], true};
+                        }
                     }
                 }
 
                 std::vector<uint8_t> sampler_types(num_samplers, 1);
+                std::vector<std::string> sampler_names(num_samplers);
                 const size_t sarr = resolve_rel(data, mpos + 0x44);
+                const size_t sdict = resolve_rel(data, mpos + 0x48);
                 if (sarr && sarr + size_t(num_samplers) * 8 <= data.size()) {
                     for (uint8_t s = 0; s < num_samplers; ++s) sampler_types[s] = data[sarr + size_t(s) * 8 + 1];
+                }
+                if (sarr && sdict && sdict + 8 <= data.size()) {
+                    const uint32_t sc = read_u32_be(data.data() + sdict + 4);
+                    for (uint32_t s = 0; s < sc && s < num_samplers; ++s) {
+                        const size_t de = sdict + 24 + size_t(s) * 16;
+                        if (de + 16 > data.size()) break;
+                        const size_t n_off = resolve_rel(data, de + 8);
+                        if (!n_off) continue;
+                        const size_t ptr = resolve_rel(data, de + 12);
+                        const size_t idx =
+                            (ptr >= sarr && ptr < sarr + size_t(num_samplers) * 8 && ((ptr - sarr) % 8) == 0)
+                                ? (ptr - sarr) / 8
+                                : size_t(s);
+                        if (idx < num_samplers) sampler_names[idx] = read_cstr(data, n_off);
+                    }
                 }
 
                 const size_t parr = resolve_rel(data, mpos + 0x58);
@@ -1009,6 +1205,7 @@ void extract_fres_shaders(std::span<const uint8_t> data, AotCollector& collector
                 for (uint16_t p = 0; p < num_progs; ++p) {
                     const size_t pp = parr + size_t(p) * 0x4C;
                     if (pp + 0x4C > data.size()) break;
+                    const uint32_t attrib_mask = read_u32_be(data.data() + pp + 0x04);
                     const size_t vs_off = resolve_rel(data, pp + 0x34);
                     const size_t ps_off = resolve_rel(data, pp + 0x40);
                     if (!vs_off || !ps_off || vs_off + 0x18 > data.size() || ps_off + 0x18 > data.size()) continue;
@@ -1033,54 +1230,88 @@ void extract_fres_shaders(std::span<const uint8_t> data, AotCollector& collector
                     regs[0xA206] = 0x43Fu;
                     init_default_texture_registers(regs);
 
-                    if (vs_dl_off && vs_dl_off + vs_dl_sz <= data.size()) {
-                        const auto dl = gx2_decode_static_display_list(data.data() + vs_dl_off, vs_dl_sz);
-                        for (const auto& w : dl.writes)
-                            if (w.index < regs.size()) regs[w.index] = w.value;
-                    }
-                    if (ps_dl_off && ps_dl_off + ps_dl_sz <= data.size()) {
-                        const auto dl = gx2_decode_static_display_list(data.data() + ps_dl_off, ps_dl_sz);
-                        for (const auto& w : dl.writes)
-                            if (w.index < regs.size()) regs[w.index] = w.value;
-                    }
+                    auto apply_dl = [&](size_t dl_off, uint32_t dl_sz) {
+                        if (!dl_off || dl_off + dl_sz > data.size()) return;
+                        const auto dl = gx2_decode_static_display_list(data.data() + dl_off, dl_sz);
+                        for (const auto& w : dl.writes) {
+                            if (w.index < regs.size()) {
+                                regs[w.index] = w.value;
+                                if (w.index == 0xA238) gx2_apply_semantic_clear(regs.data(), w.value);
+                            }
+                        }
+                    };
+                    apply_dl(vs_dl_off, vs_dl_sz);
+                    apply_dl(ps_dl_off, ps_dl_sz);
 
+                    std::vector<uint8_t> user_array_ps_units;
+                    bool has_alpha_tex = false;
                     const size_t sloc = resolve_rel(data, pp + 0x2C);
                     if (sloc && sloc + size_t(num_samplers) * 4 <= data.size()) {
                         for (uint8_t s = 0; s < num_samplers; ++s) {
                             const uint8_t vs_unit = data[sloc + size_t(s) * 4 + 0];
                             const uint8_t ps_unit = data[sloc + size_t(s) * 4 + 2];
                             if (vs_unit < 18) set_sampler_registers(regs, 0xE460, vs_unit, sampler_types[s]);
-                            if (ps_unit < 18) set_sampler_registers(regs, 0xE000, ps_unit, sampler_types[s]);
+                            if (ps_unit < 18) {
+                                set_sampler_registers(regs, 0xE000, ps_unit, sampler_types[s]);
+                                if (sampler_names[s].starts_with("_a")) has_alpha_tex = true;
+                                if (sampler_types[s] == 10 && sampler_names[s].starts_with("gsys_user"))
+                                    user_array_ps_units.push_back(ps_unit);
+                            }
                         }
                     }
 
-                    auto layouts = extract_fvtx_layouts(data, fvtx_offsets, attrib_name_to_loc, regs);
+                    std::array<bool, 256> vs_uses{};
+                    for (uint32_t k = 0; k < 32; ++k) {
+                        const uint32_t sem = regs[0xA0E0 + k];
+                        if (sem < 256u) vs_uses[sem] = true;
+                    }
+                    auto layouts =
+                        extract_fvtx_layouts(data, fvtx_offsets, secondary_uv_formats, attr_defs, attrib_mask, vs_uses);
                     if (layouts.empty()) {
                         std::vector<R700FetchAttribute> fallback;
-                        if (aarr && num_attribs > 0) {
-                            for (uint8_t a = 0; a < num_attribs; ++a) {
-                                const uint8_t vtype = data[aarr + size_t(a) * 4 + 1];
-                                const uint8_t sem = data[aarr + size_t(a) * 4 + 3];
-                                R700FetchAttribute fa;
-                                if (var_type_to_fetch(vtype, sem, fa)) fallback.push_back(fa);
-                            }
+                        for (size_t a = 0; a < attr_defs.size(); ++a) {
+                            if (!attr_defs[a].valid || (a < 32 && ((attrib_mask >> a) & 1u) == 0)) continue;
+                            R700FetchAttribute fa;
+                            if (var_type_to_fetch(attr_defs[a].var_type, attr_defs[a].semantic, fa))
+                                fallback.push_back(fa);
                         }
-                        layouts.push_back(std::move(fallback));
+                        layouts.push_back({std::move(fallback), false});
                     }
 
                     const auto vs_bc = data.subspan(vs_bc_off, vs_sz);
                     const auto ps_bc = data.subspan(ps_bc_off, ps_sz);
                     ++collector.stats_.fsha_programs;
-                    for (const auto& attrs : layouts) {
+                    const FvtxLayout* primary_layout = nullptr;
+                    for (const auto& layout : layouts) {
+                        if (!primary_layout && !layout.synthesized_uv) primary_layout = &layout;
+                        const auto& attrs = layout.attrs;
                         AotCollector::PretranslatedVs cached_vs{};
                         regs[0xA104] = 0u;
                         if (!collector.submit_program(vs_bc, ps_bc, regs, attrs, uint32_t(attrs.size()), 0, 0, "FSHA",
                                                       {}, &cached_vs))
                             continue;
-                        // Alpha-test GEQUAL (0xE) variant for cutout/foliage materials.
-                        regs[0xA104] = 0xEu;
-                        collector.submit_program(vs_bc, ps_bc, regs, attrs, uint32_t(attrs.size()), 0, 0, "FSHA", {},
-                                                 &cached_vs);
+                        if (!layout.synthesized_uv && has_alpha_tex) {
+                            // Alpha-test GEQUAL (0xE) variant for cutout/foliage materials with an albedo map.
+                            regs[0xA104] = 0xEu;
+                            collector.submit_program(vs_bc, ps_bc, regs, attrs, uint32_t(attrs.size()), 0, 0, "FSHA",
+                                                     {}, &cached_vs);
+                        }
+                    }
+                    // Paintable stage shaders declare gsys_user* as SAMPLER_2D_ARRAY but often bind 2D textures.
+                    // Submit once on the primary layout so all 2D PS translations & SPIR-V stages stay cached within RAM budget.
+                    if (!user_array_ps_units.empty() && !layouts.empty()) {
+                        const auto& attrs = (primary_layout ? *primary_layout : layouts.front()).attrs;
+                        AotCollector::PretranslatedVs cached_vs{};
+                        auto user_regs = regs;
+                        for (uint8_t pu : user_array_ps_units) set_sampler_registers(user_regs, 0xE000, pu, 1u);
+                        user_regs[0xA104] = 0u;
+                        collector.submit_program(vs_bc, ps_bc, user_regs, attrs, uint32_t(attrs.size()), 0, 0, "FSHA",
+                                                 {}, &cached_vs);
+                        if (has_alpha_tex) {
+                            user_regs[0xA104] = 0xEu;
+                            collector.submit_program(vs_bc, ps_bc, user_regs, attrs, uint32_t(attrs.size()), 0, 0,
+                                                     "FSHA", {}, &cached_vs);
+                        }
                     }
                 }
             }
@@ -1089,8 +1320,10 @@ void extract_fres_shaders(std::span<const uint8_t> data, AotCollector& collector
     }
 }
 
-void extract_bahs_shaders(std::span<const uint8_t> data, AotCollector& collector) {
+void extract_bahs_shaders(std::span<const uint8_t> data, std::string_view name_hint, AotCollector& collector) {
     if (data.size() < 28) return;
+    const bool is_lght = name_hint.find("agl_technique_lght") != std::string_view::npos;
+    const bool is_gambit_proc = name_hint.find("Gambit_Proc") != std::string_view::npos;
     const uint32_t name_len = read_u32_le(data.data() + 20);
     const size_t pos = 24 + size_t(name_len);
     if (pos + 8 > data.size()) return;
@@ -1168,17 +1401,86 @@ void extract_bahs_shaders(std::span<const uint8_t> data, AotCollector& collector
 
                 const uint32_t sv_c = read_u32_le(base.data() + 0xD0);
                 const uint32_t sv_p = read_u32_le(base.data() + 0xD4);
+                bool ps0_2d = false;
+                bool ps0_arr = false;
                 if (sv_p + size_t(sv_c) * 12 <= base.size()) {
                     for (uint32_t s = 0; s < sv_c; ++s) {
                         const uint32_t vtype = read_u32_le(base.data() + sv_p + size_t(s) * 12 + 4);
                         const uint32_t loc = read_u32_le(base.data() + sv_p + size_t(s) * 12 + 8);
                         set_sampler_registers(regs, 0xE000, loc, vtype);
+                        if (loc == 0 && vtype == 1) ps0_2d = true;
+                        if (loc == 0 && vtype == 10) ps0_arr = true;
                     }
                 }
 
+                const auto ps_bc = base.subspan(bc_off, bc_sz);
                 ++collector.stats_.bahs_pairs;
-                collector.submit_program(last_vs.bytecode, base.subspan(bc_off, bc_sz), regs, last_vs.attributes,
-                                         last_vs.num_attribs, 0, 0, "BAHS");
+                AotCollector::PretranslatedVs cached_vs{};
+                for (uint32_t alpha : {0u, 0xAu, 0xCu, 0xEu}) {
+                    regs[0xA104] = alpha;
+                    collector.submit_program(last_vs.bytecode, ps_bc, regs, last_vs.attributes, last_vs.num_attribs, 0,
+                                             0, "BAHS", {}, &cached_vs);
+                }
+                if (is_lght && ps0_2d) {
+                    auto arr_regs = regs;
+                    set_sampler_registers(arr_regs, 0xE000, 0, 10);
+                    for (uint32_t alpha : {0u, 0xAu, 0xCu, 0xEu}) {
+                        arr_regs[0xA104] = alpha;
+                        collector.submit_program(last_vs.bytecode, ps_bc, arr_regs, last_vs.attributes,
+                                                 last_vs.num_attribs, 0, 0, "BAHS", {}, &cached_vs);
+                    }
+                }
+                if (is_gambit_proc && ps0_arr) {
+                    auto d2_regs = regs;
+                    set_sampler_registers(d2_regs, 0xE000, 0, 1);
+                    for (uint32_t alpha : {0u, 0xAu, 0xCu, 0xEu}) {
+                        d2_regs[0xA104] = alpha;
+                        collector.submit_program(last_vs.bytecode, ps_bc, d2_regs, last_vs.attributes,
+                                                 last_vs.num_attribs, 0, 0, "BAHS", {}, &cached_vs);
+                    }
+                }
+                regs[0xA104] = 0u;
+                collector.submit_program(last_vs.bytecode, ps_bc, regs, last_vs.attributes, last_vs.num_attribs, 0, 1,
+                                         "BAHS");
+                // agl_common / agl_technique_pfx attribute order and shared-VAO variants.
+                if (last_vs.attributes.size() >= 2) {
+                    const bool is_sem_sorted =
+                        std::is_sorted(last_vs.attributes.begin(), last_vs.attributes.end(),
+                                       [](const auto& a, const auto& b) { return a.semantic < b.semantic; });
+                    if (!is_sem_sorted) {
+                        auto sorted_attrs = last_vs.attributes;
+                        std::stable_sort(sorted_attrs.begin(), sorted_attrs.end(),
+                                         [](const auto& a, const auto& b) { return a.semantic < b.semantic; });
+                        collector.submit_program(last_vs.bytecode, ps_bc, regs, sorted_attrs,
+                                                 uint32_t(sorted_attrs.size()), 0, 0, "BAHS");
+                        collector.submit_program(last_vs.bytecode, ps_bc, regs, sorted_attrs,
+                                                 uint32_t(sorted_attrs.size()), 0, 1, "BAHS");
+                    }
+                    if (last_vs.attributes.size() == 2 && last_vs.attributes[0].format == 0x811u &&
+                        last_vs.attributes[1].format == 0x80Du) {
+                        auto float2_attrs = last_vs.attributes;
+                        if (var_type_to_fetch(9u, float2_attrs[0].semantic, float2_attrs[0]))
+                            collector.submit_program(last_vs.bytecode, ps_bc, regs, float2_attrs, 2u, 0, 0, "BAHS");
+                    }
+                } else if (last_vs.attributes.size() == 1) {
+                    if (last_vs.attributes[0].format == 0x80Du) {
+                        auto float3_attrs = last_vs.attributes;
+                        if (var_type_to_fetch(10u, float3_attrs[0].semantic, float3_attrs[0]))
+                            collector.submit_program(last_vs.bytecode, ps_bc, regs, float3_attrs, 1u, 0, 0, "BAHS");
+                    } else if (last_vs.attributes[0].format == 0x811u) {
+                        auto float2_attrs = last_vs.attributes;
+                        if (var_type_to_fetch(9u, float2_attrs[0].semantic, float2_attrs[0]))
+                            collector.submit_program(last_vs.bytecode, ps_bc, regs, float2_attrs, 1u, 0, 0, "BAHS");
+                    }
+                    if (last_vs.attributes[0].semantic == 0) {
+                        auto padded_attrs = last_vs.attributes;
+                        R700FetchAttribute extra{};
+                        if (var_type_to_fetch(9u, 1u, extra)) {
+                            padded_attrs.push_back(extra);
+                            collector.submit_program(last_vs.bytecode, ps_bc, regs, padded_attrs, 2u, 0, 0, "BAHS");
+                        }
+                    }
+                }
             }
         } else if (stype == 2) {
             last_vs = {};
@@ -1187,13 +1489,51 @@ void extract_bahs_shaders(std::span<const uint8_t> data, AotCollector& collector
     }
 }
 
+int particle_attr_rank(std::string_view name) {
+    static constexpr std::string_view kOrder[] = {
+        "sysPosAttr",
+        "sysNormalAttr",
+        "sysTangentAttr",
+        "sysVertexColor0Attr",
+        "sysTexCoordAttr",
+        "sysLocalPosAttr",
+        "sysLocalVecAttr",
+        "sysLocalDiffAttr",
+        "sysScaleAttr",
+        "sysRandomAttr",
+        "sysInitRotateAttr",
+        "sysColor0Attr",
+        "sysColor1Attr",
+        "sysEmtMat0Attr",
+        "sysEmtMat1Attr",
+        "sysEmtMat2Attr",
+        "sysEmtRTMat0Attr",
+        "sysEmtRTMat1Attr",
+        "sysEmtRTMat2Attr",
+        "sysInPos",
+        "sysInVec",
+        "sysEmitterPluginAttr0",
+        "sysEmitterPluginAttr1",
+        "sysEmitterPluginAttr2",
+        "sysEmitterPluginAttr3",
+        "sysEmitterPluginAttr4",
+    };
+    for (int i = 0; i < int(std::size(kOrder)); ++i) {
+        if (name == kOrder[i]) return i;
+    }
+    return 1000;
+}
+
 void extract_gfx2_shaders(std::span<const uint8_t> data, std::string_view name_hint, AotCollector& collector) {
     struct Gfx2Vs {
         bool valid = false;
         bool skip_gs = false;
+        bool has_streamout = false;
+        bool has_vs12_shadow = false;
         std::array<uint8_t, 0x134> desc{};
         std::vector<std::pair<uint32_t, uint32_t>> samplers;
         std::vector<R700FetchAttribute> attributes;
+        std::vector<R700FetchAttribute> ranked_attributes;
         uint32_t num_attribs = 0;
         std::span<const uint8_t> bytecode;
     };
@@ -1204,9 +1544,10 @@ void extract_gfx2_shaders(std::span<const uint8_t> data, std::string_view name_h
         std::span<const uint8_t> bytecode;
     };
 
-    const bool is_layout_or_particle =
-        name_hint.find("lyt_") != std::string_view::npos || name_hint.find("font_") != std::string_view::npos ||
-        name_hint.find("Particle") != std::string_view::npos || name_hint.find(".bgsh") != std::string_view::npos;
+    const bool is_layout =
+        name_hint.find("lyt_") != std::string_view::npos || name_hint.find("font_") != std::string_view::npos;
+    const bool is_particle = name_hint.find("Particle") != std::string_view::npos;
+    const bool is_layout_or_particle = is_layout || is_particle || name_hint.find(".bgsh") != std::string_view::npos;
 
     size_t pos = 0;
     while (pos + 32 <= data.size()) {
@@ -1214,6 +1555,7 @@ void extract_gfx2_shaders(std::span<const uint8_t> data, std::string_view name_h
             ++pos;
             continue;
         }
+        const size_t gfx2_pos = pos;
         size_t off = pos + 32;
         std::vector<Gfx2Vs> vss;
         std::vector<Gfx2Ps> pss;
@@ -1232,23 +1574,47 @@ void extract_gfx2_shaders(std::span<const uint8_t> data, std::string_view name_h
                     cur_vs.skip_gs = true;
                 } else {
                     std::memcpy(cur_vs.desc.data(), payload.data(), 0x134);
+                    cur_vs.has_streamout = read_u32_be(payload.data() + 0x110) != 0;
                     const uint32_t sv_c = read_u32_be(payload.data() + 0xFC);
                     const uint32_t sv_p = read_u32_be(payload.data() + 0x100) & 0xFFFFFu;
                     if (sv_p + size_t(sv_c) * 12 <= payload.size()) {
                         for (uint32_t s = 0; s < sv_c; ++s) {
-                            cur_vs.samplers.emplace_back(read_u32_be(payload.data() + sv_p + size_t(s) * 12 + 8),
-                                                         read_u32_be(payload.data() + sv_p + size_t(s) * 12 + 4));
+                            const uint32_t vtype = read_u32_be(payload.data() + sv_p + size_t(s) * 12 + 4);
+                            const uint32_t loc = read_u32_be(payload.data() + sv_p + size_t(s) * 12 + 8);
+                            cur_vs.samplers.emplace_back(loc, vtype);
+                            if (loc == 12u && vtype == 6u) cur_vs.has_vs12_shadow = true;
                         }
                     }
                     const uint32_t av_c = read_u32_be(payload.data() + 0x104);
                     const uint32_t av_p = read_u32_be(payload.data() + 0x108) & 0xFFFFFu;
                     cur_vs.num_attribs = av_c;
                     if (av_p + size_t(av_c) * 16 <= payload.size()) {
+                        struct RankedAttr {
+                            int rank;
+                            R700FetchAttribute attr;
+                        };
+                        std::vector<RankedAttr> ranked;
+                        if (is_particle) ranked.reserve(av_c);
                         for (uint32_t a = 0; a < av_c; ++a) {
+                            const uint32_t name_off = read_u32_be(payload.data() + av_p + size_t(a) * 16) & 0xFFFFFu;
+                            const uint32_t vtype = read_u32_be(payload.data() + av_p + size_t(a) * 16 + 4);
+                            const uint32_t loc = read_u32_be(payload.data() + av_p + size_t(a) * 16 + 12);
                             R700FetchAttribute fa;
-                            if (var_type_to_fetch(read_u32_be(payload.data() + av_p + size_t(a) * 16 + 4),
-                                                  read_u32_be(payload.data() + av_p + size_t(a) * 16 + 12), fa))
+                            if (var_type_to_fetch(vtype, loc, fa)) {
                                 cur_vs.attributes.push_back(fa);
+                                if (is_particle) {
+                                    const std::string attr_name =
+                                        name_off < payload.size() ? read_cstr(payload, name_off) : std::string{};
+                                    if (attr_name == "sysInPos" || attr_name == "sysInVec") fa.endian = 0u;
+                                    ranked.push_back({particle_attr_rank(attr_name), fa});
+                                }
+                            }
+                        }
+                        if (is_particle && !ranked.empty()) {
+                            std::stable_sort(ranked.begin(), ranked.end(),
+                                             [](const RankedAttr& a, const RankedAttr& b) { return a.rank < b.rank; });
+                            cur_vs.ranked_attributes.reserve(ranked.size());
+                            for (const auto& item : ranked) cur_vs.ranked_attributes.push_back(item.attr);
                         }
                     }
                 }
@@ -1280,23 +1646,130 @@ void extract_gfx2_shaders(std::span<const uint8_t> data, std::string_view name_h
             if (btype == 1) break;
         }
 
-        for (size_t i = 0; i < vss.size() && i < pss.size(); ++i) {
-            if (!vss[i].valid || !pss[i].valid) continue;
+        auto last_valid_ps = [&]() -> const Gfx2Ps* {
+            for (auto it = pss.rbegin(); it != pss.rend(); ++it)
+                if (it->valid) return &*it;
+            return nullptr;
+        };
+        auto last_valid_vs = [&]() -> const Gfx2Vs* {
+            for (auto it = vss.rbegin(); it != vss.rend(); ++it)
+                if (it->valid) return &*it;
+            return nullptr;
+        };
+        const Gfx2Ps* fallback_ps = last_valid_ps();
+        const Gfx2Vs* fallback_vs = last_valid_vs();
+
+        auto submit_pair = [&](const Gfx2Vs& vs, const Gfx2Ps& ps) {
             std::array<uint32_t, 0x10000> regs{};
             regs[0xA206] = 0x43Fu;
             init_default_texture_registers(regs);
-            r700_shader_registers(regs.data(), vss[i].desc.data(), false);
-            r700_shader_registers(regs.data(), pss[i].desc.data(), true);
-            for (const auto& [loc, vtype] : vss[i].samplers) set_sampler_registers(regs, 0xE460, loc, vtype);
-            for (const auto& [loc, vtype] : pss[i].samplers) set_sampler_registers(regs, 0xE000, loc, vtype);
+            r700_shader_registers(regs.data(), vs.desc.data(), false);
+            r700_shader_registers(regs.data(), ps.desc.data(), true);
+            for (const auto& [loc, vtype] : vs.samplers) set_sampler_registers(regs, 0xE460, loc, vtype);
+            for (const auto& [loc, vtype] : ps.samplers) set_sampler_registers(regs, 0xE000, loc, vtype);
+            if (vs.has_streamout) regs[0xA2AC] = 1u;
+
+            auto submit_layout = [&](const std::vector<R700FetchAttribute>& attrs, uint32_t pts) {
+                auto submit_with_regs = [&](const std::array<uint32_t, 0x10000>& r, bool allow_rects) {
+                    AotCollector::PretranslatedVs cached_vs{};
+                    const uint32_t alphas[] = {0u, 0xCu, 0xFu};
+                    const size_t n_alphas = is_layout ? 3u : (is_particle ? 2u : 1u);
+                    for (size_t ai = 0; ai < n_alphas; ++ai) {
+                        auto rcopy = r;
+                        rcopy[0xA104] = alphas[ai];
+                        collector.submit_program(vs.bytecode, ps.bytecode, rcopy, attrs, uint32_t(attrs.size()), 0, pts,
+                                                 "Gfx2", name_hint, &cached_vs);
+                        if (allow_rects && alphas[ai] == 0u && is_layout_or_particle) {
+                            if (!is_particle) {
+                                collector.submit_program(vs.bytecode, ps.bytecode, rcopy, attrs, uint32_t(attrs.size()),
+                                                         1, pts, "Gfx2", name_hint);
+                            }
+                            collector.submit_program(vs.bytecode, ps.bytecode, rcopy, attrs, uint32_t(attrs.size()), 2,
+                                                     pts, "Gfx2", name_hint);
+                        }
+                    }
+                };
+                submit_with_regs(regs, true);
+                // Particle shaders declare texDynamicShadow on VS unit 12, which stays DIM_1D when unbound.
+                if (is_particle && vs.has_vs12_shadow) {
+                    auto r1d = regs;
+                    r1d[0xE460 + 12 * 7] &= ~7u;
+                    submit_with_regs(r1d, true);
+                }
+                // lyt_BuildinShader binds a 1D gradient LUT onto PS unit 0 in UI draws.
+                if (name_hint.find("lyt_") != std::string_view::npos) {
+                    auto r1d = regs;
+                    set_sampler_registers(r1d, 0xE000, 0, 0);
+                    submit_with_regs(r1d, false);
+                }
+            };
+
             ++collector.stats_.gfx2_pairs;
-            collector.submit_program(vss[i].bytecode, pss[i].bytecode, regs, vss[i].attributes, vss[i].num_attribs, 0,
-                                     0, "Gfx2", name_hint);
-            if (is_layout_or_particle) {
-                collector.submit_program(vss[i].bytecode, pss[i].bytecode, regs, vss[i].attributes, vss[i].num_attribs,
-                                         1, 0, "Gfx2", name_hint);
-                collector.submit_program(vss[i].bytecode, pss[i].bytecode, regs, vss[i].attributes, vss[i].num_attribs,
-                                         2, 0, "Gfx2", name_hint);
+            const uint32_t pts = vs.has_streamout ? 1u : 0u;
+            if (!vs.ranked_attributes.empty()) {
+                submit_layout(vs.ranked_attributes, pts);
+            }
+            if (vs.ranked_attributes.empty() || !is_particle) {
+                submit_layout(vs.attributes, pts);
+            }
+
+            // font_BuildinShader binds [aVertex, aColor(8_8_8_8_UNORM), aTexCoord0] at runtime.
+            if (name_hint.find("font_") != std::string_view::npos && vs.attributes.size() == 3) {
+                std::vector<R700FetchAttribute> font_attrs;
+                font_attrs.push_back(vs.attributes[2]);
+                R700FetchAttribute color = vs.attributes[0];
+                color.format = 0xAu;
+                color.endian = r700_native_attribute(0xAu).default_endian;
+                color.destination_select = 0x00010203u;
+                font_attrs.push_back(color);
+                font_attrs.push_back(vs.attributes[1]);
+                submit_layout(font_attrs, pts);
+            } else if (is_layout && vs.attributes.size() == 1 && vs.attributes[0].format == 0x811u) {
+                auto float2_attrs = vs.attributes;
+                if (var_type_to_fetch(9u, float2_attrs[0].semantic, float2_attrs[0])) submit_layout(float2_attrs, pts);
+            }
+        };
+
+        std::set<std::pair<uint32_t, uint32_t>> emtr_pairs;
+        if (is_particle && gfx2_pos >= 32 && std::memcmp(data.data(), "EFTB", 4) == 0) {
+            for (size_t ep = 0; ep + 32 <= gfx2_pos; ep += 4) {
+                if (std::memcmp(data.data() + ep, "EMTR", 4) != 0) continue;
+                const uint32_t sz = read_u32_be(data.data() + ep + 4);
+                const uint32_t h4 = read_u32_be(data.data() + ep + 16);
+                const uint32_t end_off = (h4 != 0xFFFFFFFFu && h4 <= sz) ? h4 : sz;
+                if (end_off >= 0x128u && ep + end_off <= gfx2_pos) {
+                    const size_t st = ep + end_off - 0x128u;
+                    for (int k = 0; k < 3; ++k) {
+                        const uint32_t vi = read_u32_be(data.data() + st + size_t(k) * 8);
+                        const uint32_t pi = read_u32_be(data.data() + st + size_t(k) * 8 + 4);
+                        if (vi < vss.size() && pi < pss.size()) emtr_pairs.emplace(vi, pi);
+                    }
+                }
+            }
+        }
+
+        if (!emtr_pairs.empty()) {
+            std::vector<bool> vs_covered(vss.size(), false);
+            std::vector<bool> ps_covered(pss.size(), false);
+            for (const auto& [vi, pi] : emtr_pairs) {
+                if (!vss[vi].valid || !pss[pi].valid) continue;
+                vs_covered[vi] = true;
+                ps_covered[pi] = true;
+                submit_pair(vss[vi], pss[pi]);
+            }
+            for (size_t i = 0; i < vss.size(); ++i) {
+                if (!vs_covered[i] && vss[i].valid && fallback_ps) submit_pair(vss[i], *fallback_ps);
+            }
+            for (size_t i = 0; i < pss.size(); ++i) {
+                if (!ps_covered[i] && pss[i].valid && fallback_vs) submit_pair(*fallback_vs, pss[i]);
+            }
+        } else {
+            const size_t total = std::max(vss.size(), pss.size());
+            for (size_t i = 0; i < total; ++i) {
+                const Gfx2Vs* vs = (i < vss.size() && vss[i].valid) ? &vss[i] : fallback_vs;
+                const Gfx2Ps* ps = (i < pss.size() && pss[i].valid) ? &pss[i] : fallback_ps;
+                if (!vs || !ps) continue;
+                submit_pair(*vs, *ps);
             }
         }
         pos = off;
@@ -1318,7 +1791,7 @@ void process_rom_blob(std::string_view name, std::span<const uint8_t> data, AotC
     } else if (std::memcmp(data.data(), "FRES", 4) == 0) {
         extract_fres_shaders(data, collector);
     } else if (std::memcmp(data.data(), "BAHS", 4) == 0) {
-        extract_bahs_shaders(data, collector);
+        extract_bahs_shaders(data, name, collector);
     } else if (std::memcmp(data.data(), "Gfx2", 4) == 0 || std::memcmp(data.data(), "EFTB", 4) == 0) {
         extract_gfx2_shaders(data, name, collector);
     }
@@ -1483,17 +1956,30 @@ int run_aot(const fs::path& rom_or_content, const fs::path& cache_dir) {
     RBREW_LOG_INFO("aot", "Harvesting existing cache in %s...\n", translated_dir.string().c_str());
     harvest_existing_cache(translated_dir, collector);
 
-    RBREW_LOG_INFO("aot", "Scanning Wii U content archives in %s...\n", content_dir.string().c_str());
-    std::vector<uint8_t> file_bytes;
+    std::vector<fs::path> archive_files;
     std::error_code ec;
     for (fs::recursive_directory_iterator it(content_dir, ec), end; !ec && it != end; it.increment(ec)) {
         if (!it->is_regular_file()) continue;
         const std::string ext = it->path().extension().string();
-        if (ext != ".pack" && ext != ".szs" && ext != ".sarc" && ext != ".bfres" && ext != ".gsh" &&
-            ext != ".sharcfb" && ext != ".ptcl")
-            continue;
-        if (!read_file_bytes(it->path(), file_bytes)) continue;
-        process_rom_blob(it->path().filename().string(), file_bytes, collector);
+        if (ext == ".pack" || ext == ".szs" || ext == ".sarc" || ext == ".bfres" || ext == ".gsh" ||
+            ext == ".sharcfb" || ext == ".ptcl") {
+            archive_files.push_back(it->path());
+        }
+    }
+
+    RBREW_LOG_INFO("aot", "Scanning %zu Wii U content archives in %s...\n", archive_files.size(),
+                   content_dir.string().c_str());
+    std::vector<uint8_t> file_bytes;
+    std::atomic<size_t> scanned{0};
+    {
+        ProgressReporter scan_progress("Scanning archives", scanned, archive_files.size());
+        for (const auto& archive_path : archive_files) {
+            if (read_file_bytes(archive_path, file_bytes)) {
+                process_rom_blob(archive_path.filename().string(), file_bytes, collector);
+            }
+            scanned.fetch_add(1, std::memory_order_relaxed);
+        }
+        scan_progress.stop();
     }
 
     RBREW_LOG_INFO("aot",

@@ -1,4 +1,5 @@
 #include "gx2_render.h"
+#include "gx2_shader_key.h"
 #include "gx2_pm4_state.h"
 #include "../os_common.h"
 #include <vector>
@@ -106,7 +107,11 @@ uint32_t gx2_render_uniform_word(bool is_pixel, uint32_t index) {
 void gx2_render_set_uniform_block(bool, uint32_t, uint32_t, uint32_t, uint8_t*) {}
 static uint32_t s_stub_regs[GX2_LATTE_REGISTER_COUNT];
 void gx2_render_apply_registers(const Gx2RegisterWrite* w, size_t n) {
-    for (size_t i = 0; i < n; ++i) s_stub_regs[w[i].index] = w[i].value;
+    for (size_t i = 0; i < n; ++i) {
+        if (w[i].index >= GX2_LATTE_REGISTER_COUNT) continue;
+        s_stub_regs[w[i].index] = w[i].value;
+        if (w[i].index == 0xA238) gx2_apply_semantic_clear(s_stub_regs, w[i].value);
+    }
 }
 uint32_t gx2_render_register(uint32_t index) {
     return index < GX2_LATTE_REGISTER_COUNT ? s_stub_regs[index] : 0;

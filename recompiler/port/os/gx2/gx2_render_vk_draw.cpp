@@ -1903,26 +1903,12 @@ bool dynamic_key_registers_excluded() {
 }
 // Exact program key (RBREW_SHADER_KEY_EXACT, default on; "0" restores the
 // previous key): only what the translator reads (gx2_shader_key.h).
-constexpr unsigned kExactKeyRegisterCount = gx2_translator_register_count();
+constexpr unsigned kExactKeyRegisterCount = kGx2ExactKeyRegisterCount;
 constexpr uint32_t kExactKeyTag = 0x45584B33u; // "EXK3": disk entries never alias another key layout
-// Index of register r in the kGx2TranslatorRegisters word list.
 constexpr unsigned kExactWordIndex(uint32_t r) {
-    unsigned i = 0;
-    for (const auto& range : kGx2TranslatorRegisters) {
-        if (r >= range.first && r <= range.last) return i + (r - range.first);
-        i += range.last - range.first + 1u;
-    }
-    return ~0u;
+    return gx2_exact_word_index(r);
 }
-// Register number of each key word, in order: one flat gather per draw
-// instead of a per-range copy (most ranges hold a single register).
-constexpr std::array<uint16_t, kExactKeyRegisterCount> kExactKeyRegisters = [] {
-    std::array<uint16_t, kExactKeyRegisterCount> registers{};
-    unsigned i = 0;
-    for (const auto& range : kGx2TranslatorRegisters)
-        for (uint32_t r = range.first; r <= range.last; ++r) registers[i++] = uint16_t(r);
-    return registers;
-}();
+constexpr const auto& kExactKeyRegisters = kGx2ExactKeyRegisters;
 static_assert(kExactWordIndex(0xA18E) - kExactWordIndex(0xA185) == 9 &&
               kExactWordIndex(0xA1B0) - kExactWordIndex(0xA191) == 31);
 // Per exact base key: the VS parameters and texture units the translation
@@ -2017,24 +2003,11 @@ ExactKeyMemo& exact_key_memo_slot(const ExactKeyInputs& in, const GX2ShaderProgr
     return s_exact_key_memos[h.finish() & (kExactKeyMemoSlots - 1)];
 }
 
-// Canonical translation identity: the exact key's inputs with every register
-// word reduced to the bits the translator reads (gx2_translator_register_bits)
-// and the fetch layout to the attribute fields it reads (semantic, format,
-// endian, destination select, offset & 3, buffer >= 16, order). Exact keys
-// with one canonical key translate to identical output: entering a new area
-// produced ~6,400 exact-key misses for ~520 distinct translations (owner
-// cache 2026-10-17), each translated synchronously on the render thread.
+// Canonical translation identity: the exact key's inputs reduced via
+// gx2_hash_canonical_state to only the state that affects VS/PS translation.
 // A new exact key whose canonical key is known reuses that program and
 // stores its translation under the new key (disk cache and boot warm-up
 // stay keyed exactly as before). RBREW_SHADER_KEY_CANONICAL=0 disables.
-constexpr uint32_t kCanonicalKeyTag = 0x43414E31u; // "CAN1"
-constexpr std::array<uint32_t, kExactKeyRegisterCount> kCanonicalWordBits = [] {
-    std::array<uint32_t, kExactKeyRegisterCount> bits{};
-    unsigned i = 0;
-    for (const auto& range : kGx2TranslatorRegisters)
-        for (uint32_t r = range.first; r <= range.last; ++r) bits[i++] = gx2_translator_register_bits(r);
-    return bits;
-}();
 struct CanonicalEntry {
     Program* program = nullptr;
     ExactReads reads{};
@@ -2295,8 +2268,8 @@ Program* resolve_active_program(uint8_t* mem) {
             gx2_perf_bytes(kBytesShaderKey, vs_program.size + ps_program.size);
             h.add(&rect, sizeof(rect));
             h.add(&points, sizeof(points));
+            const KeyHash canon_base = h; // tag, bytecode, primitive kind
             h.add(&vs_attribs, sizeof(vs_attribs));
-            const KeyHash code = h; // tag, bytecode, primitive kind, attribute count
             // Base: everything except the per-parameter VS output IDs and the
             // per-unit texture words, whose read sets the translation reports.
             KeyHash base = h;
@@ -2330,21 +2303,9 @@ Program* resolve_active_program(uint8_t* mem) {
             h.add(texture_bits.data(), sizeof(texture_bits));
             key = h.finish();
             if (canonical_key_enabled()) {
-                KeyHash c = code;
-                c.add(&kCanonicalKeyTag, sizeof(kCanonicalKeyTag));
-                for (unsigned i = 0; i < n; ++i) {
-                    const uint32_t w = words[i] & kCanonicalWordBits[i];
-                    c.add(&w, sizeof(w));
-                }
-                c.add(texture_bits.data(), sizeof(texture_bits));
-                const uint32_t attribute_count = fetch_attributes ? uint32_t(fetch_attributes->size()) : 0u;
-                c.add(&attribute_count, sizeof(attribute_count));
-                if (fetch_attributes)
-                    for (const auto& a : *fetch_attributes) {
-                        const uint32_t data[] = {a.semantic,           a.format,      a.endian,
-                                                 a.destination_select, a.offset & 3u, a.buffer >= 16 ? 1u : 0u};
-                        c.add(data, sizeof(data));
-                    }
+                KeyHash c = canon_base;
+                gx2_hash_canonical_state(c, words.data(), texture_bits.data(), fetch_attributes,
+                                         [](uint32_t fmt) { return r700_native_attribute(fmt).default_endian; });
                 canon = c.finish();
             }
             fresh_key = true;
