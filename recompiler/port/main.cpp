@@ -349,7 +349,7 @@ namespace rebrewu_generated {
 static uint32_t Gambit_entry_point;
 }
 #else
-void Gambit_game_register(CPUState* cpu); // registers all recompiled game functions
+extern "C" void Gambit_game_register(CPUState* cpu); // registers all recompiled game functions
 #endif
 #include "os/gx2/gx2_env_light.h"
 void player_anim_register();               // idle look-around and opt-in (RBREW_ANIM_LOG) animation trace
@@ -377,13 +377,13 @@ void sysapp_title_register(CPUState* cpu);
 
 // ---------------------------------------------------------------------------
 // Data section loader
-// Each data section was emitted into Gambit_data.cpp as a byte array.
+// Each data section was emitted into Gambit_data.cpp/.c as a byte array.
 // The emitter generates "void Gambit_data_init(uint8_t* arena)" inside
-// Gambit_data.cpp when the cpp_emitter is updated.
+// Gambit_data.cpp/.c when the cpp_emitter is updated.
 // A weak fallback is defined in port/loader/gambit_loader.cpp.
 // ---------------------------------------------------------------------------
 #ifndef RBREW_DISTRIBUTABLE_RUNTIME
-void Gambit_data_init(uint8_t* arena);
+extern "C" void Gambit_data_init(uint8_t* arena);
 
 // The selected generated module supplies its actual RPX entry address.
 #include "Gambit.h"

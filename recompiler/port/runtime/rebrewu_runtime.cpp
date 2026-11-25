@@ -122,6 +122,10 @@ RbrewMemoryWriteObserver rbrew_set_write_observer(RbrewMemoryWriteObserver obser
     return previous;
 }
 
+extern "C" RBREW_HOST_API bool rbrew_need_checked_write(void) {
+    return rbrew_thread_write_observed || rbrew_strict_reservations_active.load(std::memory_order_relaxed);
+}
+
 void rbrew_write_memory(uint8_t* mem, uint32_t addr, const void* bytes, uint32_t size) {
     if (!rbrew_memory_accessible(mem, addr, size)) return;
     observe_write(mem, addr, size);

@@ -17,12 +17,12 @@
 #ifdef _MSC_VER
 // MSVC: provide a named default and redirect the public symbol to it via
 // /alternatename so a strong definition in another TU wins.
-void gambit_data_init_default(uint8_t* arena) {
+extern "C" void gambit_data_init_default(uint8_t* arena) {
     (void)arena;
 }
 #pragma comment(linker, "/alternatename:gambit_data_init=gambit_data_init_default")
 #else
-__attribute__((weak)) void gambit_data_init(uint8_t* arena) {
+extern "C" __attribute__((weak)) void gambit_data_init(uint8_t* arena) {
     (void)arena;
     // No-op: data sections not loaded.
     // Re-run the recompiler to regenerate Gambit_data.cpp with the loader.

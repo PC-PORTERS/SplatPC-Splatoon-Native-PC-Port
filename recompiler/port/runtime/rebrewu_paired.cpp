@@ -18,10 +18,12 @@
 #include <string>
 #include <type_traits>
 
-extern const bool rbrew_paired_inline_enabled = [] {
+static bool paired_inline_from_env() {
     const char* v = std::getenv("RBREW_PAIRED_INLINE");
     return !(v && v[0] == '0');
-}();
+}
+
+extern "C" const bool rbrew_paired_inline_enabled = paired_inline_from_env();
 
 namespace {
 uint32_t bits(uint32_t w, unsigned first, unsigned last) { // IBM bit numbering
@@ -153,7 +155,7 @@ void compare(CPUState* cpu, uint32_t crf, double a, double b) {
 }
 } // namespace
 
-extern "C" void rbrew_ps_mem(CPUState* cpu, uint8_t* mem, uint32_t w) {
+extern "C" void rbrew_ps_mem(CPUState* cpu, uint8_t* mem, uint32_t w) noexcept(false) {
     // mem is carried for the caller's alias analysis; helpers read the arena
     // through cpu->mem, which holds the same base.
     (void)mem;
@@ -318,11 +320,11 @@ extern "C" void rbrew_ps_mem(CPUState* cpu, uint8_t* mem, uint32_t w) {
     undefined(w);
 }
 
-extern "C" void rbrew_ps(CPUState* cpu, uint32_t w) {
+extern "C" void rbrew_ps(CPUState* cpu, uint32_t w) noexcept(false) {
     rbrew_ps_mem(cpu, cpu->mem, w);
 }
 
-extern "C" void rbrew_trap(CPUState* cpu, uint32_t w, uint32_t pc) {
+extern "C" void rbrew_trap(CPUState* cpu, uint32_t w, uint32_t pc) noexcept(false) {
     const uint32_t to = bits(w, 6, 10), a = cpu->r[bits(w, 11, 15)];
     const uint32_t b = (w >> 26) == 3 ? uint32_t(int32_t(int16_t(w & 0xFFFFu))) : cpu->r[bits(w, 16, 20)];
     const bool hit = ((to & 16u) && int32_t(a) < int32_t(b)) || ((to & 8u) && int32_t(a) > int32_t(b)) ||

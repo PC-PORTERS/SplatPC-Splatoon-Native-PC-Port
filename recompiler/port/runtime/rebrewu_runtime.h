@@ -1,10 +1,8 @@
 #pragma once
-#include "game_revision.h"
-#include "rbrew_diagnostics.h"
 // =============================================================================
 // RebrewU Runtime — Wii U → PC
 //
-// Included by every decompiled Gambit_part*.cpp.  Defines the CPU state,
+// Included by generated Gambit_part*.c/.cpp. Defines the CPU state,
 // memory accessors (big-endian ↔ host byte-swap), and dispatch helpers.
 // =============================================================================
 
@@ -13,7 +11,26 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#ifdef __cplusplus
+#include "game_revision.h"
+#include "rbrew_diagnostics.h"
 #include <atomic>
+#define RBREW_EXTERN_C extern "C"
+#define RBREW_MAY_THROW noexcept(false)
+#else
+#include <stdbool.h>
+#define RBREW_EXTERN_C extern
+#define RBREW_MAY_THROW
+#ifdef RBREW_DISABLE_LOGGING
+#define RBREW_LOGF(...) ((void)0)
+#define RBREW_PRINT(...) ((void)0)
+#define RBREW_LOG_INFO(tag, ...) ((void)0)
+#else
+#define RBREW_LOGF(...) fprintf(__VA_ARGS__)
+#define RBREW_PRINT(...) printf(__VA_ARGS__)
+#define RBREW_LOG_INFO(tag, ...) fprintf(stderr, __VA_ARGS__)
+#endif
+#endif
 #if defined(_MSC_VER)
 #include <intrin.h>
 #endif
@@ -22,10 +39,18 @@
 #define RBREW_HOST_API
 #endif
 
+#ifndef RBREW_UNREACHABLE
+#if defined(_MSC_VER)
+#define RBREW_UNREACHABLE() __assume(0)
+#else
+#define RBREW_UNREACHABLE() __builtin_unreachable()
+#endif
+#endif
+
 // ---------------------------------------------------------------------------
 // Forward declaration
 // ---------------------------------------------------------------------------
-struct CPUState;
+typedef struct CPUState CPUState;
 
 // ---------------------------------------------------------------------------
 // Host function type
@@ -49,29 +74,29 @@ typedef void (*HostFunc)(CPUState* cpu);
 // not guest RAM. Ordinary low accesses stay inline without a registry lookup.
 // Arena owners publish overlay accessibility only after the host map/unmap
 // succeeds, and clear it before destroying or reusing the arena allocation.
-extern "C" RBREW_HOST_API bool rbrew_overlay_accessible(const uint8_t* mem);
-extern "C" void rbrew_set_overlay_access(uint8_t* mem, bool enabled);
+RBREW_EXTERN_C RBREW_HOST_API bool rbrew_overlay_accessible(const uint8_t* mem);
+RBREW_EXTERN_C void rbrew_set_overlay_access(uint8_t* mem, bool enabled);
 #if defined(_MSC_VER)
 static __declspec(noinline) bool rbrew_memory_accessible(const uint8_t* mem, uint32_t address, uint64_t size) {
 #else
 static inline bool rbrew_memory_accessible(const uint8_t* mem, uint32_t address, uint64_t size) {
 #endif
     if (!mem || size > WIIU_MEM_SIZE) return false;
-    const uint64_t end = uint64_t(address) + size; // widened, bounded size
+    const uint64_t end = (uint64_t)address + size; // widened, bounded size
     if (end <= RBREW_APPLICATION_ARENA_END) return true;
-    if (address >= RBREW_SHARED_DATA_BASE) return end <= uint64_t(RBREW_SHARED_DATA_BASE) + RBREW_SHARED_DATA_SIZE;
-    if (address >= RBREW_MEM1_BASE) return end <= uint64_t(RBREW_MEM1_BASE) + RBREW_MEM1_SIZE;
-    if (address >= RBREW_FG_FREE_BASE) return end <= uint64_t(RBREW_FG_FREE_BASE) + RBREW_FG_FREE_SIZE;
-    return address >= RBREW_OVERLAY_BASE && end <= uint64_t(RBREW_OVERLAY_BASE) + RBREW_OVERLAY_SIZE &&
+    if (address >= RBREW_SHARED_DATA_BASE) return end <= (uint64_t)RBREW_SHARED_DATA_BASE + RBREW_SHARED_DATA_SIZE;
+    if (address >= RBREW_MEM1_BASE) return end <= (uint64_t)RBREW_MEM1_BASE + RBREW_MEM1_SIZE;
+    if (address >= RBREW_FG_FREE_BASE) return end <= (uint64_t)RBREW_FG_FREE_BASE + RBREW_FG_FREE_SIZE;
+    return address >= RBREW_OVERLAY_BASE && end <= (uint64_t)RBREW_OVERLAY_BASE + RBREW_OVERLAY_SIZE &&
            rbrew_overlay_accessible(mem);
 }
 
 // ---------------------------------------------------------------------------
 // CPUState — mirrors PowerPC Espresso register file
 // ---------------------------------------------------------------------------
-struct RbrewGuestCodeRange {
+typedef struct RbrewGuestCodeRange {
     uint32_t begin, end;
-}; // exclusive end
+} RbrewGuestCodeRange; // exclusive end
 
 struct CPUState {
     uint32_t r[32];   // GPRs
@@ -80,11 +105,12 @@ struct CPUState {
     uint32_t lr;      // Link Register
     uint32_t ctr;     // Count Register
     uint32_t xer;     // Integer Exception Register
+#ifdef __cplusplus
     uint32_t fpscr{}; // Conversion status; other FP/control instructions remain partial
 
     uint8_t* mem; // pointer to base of the flat guest memory arena
     // Hybrid execution is opt-in. PC is authoritative only inside the stepper;
-    // legacy whole-function C++ does not yet expose every continuation.
+    // legacy whole-function code does not yet expose every continuation.
     uint32_t pc{};
     uint32_t guest_memory_size{WIIU_MEM_SIZE};
     const RbrewGuestCodeRange* guest_code_ranges{};
@@ -92,6 +118,17 @@ struct CPUState {
     bool ppc_fallback_enabled{};
     uint64_t ppc_instruction_budget{100000};
     bool differential_validation{}; // detached pure replay: reject host dispatch
+#else
+    uint32_t fpscr;
+    uint8_t* mem;
+    uint32_t pc;
+    uint32_t guest_memory_size;
+    const RbrewGuestCodeRange* guest_code_ranges;
+    uint32_t guest_code_range_count;
+    bool ppc_fallback_enabled;
+    uint64_t ppc_instruction_budget;
+    bool differential_validation;
+#endif
 
     // Host function dispatch table: guest address → host implementation
     // Populated at startup for all OS import addresses.
@@ -109,36 +146,43 @@ struct CPUState {
 
     // Espresso paired singles: f[n] is ps0, ps1[n] the second slot.
     // GQR0-7 drive psq_l/psq_st quantization (SPR 912-919 / UGQR 896-903).
+#ifdef __cplusplus
     double ps1[32]{};
     uint32_t gqr[8]{};
+#else
+    double ps1[32];
+    uint32_t gqr[8];
+#endif
 };
 
 // Paired-single instruction (opcode 4/56/57/60/61, or mtspr/mfspr of a GQR)
 // executed on the register file; implemented per decaf-emu's interpreter.
 // The _mem form is what generated code calls: it passes the arena base
 // explicitly so host compilers know a paired-single may touch guest memory.
-extern "C" RBREW_HOST_API void rbrew_ps_mem(CPUState* cpu, uint8_t* mem, uint32_t word);
-extern "C" RBREW_HOST_API void rbrew_ps(CPUState* cpu, uint32_t word);
+RBREW_EXTERN_C RBREW_HOST_API void rbrew_ps_mem(CPUState* cpu, uint8_t* mem, uint32_t word) RBREW_MAY_THROW;
+RBREW_EXTERN_C RBREW_HOST_API void rbrew_ps(CPUState* cpu, uint32_t word) RBREW_MAY_THROW;
 // tw/twi: evaluate the TO condition (signed lt/gt, eq, unsigned lt/gt) and,
 // when it holds, stop with a guest-trap error instead of continuing.
-extern "C" RBREW_HOST_API void rbrew_trap(CPUState* cpu, uint32_t word, uint32_t pc);
+RBREW_EXTERN_C RBREW_HOST_API void rbrew_trap(CPUState* cpu, uint32_t word, uint32_t pc) RBREW_MAY_THROW;
 // Thread start values set by coreinit (decaf OSCreateThread): GQR2-5 hold
 // the u8/u16/s8/s16 quantization types, the rest are 0.
 static inline void rbrew_init_thread_gqrs(CPUState* cpu) {
-    for (auto& g : cpu->gqr) g = 0;
+    for (int i = 0; i < 8; ++i) cpu->gqr[i] = 0;
     cpu->gqr[2] = 0x40004u;
     cpu->gqr[3] = 0x50005u;
     cpu->gqr[4] = 0x60006u;
     cpu->gqr[5] = 0x70007u;
 }
 
-extern "C" RBREW_HOST_API uint32_t rbrew_lwarx_mem(CPUState* cpu, uint8_t* mem, uint32_t addr);
-extern "C" RBREW_HOST_API void rbrew_stwcx_mem(CPUState* cpu, uint8_t* mem, uint32_t addr, uint32_t value);
-extern "C" RBREW_HOST_API uint32_t rbrew_lwarx(CPUState* cpu, uint32_t addr);
-extern "C" RBREW_HOST_API void rbrew_stwcx(CPUState* cpu, uint32_t addr, uint32_t value);
+RBREW_EXTERN_C RBREW_HOST_API uint32_t rbrew_lwarx_mem(CPUState* cpu, uint8_t* mem, uint32_t addr);
+RBREW_EXTERN_C RBREW_HOST_API void rbrew_stwcx_mem(CPUState* cpu, uint8_t* mem, uint32_t addr, uint32_t value);
+RBREW_EXTERN_C RBREW_HOST_API uint32_t rbrew_lwarx(CPUState* cpu, uint32_t addr);
+RBREW_EXTERN_C RBREW_HOST_API void rbrew_stwcx(CPUState* cpu, uint32_t addr, uint32_t value);
 // Guest-memory writers use this shared monitor so even an ABA write breaks
 // an outstanding reservation. bytes are already in guest endian order.
-extern "C" RBREW_HOST_API void rbrew_write_memory(uint8_t* mem, uint32_t addr, const void* bytes, uint32_t size);
+RBREW_EXTERN_C RBREW_HOST_API void rbrew_write_memory(uint8_t* mem, uint32_t addr, const void* bytes, uint32_t size);
+RBREW_EXTERN_C RBREW_HOST_API bool rbrew_need_checked_write(void);
+#ifdef __cplusplus
 // A plain guest store needs rbrew_write_memory only while strict reservations
 // are on or this thread has a write observer (rebrewu_memory_observer.h);
 // the setters maintain both. Static TLS, constant-initialized.
@@ -148,6 +192,7 @@ extern __declspec(thread) bool rbrew_thread_write_observed;
 #else
 extern thread_local bool rbrew_thread_write_observed;
 #endif
+#endif
 
 // FPRs carry non-floating bit payloads too (fctiwz -> stfiwx/stfd).
 static inline uint32_t rbrew_fpr_low_word(double value) {
@@ -156,7 +201,7 @@ static inline uint32_t rbrew_fpr_low_word(double value) {
     return (uint32_t)bits;
 }
 
-static inline void rbrew_fctiwz(CPUState* cpu, double& destination, double source, bool record) {
+static inline void rbrew_fctiwz_ptr(CPUState* cpu, double* destination, double source, bool record) {
     // PowerPC PEM 8-81 / 3-38: truncate regardless of RN, saturate invalid
     // conversions when VE is clear, and suppress the destination when VE is set.
     // MSR-controlled FP exception delivery is not modeled by this runtime.
@@ -182,7 +227,7 @@ static inline void rbrew_fctiwz(CPUState* cpu, double& destination, double sourc
     } else {
         // High word is architecturally undefined; choose a deterministic tag.
         uint64_t payload = 0xFFF8000000000000ull | word;
-        memcpy(&destination, &payload, sizeof(payload));
+        memcpy(destination, &payload, sizeof(payload));
         // FPRF is undefined for a completed integer conversion; retain it.
     }
     // Recompute summary bits. FX is sticky on newly raised exception bits.
@@ -195,6 +240,11 @@ static inline void rbrew_fctiwz(CPUState* cpu, double& destination, double sourc
         cpu->fpscr |= 0x40000000u;
     if (record) cpu->cr[1] = (cpu->fpscr >> 28) & 15u;
 }
+#ifdef __cplusplus
+static inline void rbrew_fctiwz(CPUState* cpu, double& destination, double source, bool record) {
+    rbrew_fctiwz_ptr(cpu, &destination, source, record);
+}
+#endif
 
 // ---------------------------------------------------------------------------
 // Memory access — Wii U is big-endian, host may be little-endian
@@ -216,40 +266,40 @@ static inline void rbrew_fctiwz(CPUState* cpu, double& destination, double sourc
 // ---------------------------------------------------------------------------
 
 #pragma pack(push, 1)
-struct RbrewRaw16 {
+typedef struct RbrewRaw16 {
     uint16_t v;
-};
-struct RbrewRaw32 {
+} RbrewRaw16;
+typedef struct RbrewRaw32 {
     uint32_t v;
-};
-struct RbrewRaw64 {
+} RbrewRaw32;
+typedef struct RbrewRaw64 {
     uint64_t v;
-};
+} RbrewRaw64;
 #pragma pack(pop)
 
 static inline uint8_t rbrew_load8_raw(const uint8_t* mem, uint32_t addr) {
-    return *reinterpret_cast<const volatile uint8_t*>(mem + addr);
+    return *(const volatile uint8_t*)(mem + addr);
 }
 static inline uint16_t rbrew_load16_raw(const uint8_t* mem, uint32_t addr) {
-    return reinterpret_cast<const volatile RbrewRaw16*>(mem + addr)->v;
+    return ((const volatile RbrewRaw16*)(mem + addr))->v;
 }
 static inline uint32_t rbrew_load32_raw(const uint8_t* mem, uint32_t addr) {
-    return reinterpret_cast<const volatile RbrewRaw32*>(mem + addr)->v;
+    return ((const volatile RbrewRaw32*)(mem + addr))->v;
 }
 static inline uint64_t rbrew_load64_raw(const uint8_t* mem, uint32_t addr) {
-    return reinterpret_cast<const volatile RbrewRaw64*>(mem + addr)->v;
+    return ((const volatile RbrewRaw64*)(mem + addr))->v;
 }
 static inline void rbrew_store8_raw(uint8_t* mem, uint32_t addr, uint8_t v) {
-    *reinterpret_cast<volatile uint8_t*>(mem + addr) = v;
+    *(volatile uint8_t*)(mem + addr) = v;
 }
 static inline void rbrew_store16_raw(uint8_t* mem, uint32_t addr, uint16_t v) {
-    reinterpret_cast<volatile RbrewRaw16*>(mem + addr)->v = v;
+    ((volatile RbrewRaw16*)(mem + addr))->v = v;
 }
 static inline void rbrew_store32_raw(uint8_t* mem, uint32_t addr, uint32_t v) {
-    reinterpret_cast<volatile RbrewRaw32*>(mem + addr)->v = v;
+    ((volatile RbrewRaw32*)(mem + addr))->v = v;
 }
 static inline void rbrew_store64_raw(uint8_t* mem, uint32_t addr, uint64_t v) {
-    reinterpret_cast<volatile RbrewRaw64*>(mem + addr)->v = v;
+    ((volatile RbrewRaw64*)(mem + addr))->v = v;
 }
 
 #if defined(_MSC_VER)
@@ -287,9 +337,9 @@ static inline bool rbrew_arena_access(const uint8_t* mem, uint32_t addr, uint32_
 #if defined(RBREW_HYPER_OPTIMIZE)
     (void)addr;
     (void)size;
-    return mem != nullptr;
+    return mem != NULL;
 #else
-    return mem != nullptr && addr <= RBREW_APPLICATION_ARENA_END - size;
+    return mem != NULL && addr <= RBREW_APPLICATION_ARENA_END - size;
 #endif
 }
 
@@ -366,7 +416,7 @@ static inline void rbrew_zero32(uint8_t* __restrict mem, uint32_t addr) {
         for (uint32_t off = 0; off < 32; off += 4) rbrew_store32_raw(mem, addr + off, 0);
         return;
     }
-    uint8_t zero[32] = {};
+    uint8_t zero[32] = {0};
     rbrew_write_memory(mem, addr, zero, 32);
 }
 
@@ -376,28 +426,32 @@ static inline void rbrew_store_bytes(uint8_t* __restrict mem, uint32_t addr, con
     // Hot stores copy straight through: write observers and strict
     // reservation tracking are diagnostics and use rbrew_write_memory.
     switch (size) {
-    case 1: rbrew_store8_raw(mem, addr, *static_cast<const uint8_t*>(bytes)); break;
-    case 2: rbrew_store16_raw(mem, addr, *static_cast<const uint16_t*>(bytes)); break;
-    case 4: rbrew_store32_raw(mem, addr, *static_cast<const uint32_t*>(bytes)); break;
-    case 8: rbrew_store64_raw(mem, addr, *static_cast<const uint64_t*>(bytes)); break;
+    case 1: rbrew_store8_raw(mem, addr, *(const uint8_t*)bytes); break;
+    case 2: rbrew_store16_raw(mem, addr, *(const uint16_t*)bytes); break;
+    case 4: rbrew_store32_raw(mem, addr, *(const uint32_t*)bytes); break;
+    case 8: rbrew_store64_raw(mem, addr, *(const uint64_t*)bytes); break;
     default: {
-        const uint8_t* src = static_cast<const uint8_t*>(bytes);
+        const uint8_t* src = (const uint8_t*)bytes;
         for (uint32_t i = 0; i < size; ++i) rbrew_store8_raw(mem, addr + i, src[i]);
         break;
     }
     }
 #else
+#ifdef __cplusplus
     if (rbrew_thread_write_observed || rbrew_strict_reservations_active.load(std::memory_order_relaxed)) {
+#else
+    if (rbrew_need_checked_write()) {
+#endif
         rbrew_write_memory(mem, addr, bytes, size);
         return;
     }
     switch (size) {
-    case 1: rbrew_store8_raw(mem, addr, *static_cast<const uint8_t*>(bytes)); break;
-    case 2: rbrew_store16_raw(mem, addr, *static_cast<const uint16_t*>(bytes)); break;
-    case 4: rbrew_store32_raw(mem, addr, *static_cast<const uint32_t*>(bytes)); break;
-    case 8: rbrew_store64_raw(mem, addr, *static_cast<const uint64_t*>(bytes)); break;
+    case 1: rbrew_store8_raw(mem, addr, *(const uint8_t*)bytes); break;
+    case 2: rbrew_store16_raw(mem, addr, *(const uint16_t*)bytes); break;
+    case 4: rbrew_store32_raw(mem, addr, *(const uint32_t*)bytes); break;
+    case 8: rbrew_store64_raw(mem, addr, *(const uint64_t*)bytes); break;
     default: {
-        const uint8_t* src = static_cast<const uint8_t*>(bytes);
+        const uint8_t* src = (const uint8_t*)bytes;
         for (uint32_t i = 0; i < size; ++i) rbrew_store8_raw(mem, addr + i, src[i]);
         break;
     }
@@ -494,9 +548,9 @@ static inline void rbrew_write_f64(uint8_t* __restrict mem, uint32_t addr, doubl
 // 750-family values (as Cemu): divw by 0 -> -1 for a negative dividend, else
 // 0; INT_MIN / -1 -> 0xFFFFFFFF; divwu by 0 -> 0.
 static inline uint32_t rbrew_divw(uint32_t a, uint32_t b) {
-    if (b == 0) return int32_t(a) < 0 ? 0xFFFFFFFFu : 0u;
+    if (b == 0) return (int32_t)a < 0 ? 0xFFFFFFFFu : 0u;
     if (a == 0x80000000u && b == 0xFFFFFFFFu) return 0xFFFFFFFFu;
-    return uint32_t(int32_t(a) / int32_t(b));
+    return (uint32_t)((int32_t)a / (int32_t)b);
 }
 static inline uint32_t rbrew_divwu(uint32_t a, uint32_t b) {
     return b ? a / b : 0u;
@@ -559,7 +613,7 @@ static inline uint32_t rbrew_add_ci32(uint32_t a, uint32_t b, uint32_t cin) {
     return a + b + (cin & 1u);
 }
 static inline uint32_t rbrew_carry_out32(uint32_t a, uint32_t b, uint32_t cin) {
-    return uint32_t((uint64_t(a) + b + (cin & 1u)) >> 32);
+    return (uint32_t)(((uint64_t)a + b + (cin & 1u)) >> 32);
 }
 
 // sraw/srawi: arithmetic right shift (amount is taken modulo 64; amounts of
@@ -568,13 +622,13 @@ static inline uint32_t rbrew_carry_out32(uint32_t a, uint32_t b, uint32_t cin) {
 // leaves the shifter, the sign bit included.
 static inline uint32_t rbrew_sraw_result(uint32_t v, uint32_t amount) {
     const uint32_t n = amount & 63u;
-    return n >= 32 ? uint32_t(int32_t(v) >> 31) : uint32_t(int32_t(v) >> n);
+    return n >= 32 ? (uint32_t)((int32_t)v >> 31) : (uint32_t)((int32_t)v >> n);
 }
 static inline uint32_t rbrew_sraw_carry(uint32_t v, uint32_t amount) {
     const uint32_t n = amount & 63u;
     if (n == 0) return 0;
     const uint32_t lost = n >= 32 ? v : (v & ((1u << n) - 1u));
-    return (int32_t(v) < 0 && lost != 0) ? 1u : 0u;
+    return ((int32_t)v < 0 && lost != 0) ? 1u : 0u;
 }
 
 // ---------------------------------------------------------------------------
@@ -619,17 +673,17 @@ static inline double rbrew_fround(double v) {
     return (double)rbrew_flush_denormal((float)v);
 }
 
-extern RBREW_HOST_API const bool rbrew_paired_inline_enabled;
+RBREW_EXTERN_C RBREW_HOST_API const bool rbrew_paired_inline_enabled;
 
 // psq quantization: the 2^[-31,32] scale factor is built exactly (no libm),
 // matching the ldexp reference for every GQR scale.
 static inline int rbrew_psq_signed_scale(uint32_t scale) {
-    const int e = int(scale & 0x3F);
+    const int e = (int)(scale & 0x3Fu);
     return e - ((e & 32) << 1);
 }
 static inline double rbrew_psq_factor(uint32_t scale, bool store) {
     const int k = rbrew_psq_signed_scale(scale);
-    const uint64_t bits = uint64_t(1023 + (store ? k : -k)) << 52;
+    const uint64_t bits = (uint64_t)(1023 + (store ? k : -k)) << 52;
     double f;
     memcpy(&f, &bits, sizeof(f));
     return f;
@@ -644,129 +698,175 @@ static inline void rbrew_psq_store_int(uint8_t* __restrict mem, uint32_t ea, dou
         q = (bits >> 63) ? lo : hi;
     else {
         const double scaled = v * factor;
-        q = scaled < double(lo) ? lo : scaled > double(hi) ? hi : int32_t(scaled);
+        q = scaled < (double)lo ? lo : scaled > (double)hi ? hi : (int32_t)scaled;
     }
     if (wide)
-        rbrew_write16(mem, ea, uint16_t(q));
+        rbrew_write16(mem, ea, (uint16_t)q);
     else
-        rbrew_write8(mem, ea, uint8_t(q));
+        rbrew_write8(mem, ea, (uint8_t)q);
 }
 // Values below the single exponent range store a signed zero (decaf).
 static inline void rbrew_psq_store_float(uint8_t* __restrict mem, uint32_t ea, double v) {
     uint64_t bits;
     memcpy(&bits, &v, sizeof(bits));
     if (((bits >> 52) & 2047) <= 896)
-        rbrew_write32(mem, ea, uint32_t(bits >> 32) & 0x80000000u);
+        rbrew_write32(mem, ea, (uint32_t)(bits >> 32) & 0x80000000u);
     else
         rbrew_write_f32(mem, ea, v);
 }
 
-// Generated instruction words are constant: decode once at compile time.
-// The (cpu, mem) form is what generated code calls; the arena base is passed
-// explicitly so host compilers can keep guest registers in host registers
-// across the inline loads/stores.
+static inline void rbrew_psq_load(CPUState* cpu, uint8_t* __restrict mem, uint32_t w, uint32_t d, uint32_t a,
+                                  int32_t disp, uint32_t gqr_idx, int single_lane, int update) {
+    if (!rbrew_paired_inline_enabled) {
+        rbrew_ps_mem(cpu, mem, w);
+        return;
+    }
+    const uint32_t gqr = cpu->gqr[gqr_idx];
+    const uint32_t type = (gqr >> 16) & 7u;
+    const uint32_t scale = (gqr >> 24) & 0x3Fu;
+    const uint32_t ea = ((update || a) ? cpu->r[a] : 0u) + (uint32_t)disp;
+    const double factor = type == 0 ? 1.0 : rbrew_psq_factor(scale, false);
+    switch (type) {
+    case 0: // float
+        cpu->f[d] = rbrew_read_f32(mem, ea);
+        cpu->ps1[d] = single_lane ? 1.0 : rbrew_read_f32(mem, ea + 4u);
+        break;
+    case 4: // u8
+        cpu->f[d] = (double)rbrew_read8(mem, ea) * factor;
+        cpu->ps1[d] = single_lane ? 1.0 : (double)rbrew_read8(mem, ea + 1u) * factor;
+        break;
+    case 5: // u16
+        cpu->f[d] = (double)rbrew_read16(mem, ea) * factor;
+        cpu->ps1[d] = single_lane ? 1.0 : (double)rbrew_read16(mem, ea + 2u) * factor;
+        break;
+    case 6: // s8
+        cpu->f[d] = (double)(int8_t)rbrew_read8(mem, ea) * factor;
+        cpu->ps1[d] = single_lane ? 1.0 : (double)(int8_t)rbrew_read8(mem, ea + 1u) * factor;
+        break;
+    case 7: // s16
+        cpu->f[d] = (double)(int16_t)rbrew_read16(mem, ea) * factor;
+        cpu->ps1[d] = single_lane ? 1.0 : (double)(int16_t)rbrew_read16(mem, ea + 2u) * factor;
+        break;
+    default: rbrew_ps_mem(cpu, mem, w); return;
+    }
+    if (update) cpu->r[a] = ea;
+}
+
+static inline void rbrew_psq_store_one(uint8_t* __restrict mem, uint32_t type, double factor, uint32_t address,
+                                       double value) {
+    switch (type) {
+    case 0: rbrew_psq_store_float(mem, address, value); break;
+    case 4: rbrew_psq_store_int(mem, address, value, factor, 0, 255, false); break;
+    case 5: rbrew_psq_store_int(mem, address, value, factor, 0, 65535, true); break;
+    case 6: rbrew_psq_store_int(mem, address, value, factor, -128, 127, false); break;
+    case 7: rbrew_psq_store_int(mem, address, value, factor, -32768, 32767, true); break;
+    default: break;
+    }
+}
+
+static inline void rbrew_psq_store(CPUState* cpu, uint8_t* __restrict mem, uint32_t w, uint32_t d, uint32_t a,
+                                   int32_t disp, uint32_t gqr_idx, int single_lane, int update) {
+    if (!rbrew_paired_inline_enabled) {
+        rbrew_ps_mem(cpu, mem, w);
+        return;
+    }
+    const uint32_t gqr = cpu->gqr[gqr_idx];
+    const uint32_t type = gqr & 7u;
+    const uint32_t scale = (gqr >> 8) & 0x3Fu;
+    const uint32_t ea = ((update || a) ? cpu->r[a] : 0u) + (uint32_t)disp;
+    if (type != 0 && type < 4) {
+        rbrew_ps_mem(cpu, mem, w);
+        return; // undefined quantization
+    }
+    const double factor = type == 0 ? 1.0 : rbrew_psq_factor(scale, true);
+    rbrew_psq_store_one(mem, type, factor, ea, cpu->f[d]);
+    if (!single_lane) {
+        if (type == 0)
+            rbrew_psq_store_one(mem, type, factor, ea + 4u, cpu->ps1[d]);
+        else
+            rbrew_psq_store_one(mem, type, factor, ea + ((type & 1u) ? 2u : 1u),
+                                cpu->ps1[d]); // 8-bit types 4/6, 16-bit 5/7
+    }
+    if (update) cpu->r[a] = ea;
+}
+
+static inline void rbrew_ps_commit(CPUState* cpu, uint32_t d, double p0, double p1, int flush0, int flush1, int rc) {
+    cpu->f[d] = flush0 ? (double)rbrew_flush_denormal((float)p0) : (double)(float)p0;
+    cpu->ps1[d] = flush1 ? (double)rbrew_flush_denormal((float)p1) : (double)(float)p1;
+    if (rc) cpu->cr[1] = (cpu->fpscr >> 28) & 15u;
+}
+
+#define RBREW_DEFINE_PS_OP(name, flush0, flush1, expr0, expr1)                                                         \
+    static inline void name(CPUState* cpu, uint8_t* __restrict mem, uint32_t w, uint32_t d, uint32_t a, uint32_t b,    \
+                            uint32_t c, int rc) {                                                                      \
+        if (!rbrew_paired_inline_enabled) {                                                                            \
+            rbrew_ps_mem(cpu, mem, w);                                                                                 \
+            return;                                                                                                    \
+        }                                                                                                              \
+        const double a0 = cpu->f[a], a1 = cpu->ps1[a];                                                                 \
+        const double b0 = cpu->f[b], b1 = cpu->ps1[b];                                                                 \
+        const double c0 = cpu->f[c], c1 = cpu->ps1[c];                                                                 \
+        (void)a1;                                                                                                      \
+        (void)b0;                                                                                                      \
+        (void)b1;                                                                                                      \
+        (void)c0;                                                                                                      \
+        (void)c1;                                                                                                      \
+        rbrew_ps_commit(cpu, d, (expr0), (expr1), (flush0), (flush1), rc);                                             \
+    }
+
+RBREW_DEFINE_PS_OP(rbrew_ps_sum0, 1, 0, a0 + b1, c1)
+RBREW_DEFINE_PS_OP(rbrew_ps_sum1, 0, 1, c0, a0 + b1)
+RBREW_DEFINE_PS_OP(rbrew_ps_muls0, 1, 1, a0 * c0, a1 * c0)
+RBREW_DEFINE_PS_OP(rbrew_ps_muls1, 1, 1, a0 * c1, a1 * c1)
+RBREW_DEFINE_PS_OP(rbrew_ps_madds0, 1, 1, fma(a0, c0, b0), fma(a1, c0, b1))
+RBREW_DEFINE_PS_OP(rbrew_ps_madds1, 1, 1, fma(a0, c1, b0), fma(a1, c1, b1))
+RBREW_DEFINE_PS_OP(rbrew_ps_sub, 1, 1, a0 - b0, a1 - b1)
+RBREW_DEFINE_PS_OP(rbrew_ps_add, 1, 1, a0 + b0, a1 + b1)
+RBREW_DEFINE_PS_OP(rbrew_ps_mul, 1, 1, a0 * c0, a1 * c1)
+RBREW_DEFINE_PS_OP(rbrew_ps_msub, 1, 1, fma(a0, c0, -b0), fma(a1, c1, -b1))
+RBREW_DEFINE_PS_OP(rbrew_ps_madd, 1, 1, fma(a0, c0, b0), fma(a1, c1, b1))
+#undef RBREW_DEFINE_PS_OP
+
+#ifdef __cplusplus
+// Compatibility template wrapper for C++ unit tests and callers.
 template <uint32_t w> static inline void rbrew_ps_constant(CPUState* cpu, uint8_t* __restrict mem) {
-    if (!rbrew_paired_inline_enabled) return rbrew_ps_mem(cpu, mem, w);
     constexpr uint32_t op = w >> 26, d = (w >> 21) & 31, a = (w >> 16) & 31;
     if constexpr (op == 56 || op == 57 || op == 60 || op == 61) {
-        constexpr bool load = op < 60, update = op == 57 || op == 61, single = (w >> 15) & 1;
-        const uint32_t gqr = cpu->gqr[(w >> 12) & 7];
-        const uint32_t type = (gqr >> (load ? 16 : 0)) & 7;
-        const uint32_t scale = (gqr >> (load ? 24 : 8)) & 0x3F;
+        constexpr int single = (w >> 15) & 1, update = (op == 57 || op == 61) ? 1 : 0;
+        constexpr uint32_t gqr_idx = (w >> 12) & 7;
         constexpr int32_t disp = int32_t((w & 4095u) << 20) >> 20;
-        const uint32_t ea = (update || a ? cpu->r[a] : 0u) + uint32_t(disp);
-        if constexpr (load) {
-            const double factor = type == 0 ? 1.0 : rbrew_psq_factor(scale, false);
-            switch (type) {
-            case 0: // float
-                cpu->f[d] = rbrew_read_f32(mem, ea);
-                cpu->ps1[d] = single ? 1.0 : rbrew_read_f32(mem, ea + 4);
-                break;
-            case 4: // u8
-                cpu->f[d] = double(rbrew_read8(mem, ea)) * factor;
-                cpu->ps1[d] = single ? 1.0 : double(rbrew_read8(mem, ea + 1)) * factor;
-                break;
-            case 5: // u16
-                cpu->f[d] = double(rbrew_read16(mem, ea)) * factor;
-                cpu->ps1[d] = single ? 1.0 : double(rbrew_read16(mem, ea + 2)) * factor;
-                break;
-            case 6: // s8
-                cpu->f[d] = double(int8_t(rbrew_read8(mem, ea))) * factor;
-                cpu->ps1[d] = single ? 1.0 : double(int8_t(rbrew_read8(mem, ea + 1))) * factor;
-                break;
-            case 7: // s16
-                cpu->f[d] = double(int16_t(rbrew_read16(mem, ea))) * factor;
-                cpu->ps1[d] = single ? 1.0 : double(int16_t(rbrew_read16(mem, ea + 2))) * factor;
-                break;
-            default: return rbrew_ps_mem(cpu, mem, w);
-            }
-        } else {
-            if (type != 0 && type < 4) return rbrew_ps_mem(cpu, mem, w); // undefined quantization
-            const double factor = type == 0 ? 1.0 : rbrew_psq_factor(scale, true);
-            auto store_one = [&](uint32_t address, double value) {
-                switch (type) {
-                case 0: rbrew_psq_store_float(mem, address, value); break;
-                case 4: rbrew_psq_store_int(mem, address, value, factor, 0, 255, false); break;
-                case 5: rbrew_psq_store_int(mem, address, value, factor, 0, 65535, true); break;
-                case 6: rbrew_psq_store_int(mem, address, value, factor, -128, 127, false); break;
-                case 7: rbrew_psq_store_int(mem, address, value, factor, -32768, 32767, true); break;
-                default: break;
-                }
-            };
-            store_one(ea, cpu->f[d]);
-            if constexpr (!single) {
-                if (type == 0)
-                    store_one(ea + 4, cpu->ps1[d]);
-                else
-                    store_one(ea + ((type & 1) ? 2u : 1u), cpu->ps1[d]); // 8-bit types 4/6, 16-bit 5/7
-            }
-        }
-        if constexpr (update) cpu->r[a] = ea;
+        if constexpr (op < 60)
+            rbrew_psq_load(cpu, mem, w, d, a, disp, gqr_idx, single, update);
+        else
+            rbrew_psq_store(cpu, mem, w, d, a, disp, gqr_idx, single, update);
         return;
     } else if constexpr (op == 4) {
         constexpr uint32_t b = (w >> 11) & 31, c = (w >> 6) & 31, xo = (w >> 1) & 31;
-        const double a0 = cpu->f[a], a1 = cpu->ps1[a], b0 = cpu->f[b], b1 = cpu->ps1[b];
-        const double c0 = cpu->f[c], c1 = cpu->ps1[c];
-        double p0, p1;
-        if constexpr (xo == 10) {
-            p0 = a0 + b1;
-            p1 = c1;
-        } else if constexpr (xo == 11) {
-            p0 = c0;
-            p1 = a0 + b1;
-        } else if constexpr (xo == 12) {
-            p0 = a0 * c0;
-            p1 = a1 * c0;
-        } else if constexpr (xo == 13) {
-            p0 = a0 * c1;
-            p1 = a1 * c1;
-        } else if constexpr (xo == 14) {
-            p0 = fma(a0, c0, b0);
-            p1 = fma(a1, c0, b1);
-        } else if constexpr (xo == 15) {
-            p0 = fma(a0, c1, b0);
-            p1 = fma(a1, c1, b1);
-        } else if constexpr (xo == 20) {
-            p0 = a0 - b0;
-            p1 = a1 - b1;
-        } else if constexpr (xo == 21) {
-            p0 = a0 + b0;
-            p1 = a1 + b1;
-        } else if constexpr (xo == 25) {
-            p0 = a0 * c0;
-            p1 = a1 * c1;
-        } else if constexpr (xo == 28) {
-            p0 = fma(a0, c0, -b0);
-            p1 = fma(a1, c1, -b1);
-        } else if constexpr (xo == 29) {
-            p0 = fma(a0, c0, b0);
-            p1 = fma(a1, c1, b1);
-        } else
-            return rbrew_ps_mem(cpu, mem, w);
-        // ps_sum0 copies slot 1 of frC, ps_sum1 slot 0: moves, never flushed.
-        cpu->f[d] = xo == 11 ? double(float(p0)) : double(rbrew_flush_denormal(float(p0)));
-        cpu->ps1[d] = xo == 10 ? double(float(p1)) : double(rbrew_flush_denormal(float(p1)));
-        if constexpr (w & 1) cpu->cr[1] = (cpu->fpscr >> 28) & 15;
+        constexpr int rc = int(w & 1);
+        if constexpr (xo == 10)
+            rbrew_ps_sum0(cpu, mem, w, d, a, b, c, rc);
+        else if constexpr (xo == 11)
+            rbrew_ps_sum1(cpu, mem, w, d, a, b, c, rc);
+        else if constexpr (xo == 12)
+            rbrew_ps_muls0(cpu, mem, w, d, a, b, c, rc);
+        else if constexpr (xo == 13)
+            rbrew_ps_muls1(cpu, mem, w, d, a, b, c, rc);
+        else if constexpr (xo == 14)
+            rbrew_ps_madds0(cpu, mem, w, d, a, b, c, rc);
+        else if constexpr (xo == 15)
+            rbrew_ps_madds1(cpu, mem, w, d, a, b, c, rc);
+        else if constexpr (xo == 20)
+            rbrew_ps_sub(cpu, mem, w, d, a, b, c, rc);
+        else if constexpr (xo == 21)
+            rbrew_ps_add(cpu, mem, w, d, a, b, c, rc);
+        else if constexpr (xo == 25)
+            rbrew_ps_mul(cpu, mem, w, d, a, b, c, rc);
+        else if constexpr (xo == 28)
+            rbrew_ps_msub(cpu, mem, w, d, a, b, c, rc);
+        else if constexpr (xo == 29)
+            rbrew_ps_madd(cpu, mem, w, d, a, b, c, rc);
+        else
+            rbrew_ps_mem(cpu, mem, w);
         return;
     }
     rbrew_ps_mem(cpu, mem, w);
@@ -774,6 +874,7 @@ template <uint32_t w> static inline void rbrew_ps_constant(CPUState* cpu, uint8_
 template <uint32_t w> static inline void rbrew_ps_constant(CPUState* cpu) {
     rbrew_ps_constant<w>(cpu, cpu->mem);
 }
+#endif
 
 // ---------------------------------------------------------------------------
 // Dispatch — called for indirect jumps/calls (bctr/bctrl)
@@ -786,22 +887,22 @@ extern "C" {
 // The _mem forms are what generated code calls: the arena base is passed
 // explicitly so host compilers know these may touch guest memory (and only
 // that) while keeping guest registers cached in host registers.
-RBREW_HOST_API void rbrew_dispatch_mem(CPUState* cpu, uint8_t* mem, uint32_t guest_addr) noexcept(false);
-RBREW_HOST_API void rbrew_dispatch(CPUState* cpu, uint32_t guest_addr) noexcept(false);
+RBREW_HOST_API void rbrew_dispatch_mem(CPUState* cpu, uint8_t* mem, uint32_t guest_addr) RBREW_MAY_THROW;
+RBREW_HOST_API void rbrew_dispatch(CPUState* cpu, uint32_t guest_addr) RBREW_MAY_THROW;
 // Only use at proven linked-call/entry boundaries with an explicit LR return.
 // Legacy local/tail dispatch retains its existing behavior.
-RBREW_HOST_API void rbrew_dispatch_linked_mem(CPUState* cpu, uint8_t* mem, uint32_t guest_addr) noexcept(false);
-RBREW_HOST_API void rbrew_dispatch_linked(CPUState* cpu, uint32_t guest_addr) noexcept(false);
+RBREW_HOST_API void rbrew_dispatch_linked_mem(CPUState* cpu, uint8_t* mem, uint32_t guest_addr) RBREW_MAY_THROW;
+RBREW_HOST_API void rbrew_dispatch_linked(CPUState* cpu, uint32_t guest_addr) RBREW_MAY_THROW;
 // Invoke the module's declared entry with loader arguments and return its result.
 int32_t rbrew_run_entry(CPUState* cpu, uint32_t entry, uint32_t argc, uint32_t argv);
 // GHS-style null-terminated constructor table; mark before calling so that
 // reentrant initialization and a later guest startup cannot run it twice.
 // The caller supplies the program's table and completion-flag addresses.
 uint32_t rbrew_run_constructors(CPUState* cpu, uint32_t table, uint32_t done_flag);
-RBREW_HOST_API void rbrew_call_indirect_mem(CPUState* cpu, uint8_t* mem, uint32_t guest_addr) noexcept(false);
-RBREW_HOST_API void rbrew_call_indirect(CPUState* cpu, uint32_t guest_addr) noexcept(false);
-RBREW_HOST_API void rbrew_call_mem(CPUState* cpu, uint8_t* mem, uint32_t guest_addr) noexcept(false);
-RBREW_HOST_API void rbrew_call(CPUState* cpu, uint32_t guest_addr) noexcept(false);
+RBREW_HOST_API void rbrew_call_indirect_mem(CPUState* cpu, uint8_t* mem, uint32_t guest_addr) RBREW_MAY_THROW;
+RBREW_HOST_API void rbrew_call_indirect(CPUState* cpu, uint32_t guest_addr) RBREW_MAY_THROW;
+RBREW_HOST_API void rbrew_call_mem(CPUState* cpu, uint8_t* mem, uint32_t guest_addr) RBREW_MAY_THROW;
+RBREW_HOST_API void rbrew_call(CPUState* cpu, uint32_t guest_addr) RBREW_MAY_THROW;
 
 // Called by OS stubs to register a host function at a guest address
 RBREW_HOST_API void rbrew_register_func(CPUState* cpu, uint32_t guest_addr, HostFunc fn);

@@ -6,6 +6,7 @@
 // A Cafe application has a 1 GiB MEM2 budget. Keep that capacity separate from
 // the port's bootstrap reservation; these are native guest arena addresses,
 // not a claim about the console's physical/virtual memory map.
+#ifdef __cplusplus
 constexpr uint32_t RBREW_APPLICATION_HEAP_BASE = 0x28000000u;
 constexpr uint32_t RBREW_APPLICATION_HEAP_SIZE = 0x40000000u;
 constexpr uint32_t RBREW_APPLICATION_ARENA_END = RBREW_APPLICATION_HEAP_BASE + RBREW_APPLICATION_HEAP_SIZE;
@@ -43,3 +44,21 @@ constexpr uint32_t RBREW_ARENA_END = RBREW_SHARED_DATA_BASE + RBREW_SHARED_DATA_
 // map is sparse across 4 GiB just like this aperture.
 constexpr uint64_t RBREW_GUEST_APERTURE_SIZE = 0x100000000ull + 0x10000ull;
 static_assert(RBREW_ARENA_END <= 0x100000000ull);
+#else
+#define RBREW_APPLICATION_HEAP_BASE ((uint32_t)0x28000000u)
+#define RBREW_APPLICATION_HEAP_SIZE ((uint32_t)0x40000000u)
+#define RBREW_APPLICATION_ARENA_END ((uint32_t)(RBREW_APPLICATION_HEAP_BASE + RBREW_APPLICATION_HEAP_SIZE))
+
+#define RBREW_OVERLAY_BASE ((uint32_t)0xA0000000u)
+#define RBREW_OVERLAY_SIZE ((uint32_t)0x1C000000u)
+
+#define RBREW_FG_FREE_BASE ((uint32_t)0xE0000000u)
+#define RBREW_FG_FREE_SIZE ((uint32_t)0x02800000u)
+#define RBREW_MEM1_BASE ((uint32_t)0xF4000000u)
+#define RBREW_MEM1_SIZE ((uint32_t)0x02000000u)
+#define RBREW_SHARED_DATA_BASE ((uint32_t)0xF8000000u)
+#define RBREW_SHARED_DATA_SIZE ((uint32_t)0x02000000u)
+#define RBREW_ARENA_END ((uint32_t)(RBREW_SHARED_DATA_BASE + RBREW_SHARED_DATA_SIZE))
+
+#define RBREW_GUEST_APERTURE_SIZE ((uint64_t)(0x100000000ull + 0x10000ull))
+#endif
