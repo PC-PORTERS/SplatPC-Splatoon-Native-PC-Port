@@ -162,10 +162,12 @@ enum class BakedOpKind : uint8_t {
     DrawEx,
     UniformWords,
     SetAttribBuffer,
+    SetFetchShader,
     SetUniformBlock,
     SetShader,
     SetTexture,
     SetSampler,
+    CallDisplayList,
     Descriptor,
     Generic,
 };
@@ -915,6 +917,7 @@ Gx2CommandFn s_draw_indexed_ex_fn = nullptr;
 Gx2CommandFn s_draw_indexed_ex2_fn = nullptr;
 Gx2CommandFn s_draw_ex_fn = nullptr;
 Gx2BakedHotCommands s_hot_cmds{};
+Gx2CommandFn s_list_call_fns[2] = {};
 
 uint32_t be_word(const uint8_t* d) {
     return (uint32_t(d[0]) << 24) | (uint32_t(d[1]) << 16) | (uint32_t(d[2]) << 8) | uint32_t(d[3]);
@@ -985,6 +988,18 @@ std::shared_ptr<const BakedList> bake_commands(const std::vector<Command>& comma
             op.arg2 = c.r[2];
             op.arg3 = c.r[3];
             baked->ops.push_back(op);
+        } else if (c.fn && c.fn == s_hot_cmds.set_fetch_shader) {
+            BakedOp op{};
+            op.kind = BakedOpKind::SetFetchShader;
+            op.arg0 = c.r[0];
+            baked->ops.push_back(op);
+        } else if (c.fn && (c.fn == s_list_call_fns[0] || c.fn == s_list_call_fns[1])) {
+            BakedOp op{};
+            op.kind = BakedOpKind::CallDisplayList;
+            op.is_pixel = (c.fn == s_list_call_fns[1]) ? 1 : 0;
+            op.arg0 = c.r[0];
+            op.arg1 = c.r[1];
+            baked->ops.push_back(op);
         } else if (c.fn && (c.fn == s_hot_cmds.set_vs_ubo || c.fn == s_hot_cmds.set_ps_ubo)) {
             BakedOp op{};
             op.kind = BakedOpKind::SetUniformBlock;
@@ -1041,6 +1056,9 @@ std::shared_ptr<const BakedList> bake_commands(const std::vector<Command>& comma
     return baked;
 }
 
+std::atomic<uint64_t> s_patch_revision{1};
+void call_display_list_args(CPUState* cpu, uint32_t list, uint32_t size, const char* api);
+
 void replay_baked(CPUState* cpu, const BakedList& baked, unsigned depth) {
     if (depth > 16 || t_replay_slot >= t_replay_cpus.size()) return;
     ReplayCpuGuard guard(cpu);
@@ -1096,6 +1114,27 @@ void replay_baked(CPUState* cpu, const BakedList& baked, unsigned depth) {
             gx2_render_set_attrib_buffer(c.arg0, c.arg3, c.arg1, c.arg2);
             if (perf)
                 gx2_perf_function(0, reinterpret_cast<const void*>(s_hot_cmds.set_attrib_buffer),
+                                  gx2_perf_now() - start);
+            break;
+        }
+        case BakedOpKind::SetFetchShader: {
+            if (s_hot_cmds.set_fetch_shader) {
+                const uint64_t start = perf ? gx2_perf_now() : 0;
+                call.r[3] = c.arg0;
+                s_hot_cmds.set_fetch_shader(&call);
+                if (perf)
+                    gx2_perf_function(0, reinterpret_cast<const void*>(s_hot_cmds.set_fetch_shader),
+                                      gx2_perf_now() - start);
+            }
+            break;
+        }
+        case BakedOpKind::CallDisplayList: {
+            const uint64_t start = perf ? gx2_perf_now() : 0;
+            ++draws_done;
+            call_display_list_args(&call, c.arg0, c.arg1,
+                                   c.is_pixel ? "GX2DirectCallDisplayList" : "GX2CallDisplayList");
+            if (perf)
+                gx2_perf_function(0, reinterpret_cast<const void*>(s_list_call_fns[c.is_pixel ? 1 : 0]),
                                   gx2_perf_now() - start);
             break;
         }
@@ -1240,8 +1279,45 @@ void replay(CPUState* cpu, const std::vector<Command>& commands, unsigned depth)
 // Commands issued outside a display list while the render thread runs: the
 // same recorded form, posted to the render thread instead of waiting for it.
 // GX2 command functions only use r3..r10, f1..f8, lr and the arena pointer.
+template <class T, size_t MaxPooled> struct WorkPool {
+    std::mutex mutex;
+    std::vector<void*> free_list;
+    ~WorkPool() {
+        for (void* p : free_list) ::operator delete(p);
+    }
+    void* allocate(size_t sz) {
+        if (sz == sizeof(T)) {
+            std::lock_guard lock(mutex);
+            if (!free_list.empty()) {
+                void* p = free_list.back();
+                free_list.pop_back();
+                return p;
+            }
+        }
+        return ::operator new(sz);
+    }
+    void release(void* p, size_t sz) noexcept {
+        if (!p) return;
+        if (sz == sizeof(T)) {
+            std::lock_guard lock(mutex);
+            if (free_list.size() < MaxPooled) {
+                free_list.push_back(p);
+                return;
+            }
+        }
+        ::operator delete(p);
+    }
+};
+
 thread_local bool t_stream_replay = false;
 struct StreamCommand final : Gx2AsyncWork {
+    static WorkPool<StreamCommand, 4096>& pool() {
+        static WorkPool<StreamCommand, 4096> p;
+        return p;
+    }
+    static void* operator new(size_t sz) { return pool().allocate(sz); }
+    static void operator delete(void* p, size_t sz) noexcept { pool().release(p, sz); }
+    static void operator delete(void* p) noexcept { pool().release(p, sizeof(StreamCommand)); }
     Command command;
     uint8_t* mem;
     uint32_t lr;
@@ -1300,6 +1376,13 @@ struct StreamCommand final : Gx2AsyncWork {
 // replayed on the render thread.
 void replay(CPUState* cpu, const std::vector<Command>& commands, unsigned depth);
 struct ListCall final : Gx2AsyncWork {
+    static WorkPool<ListCall, 4096>& pool() {
+        static WorkPool<ListCall, 4096> p;
+        return p;
+    }
+    static void* operator new(size_t sz) { return pool().allocate(sz); }
+    static void operator delete(void* p, size_t sz) noexcept { pool().release(p, sz); }
+    static void operator delete(void* p) noexcept { pool().release(p, sizeof(ListCall)); }
     Commands commands;
     std::shared_ptr<const BakedList> baked;
     uint8_t* mem;
@@ -1327,8 +1410,6 @@ struct ListCall final : Gx2AsyncWork {
 bool find_recording(uint8_t* mem, uint32_t list, uint32_t size, Commands& out,
                     std::shared_ptr<const BakedList>& baked_out);
 bool find_recording(uint8_t* mem, uint32_t list, uint32_t size, Commands& out);
-// GX2CallDisplayList / GX2DirectCallDisplayList, set at registration.
-Gx2CommandFn s_list_call_fns[2] = {};
 
 // Append to this core's open display list, or post to the render thread.
 void push_command(Command&& c, uint8_t* mem, uint32_t lr) {
@@ -1353,29 +1434,35 @@ void push_command(Command&& c, uint8_t* mem, uint32_t lr) {
 
 thread_local unsigned t_depth = 0;
 
+constexpr size_t kDlMruSlots = 512;
+struct DlMru {
+    uint32_t id = UINT32_MAX;
+    Commands commands;
+    std::shared_ptr<const BakedList> baked;
+};
+
+bool find_tagged_cached(uint32_t id, Commands& out, std::shared_ptr<const BakedList>& baked_out) {
+    thread_local std::array<DlMru, kDlMruSlots> t_dl_mru{};
+    const size_t slot = (id ^ (id >> 9)) & (kDlMruSlots - 1);
+    auto& entry = t_dl_mru[slot];
+    if (entry.id == id && (entry.commands || entry.baked)) {
+        out = entry.commands;
+        baked_out = entry.baked;
+        return true;
+    }
+    RegistryLock lock;
+    if (use_recording(id, out, baked_out)) {
+        entry = {id, out, baked_out};
+        return true;
+    }
+    return false;
+}
+
 bool find_recording(uint8_t* mem, uint32_t list, uint32_t size, Commands& out,
                     std::shared_ptr<const BakedList>& baked_out) {
     if (size >= 12 && rbrew_memory_accessible(mem, list, 12) && rbrew_read32(mem, list) == kTagNop &&
         rbrew_read32(mem, list + 4) == kTagMagic) {
-        const uint32_t id = rbrew_read32(mem, list + 8);
-        struct DlMru {
-            uint32_t id = UINT32_MAX;
-            Commands commands;
-            std::shared_ptr<const BakedList> baked;
-        };
-        thread_local DlMru t_find_mru[16]{};
-        const size_t slot = id & 15;
-        if (t_find_mru[slot].id == id && (t_find_mru[slot].commands || t_find_mru[slot].baked)) {
-            out = t_find_mru[slot].commands;
-            baked_out = t_find_mru[slot].baked;
-            return true;
-        }
-        RegistryLock lock;
-        if (use_recording(id, out, baked_out)) {
-            t_find_mru[slot] = {id, out, baked_out};
-            return true;
-        }
-        return false;
+        return find_tagged_cached(rbrew_read32(mem, list + 8), out, baked_out);
     }
     RegistryLock lock;
     if (auto it = s_lists.find(list); it != s_lists.end()) return use_recording(it->second, out, baked_out);
@@ -1386,33 +1473,14 @@ bool find_recording(uint8_t* mem, uint32_t list, uint32_t size, Commands& out) {
     return find_recording(mem, list, size, out, dummy);
 }
 
-void call_display_list(CPUState* cpu, const char* api) {
+void call_display_list_args(CPUState* cpu, uint32_t list, uint32_t size, const char* api) {
     Gx2PerfScope perf_scope(kPerfDisplayList);
-    const uint32_t list = ARG0, size = ARG1;
     Commands recorded;
     std::shared_ptr<const BakedList> baked;
     bool found = false;
     if (size >= 12 && rbrew_memory_accessible(MEM, list, 12) && rbrew_read32(MEM, list) == kTagNop &&
         rbrew_read32(MEM, list + 4) == kTagMagic) {
-        const uint32_t id = rbrew_read32(MEM, list + 8);
-        struct DlMru {
-            uint32_t id = UINT32_MAX;
-            Commands commands;
-            std::shared_ptr<const BakedList> baked;
-        };
-        thread_local DlMru t_call_mru[16]{};
-        const size_t slot = id & 15;
-        if (t_call_mru[slot].id == id && (t_call_mru[slot].commands || t_call_mru[slot].baked)) {
-            recorded = t_call_mru[slot].commands;
-            baked = t_call_mru[slot].baked;
-            found = true;
-        } else {
-            RegistryLock lock;
-            if (use_recording(id, recorded, baked)) {
-                t_call_mru[slot] = {id, recorded, baked};
-                found = true;
-            }
-        }
+        found = find_tagged_cached(rbrew_read32(MEM, list + 8), recorded, baked);
     } else {
         RegistryLock lock;
         if (auto it = s_lists.find(list); it != s_lists.end()) found = use_recording(it->second, recorded, baked);
@@ -1430,18 +1498,28 @@ void call_display_list(CPUState* cpu, const char* api) {
     struct StaticListCache {
         uint32_t list = 0;
         uint32_t size = 0;
-        uint32_t w0 = 0;
-        uint32_t w1 = 0;
+        uint32_t w0 = 0, w1 = 0, w_mid = 0, w_last = 0;
+        uint64_t patch_rev = 0;
+        uint64_t write_gen = kGx2WriteUntracked;
         std::vector<Gx2RegisterWrite> writes;
         bool ok = false;
     };
-    static thread_local StaticListCache t_static_mru[4]{};
+    constexpr size_t kStaticMruSlots = 256;
+    static thread_local std::array<StaticListCache, kStaticMruSlots> t_static_mru{};
+    const uint32_t aligned_size = size & ~3u;
+    if (!aligned_size) return;
     const uint32_t w0 = rbrew_read32(MEM, list);
-    const uint32_t w1 = size >= 8 ? rbrew_read32(MEM, list + 4) : 0;
-    const size_t slot = ((list >> 4) ^ size) & 3;
-    if (t_static_mru[slot].list == list && t_static_mru[slot].size == size && t_static_mru[slot].w0 == w0 &&
-        t_static_mru[slot].w1 == w1 && t_static_mru[slot].ok) {
-        gx2_render_apply_registers(t_static_mru[slot].writes.data(), t_static_mru[slot].writes.size());
+    const uint32_t w1 = aligned_size >= 8 ? rbrew_read32(MEM, list + 4) : 0;
+    const uint32_t w_mid = aligned_size >= 16 ? rbrew_read32(MEM, list + ((aligned_size >> 1) & ~3u)) : w0;
+    const uint32_t w_last = rbrew_read32(MEM, list + aligned_size - 4);
+    const uint64_t patch_rev = s_patch_revision.load(std::memory_order_acquire);
+    const uint64_t write_gen = gx2_write_generation(MEM, list, size);
+    const size_t slot = (((list >> 4) ^ (size >> 2)) * 0x9E3779B1u) & (kStaticMruSlots - 1);
+    auto& cached = t_static_mru[slot];
+    if (cached.ok && cached.list == list && cached.size == size && cached.patch_rev == patch_rev && cached.w0 == w0 &&
+        cached.w1 == w1 && cached.w_mid == w_mid && cached.w_last == w_last &&
+        (write_gen == kGx2WriteUntracked || write_gen <= cached.write_gen)) {
+        gx2_render_apply_registers(cached.writes.data(), cached.writes.size());
         return;
     }
     const auto state = gx2_decode_static_display_list(MEM + list, size);
@@ -1460,9 +1538,13 @@ void call_display_list(CPUState* cpu, const char* api) {
                                  rbrew_read32(MEM, list + 12), cpu->lr);
     }
     if (state.ok) {
-        t_static_mru[slot] = {list, size, w0, w1, state.writes, true};
+        cached = {list, size, w0, w1, w_mid, w_last, patch_rev, write_gen, state.writes, true};
         gx2_render_apply_registers(state.writes.data(), state.writes.size());
     }
+}
+
+void call_display_list(CPUState* cpu, const char* api) {
+    call_display_list_args(cpu, ARG0, ARG1, api);
 }
 } // namespace
 
@@ -1940,6 +2022,7 @@ static void GX2PatchDisplayList(CPUState* cpu) {
     const Field& f = fields[type];
     const uint32_t program = rbrew_read32(MEM, shader + (rbrew_read32(MEM, shader + f.test) ? f.program : f.fallback));
     rbrew_write32(MEM, list + offset + 8, program >> 8);
+    s_patch_revision.fetch_add(1, std::memory_order_release);
 }
 
 static void GX2CallDisplayList(CPUState* cpu) {

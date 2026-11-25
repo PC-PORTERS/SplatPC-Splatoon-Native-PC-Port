@@ -382,8 +382,9 @@ static void GX2QueryGetOcclusionResult(CPUState* cpu) {
         }();
         // The plaza keeps its own rule (assume visible, below), which holds its
         // 60 FPS mode; these paths are for the other scenes.
-        const bool interp_reads = gx2interp::mode_enabled() && rbrew_control_defaults::active_scene_type(MEM) != 2;
-        if (interp_fast == 4 && interp_reads) {
+        const bool non_plaza = rbrew_control_defaults::active_scene_type(MEM) != 2;
+        const bool interp_reads = gx2interp::mode_enabled() && non_plaza;
+        if (interp_fast == 4 && non_plaza) {
             // 1: ended, executed once more than published, no further begin queued
             // (wait); 2: published (read now); 0: anything else (drain).
             const auto state = [&] {
@@ -1680,7 +1681,7 @@ void gx2_draw_register(CPUState* cpu) {
     REG(GX2DrawIndexedEx);
     REG(GX2DrawIndexedEx2);
     gx2_register_draw_commands(GX2DrawIndexedEx, GX2DrawIndexedEx2, GX2DrawEx);
-    gx2_register_hot_commands({GX2SetAttribBuffer, GX2SetVertexUniformBlock, GX2SetPixelUniformBlock,
+    gx2_register_hot_commands({GX2SetAttribBuffer, GX2SetFetchShader, GX2SetVertexUniformBlock, GX2SetPixelUniformBlock,
                                GX2SetVertexShader, GX2SetPixelShader, apply_pixel_texture, apply_vertex_texture,
                                apply_pixel_sampler, apply_vertex_sampler});
     REG(GX2QueryBegin);

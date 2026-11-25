@@ -163,6 +163,7 @@ bool span_resident(const Span& span);
 // generation, not yet recycled): lets callers reuse unchanged data. A live
 // span's chunk is reserved for the recording in progress.
 bool span_alive(const Span& span);
+uint64_t resource_generation();
 
 // ---- buffers -------------------------------------------------------------
 struct Buffer {
@@ -198,6 +199,7 @@ struct Image {
 // Also marks the global synchronization dependency dirty. Generations track
 // recorded writes, so alias copies can be reused before GPU completion.
 void note_gpu_write(Image& image);
+uint64_t image_write_generation();
 VkImageAspectFlags format_aspect(VkFormat format);
 bool format_is_depth(VkFormat format);
 bool format_has_stencil(VkFormat format);

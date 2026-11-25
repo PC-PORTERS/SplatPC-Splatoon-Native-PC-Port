@@ -50,6 +50,7 @@ Caps s_caps;
 std::unordered_map<VkFormat, VkFormatProperties> s_format_properties;
 uint64_t s_image_generation = 0;
 uint64_t s_image_serial = 0;
+uint64_t s_resource_generation = 1;
 bool s_ready = false;
 bool s_debug_utils = false;
 #ifdef RBREW_TEXTURE_DIAGNOSTICS
@@ -1634,6 +1635,7 @@ void shutdown() {
     s_ready = false;
     s_next_serial = 1;
     s_completed = 0;
+    s_resource_generation = 1;
     s_recorded = false;
     s_dirty = false;
     s_allocated = 0;
@@ -2054,6 +2056,9 @@ void note_gpu_write(Image& image) {
                txdiag::event("image_write", "\"image_id\":%llu,\"content\":%llu",
                              txdiag::resource_id("image", txdiag::handle(image.image)), image.content_generation));
 }
+uint64_t image_write_generation() {
+    return s_image_generation;
+}
 bool gpu_dirty() {
     return s_dirty;
 }
@@ -2106,6 +2111,7 @@ Span upload(VkDeviceSize bytes, VkDeviceSize alignment) {
             vkDestroyBuffer(s_device, buffer.buffer, nullptr);
             free_now(buffer.memory);
         });
+        ++s_resource_generation;
         return span;
     }
     for (int attempt = 0; attempt < 2; ++attempt) {
@@ -2147,10 +2153,14 @@ Span upload(VkDeviceSize bytes, VkDeviceSize alignment) {
         s_active_chunk = next;
         s_chunks[next].used = 0;
         s_chunks[next].id = ++s_chunk_ids;
+        ++s_resource_generation;
     }
     return {};
 }
 
+uint64_t resource_generation() {
+    return s_resource_generation;
+}
 bool span_resident(const Span& span) {
     if (!span.chunk_id) return false;
     return std::any_of(s_chunks.begin(), s_chunks.end(), [&](const Chunk& chunk) { return chunk.id == span.chunk_id; });
@@ -2201,6 +2211,7 @@ Buffer create_buffer(VkDeviceSize size, VkBufferUsageFlags usage, MemoryUse use)
 
 void destroy_buffer(Buffer& b) {
     if (!b.buffer) return;
+    ++s_resource_generation;
     VkBuffer buffer = b.buffer;
     Allocation memory = b.memory;
     b = {};
@@ -2422,6 +2433,7 @@ void destroy_image(Image& image) {
     image.views.clear();
     image.memory = {};
     --s_images;
+    ++s_resource_generation;
     defer([handle, memory, views
 #ifdef RBREW_TEXTURE_DIAGNOSTICS
            ,

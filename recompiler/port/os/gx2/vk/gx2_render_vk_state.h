@@ -246,7 +246,7 @@ struct QuerySegment {
 struct NativeQuery {
     uint8_t* mem = nullptr;
     uint32_t address = 0, type = 0;
-    bool open = false, ended = false, published = false;
+    bool open = false, ended = false, published = false, in_pending_list = false;
     std::vector<std::shared_ptr<QuerySegment>> segments;
 };
 
@@ -333,8 +333,19 @@ struct State {
     ColorImageKey depth_target_key{};
     std::array<BoundTexture, 96> bound_textures{};
     struct BoundAliasMemo {
+        static constexpr size_t kMaxWatched = 12;
+        struct WatchedImage {
+            const gx2vk::Image* image = nullptr;
+            uint64_t generation = 0;
+        };
+        uint32_t address = 0;
         uint32_t image = 0;
+        uint32_t word0 = 0, word1 = 0, word4 = 0;
         uint64_t color_rev = UINT64_MAX, depth_rev = UINT64_MAX;
+        uint64_t fallback_write_gen = UINT64_MAX;
+        uint32_t watched_count = 0; // UINT32_MAX = overflow -> compare fallback_write_gen
+        bool valid = false;
+        std::array<WatchedImage, kMaxWatched> watched{};
     };
     std::array<BoundAliasMemo, 96> bound_alias_memo{};
     // GPU texture units: bound object per target (2D, 2D_ARRAY, 3D, CUBE_ARRAY).

@@ -48,3 +48,6 @@ bool gx2_write_watch_written_pages(const uint8_t* mem, uint64_t size, std::vecto
 // Diagnostic: the OS still reports a write to [addr, addr + size) that no
 // query has collected yet. Resets nothing.
 bool gx2_write_watch_pending(const uint8_t* mem, uint32_t addr, uint32_t size);
+// Registers or detaches a page-aligned guest arena for OS dirty-page tracking.
+bool gx2_write_watch_register_arena(const uint8_t* mem, uint64_t size);
+void gx2_write_watch_unregister_arena(const uint8_t* mem);

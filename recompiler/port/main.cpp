@@ -22,6 +22,7 @@
 #include "os/coreinit/coreinit_overlay.h"
 #include "os/coreinit/coreinit_system_settings.h"
 #include "os/coreinit/coreinit_user_config.h"
+#include "os/gx2/gx2_write_watch.h"
 #include "loader/native_console_profile.h"
 #include <array>
 #include <atomic>
@@ -294,7 +295,9 @@ static uint8_t* alloc_arena(size_t sz) {
     // readable/writable at startup (pages stay demand-zero until touched).
     void* p = mmap(nullptr, sz, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (p == MAP_FAILED) return nullptr;
-    return static_cast<uint8_t*>(p);
+    auto* arena = static_cast<uint8_t*>(p);
+    gx2_write_watch_register_arena(arena, sz);
+    return arena;
 }
 static bool map_overlay(void* user, uint32_t base, uint32_t size, bool enable) {
     if (!user || base != RBREW_OVERLAY_BASE || size != RBREW_OVERLAY_SIZE) return false;
@@ -306,6 +309,7 @@ static bool map_overlay(void* user, uint32_t base, uint32_t size, bool enable) {
     return true;
 }
 static void free_arena(uint8_t* p, size_t sz) {
+    gx2_write_watch_unregister_arena(p);
     munmap(p, sz);
 }
 #endif

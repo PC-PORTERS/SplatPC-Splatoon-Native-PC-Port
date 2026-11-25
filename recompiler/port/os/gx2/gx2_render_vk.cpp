@@ -1686,9 +1686,12 @@ static bool copy_color_view(ColorTarget& source, gx2vk::Image& destination, cons
 
 extern bool g_gx2_has_pending_streamouts;                                             // gx2_render_vk_draw.cpp
 void gx2r_streamout_flush_if_overlaps(uint8_t* mem, uint32_t address, uint64_t size); // gx2_render_vk_draw.cpp
-void gx2_render_upload_texture(uint32_t tex_addr, uint32_t slot, uint8_t* mem, const uint8_t* descriptor) {
+namespace {
+void upload_texture_impl(uint32_t tex_addr, uint32_t slot, uint8_t* mem, const uint8_t* descriptor,
+                         bool invalidate_alias_memo) {
     Gx2PerfScope perf_scope(kPerfTexture);
     if (!tex_addr || !gx2vk::ready() || slot >= S.bound_textures.size()) return;
+    if (invalidate_alias_memo) S.bound_alias_memo[slot].valid = false;
     const auto* data = descriptor ? descriptor : mem + tex_addr;
     // A texture over a pending stream-out export needs its results first.
     if (g_gx2_has_pending_streamouts) {
@@ -2343,20 +2346,52 @@ void gx2_render_upload_texture(uint32_t tex_addr, uint32_t slot, uint8_t* mem, c
         }
     }
 }
+} // namespace
+
+void gx2_render_upload_texture(uint32_t tex_addr, uint32_t slot, uint8_t* mem, const uint8_t* descriptor) {
+    upload_texture_impl(tex_addr, slot, mem, descriptor, true);
+}
 
 void gx2r::refresh_bound_render_texture(uint32_t unit, uint8_t* mem) {
     if (unit >= S.bound_textures.size()) return;
     const auto& bound = S.bound_textures[unit];
     if (!bound.address) return;
-    const auto image = descriptor_word(bound.descriptor.data(), GX2SURF_IMAGE);
+    const auto* d = bound.descriptor.data();
+    const uint32_t image = descriptor_word(d, GX2SURF_IMAGE);
+    const uint32_t word0 = descriptor_word(d, 0);
+    const uint32_t word1 = descriptor_word(d, 4);
+    const uint32_t word4 = descriptor_word(d, 0x90);
     const uint64_t eff_color_rev = S.effective_color_revision();
     const uint64_t eff_depth_rev = S.effective_depth_revision();
     auto& memo = S.bound_alias_memo[unit];
-    if (memo.image == image && memo.color_rev == eff_color_rev && memo.depth_rev == eff_depth_rev) return;
+    if (memo.valid && memo.address == bound.address && memo.image == image && memo.word0 == word0 &&
+        memo.word1 == word1 && memo.word4 == word4 && memo.color_rev == eff_color_rev &&
+        memo.depth_rev == eff_depth_rev) {
+        if (memo.watched_count == UINT32_MAX) {
+            if (gx2vk::image_write_generation() == memo.fallback_write_gen) return;
+        } else {
+            bool clean = true;
+            for (uint32_t i = 0; i < memo.watched_count; ++i) {
+                if (memo.watched[i].image->content_generation != memo.watched[i].generation) {
+                    clean = false;
+                    break;
+                }
+            }
+            if (clean) return;
+        }
+    }
     const auto depth = image_views(S.depth_map, image);
     const auto color = image_views(S.cb_map, image);
     if (depth.begin() == depth.end() && color.begin() == color.end()) {
-        memo = {image, eff_color_rev, eff_depth_rev};
+        memo.valid = true;
+        memo.address = bound.address;
+        memo.image = image;
+        memo.word0 = word0;
+        memo.word1 = word1;
+        memo.word4 = word4;
+        memo.color_rev = eff_color_rev;
+        memo.depth_rev = eff_depth_rev;
+        memo.watched_count = 0;
         return;
     }
     // A binding names guest storage, not a frozen copy. Shadow cascades,
@@ -2364,7 +2399,36 @@ void gx2r::refresh_bound_render_texture(uint32_t unit, uint8_t* mem) {
     // binding. Refresh copied views at consumption, including targets created
     // after the bind; unchanged source generations still reuse their copies.
     const auto snapshot = bound;
-    gx2_render_upload_texture(snapshot.address, unit, mem, snapshot.descriptor.data());
+    upload_texture_impl(snapshot.address, unit, mem, snapshot.descriptor.data(), false);
+    memo.valid = true;
+    memo.address = snapshot.address;
+    memo.image = image;
+    memo.word0 = word0;
+    memo.word1 = word1;
+    memo.word4 = word4;
+    memo.color_rev = S.effective_color_revision();
+    memo.depth_rev = S.effective_depth_revision();
+    uint32_t watched = 0;
+    for (const auto& [k, dt] : depth) {
+        if (watched < State::BoundAliasMemo::kMaxWatched)
+            memo.watched[watched++] = {&dt.image, dt.image.content_generation};
+        else {
+            watched = UINT32_MAX;
+            break;
+        }
+    }
+    if (watched != UINT32_MAX) {
+        for (const auto& [k, cb] : color) {
+            if (watched < State::BoundAliasMemo::kMaxWatched)
+                memo.watched[watched++] = {&cb.image, cb.image.content_generation};
+            else {
+                watched = UINT32_MAX;
+                break;
+            }
+        }
+    }
+    memo.watched_count = watched;
+    memo.fallback_write_gen = gx2vk::image_write_generation();
 }
 
 void gx2_render_bind_texture(uint32_t tex_addr, uint32_t slot, uint8_t* mem, const uint8_t* descriptor) {
@@ -2427,6 +2491,7 @@ void gx2_render_restore_context_state(uint32_t context_state, uint8_t* mem) {
     ++S.shader_generation;
     const auto prev_textures = S.bound_textures;
     S.bound_textures = snapshot.bound_textures;
+    S.bound_alias_memo.fill({});
     for (unsigned slot = 0; slot < 32; ++slot) {
         auto& buffer = S.attrib[slot];
         const auto& saved = snapshot.attrib_buffers[slot];
@@ -2664,8 +2729,9 @@ void gx2_render_copy_surface(const uint8_t* src, uint32_t src_mip, uint32_t src_
         w(0x90, 0x06880000);
         const auto bound = S.bound_textures[31];
         const auto units = S.units[31];
-        gx2_render_upload_texture(1, 31, mem, texture.data());
+        upload_texture_impl(1, 31, mem, texture.data(), true);
         S.bound_textures[31] = bound;
+        S.bound_alias_memo[31].valid = false;
         S.units[31] = units;
         auto it = S.tex_map.find(texture_image_key(mem, texture.data()));
         if (it == S.tex_map.end() || !it->second.image.image) return;

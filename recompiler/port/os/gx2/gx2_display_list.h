@@ -111,6 +111,7 @@ template <Gx2CommandFn Function, bool Command> void gx2_command_call(CPUState* c
 
 struct Gx2BakedHotCommands {
     Gx2CommandFn set_attrib_buffer = nullptr;
+    Gx2CommandFn set_fetch_shader = nullptr;
     Gx2CommandFn set_vs_ubo = nullptr;
     Gx2CommandFn set_ps_ubo = nullptr;
     Gx2CommandFn set_vs = nullptr;
