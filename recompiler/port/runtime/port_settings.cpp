@@ -227,6 +227,8 @@ std::string foreign_lines() {
                                              "frame_rate",
                                              "gsync",
                                              "fullscreen",
+                                             "borderless",
+                                             "rumble",
                                              "fps_overlay",
                                              "confirm_quit",
                                              "simple_overlay",
@@ -292,6 +294,7 @@ void write(const Values& v) {
         << "frame_rate=" << v.frame_rate << "\n"
         << "gsync=" << v.gsync << "\n"
         << "fullscreen=" << v.fullscreen << "\n";
+    if (v.borderless) out << "borderless=1\n";
     if (v.rumble) out << "rumble=1\n";
     out << "fps_overlay=" << v.fps_overlay << "\n"
         << "simple_overlay=" << v.simple_overlay << "\n"
@@ -373,6 +376,8 @@ void load() {
             v.gsync = number != 0;
         else if (key == "fullscreen")
             v.fullscreen = number != 0;
+        else if (key == "borderless")
+            v.borderless = number != 0;
         else if (key == "rumble")
             v.rumble = number != 0;
         else if (key == "fps_overlay")
