@@ -201,11 +201,11 @@ void AcquireNexServiceToken(CPUState* cpu) {
     const uint32_t out = cpu->r[3], game_server = cpu->r[4];
     require_guest(cpu, out, rbrew_online::kNexTokenSize, "NEX token output");
     const auto& id = rbrew_online::identity();
-    if (online.protarium) {
+    if (online.account) {
         rbrew_native::NexToken nex;
         std::string error;
-        if (!rbrew_native::fetch_protarium_nex_token(game_server, id.pid, id.password, nex, error)) {
-            rbrew_net_note("nex token protarium FAILED", error.c_str());
+        if (!rbrew_native::fetch_account_nex_token(online.account_url, game_server, id.pid, id.password, nex, error)) {
+            rbrew_net_note("nex token account FAILED", error.c_str());
             cpu->r[3] = RBREW_ACT_RESULT_NEX_UNAVAILABLE;
             return;
         }
@@ -213,7 +213,7 @@ void AcquireNexServiceToken(CPUState* cpu) {
         rbrew_online::fill_nex_token(buffer, nex.token, nex.nex_password, nex.host, nex.port);
         for (uint32_t i = 0; i < rbrew_online::kNexTokenSize; ++i) rbrew_write8(cpu->mem, out + i, buffer[i]);
         char note[96];
-        std::snprintf(note, sizeof note, "protarium game_server=%08x pid=%08x -> %s:%u", game_server, id.pid,
+        std::snprintf(note, sizeof note, "account game_server=%08x pid=%08x -> %s:%u", game_server, id.pid,
                       nex.host.c_str(), nex.port);
         rbrew_net_note("nex token", note);
         cpu->r[3] = 0;

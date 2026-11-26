@@ -7,12 +7,6 @@
 
 An unofficial native PC port of **Splatoon (Wii U)** for **Windows and Linux**, made by statically recompiling the game's code into a native program, with a Vulkan renderer.
 
-> **Protarium edition.** This repository is based on [PC-PORTERS/SplatPC-Splatoon-Native-PC-Port](https://github.com/PC-PORTERS/SplatPC-Splatoon-Native-PC-Port) v1.0.11 (MPL-2.0, original copyright notices kept in `LICENSE.txt`) and adds support for the [Protarium Network](https://protarium.online) Splatoon server:
-> - `online_server=protarium` in `settings.ini` signs in with a Protarium PC account (`protarium_identity.ini`, created on first launch) and gets a real NEX token from `account.protarium.online`; no console or NNID is needed.
-> - Matchmaking and battles use Protarium's Splatoon server, so PC players meet Wii U players.
-> - SpotPass data (stage rotation, Splatfests) is downloaded from Protarium at start-up, so the PC sees the same rotation and Splatfest as consoles.
-> - NAT check: `online_nncs1=173.249.46.125` and `online_nncs2=13.140.129.165` (the SplatPC NAT check servers).
-
 > **This project contains no Nintendo code, assets or game files.** You need your own copy of the game, dumped from your own Wii U. The setup builds the port on your PC from your files.
 
 > ⚠️ **Work in progress.** Expect graphical glitches, missing effects, stutter and crashes. You need **strong hardware** (see below). If something goes wrong, please [open an issue](https://github.com/NEVESYA/SPLATOON-1-PC-PORT/issues). Include your PC specs and the text from the setup window or a screenshot. **AMD GPU compatibility is experimental**; NVIDIA remains the tested baseline.
@@ -59,6 +53,8 @@ Supported game versions: [VersionDb.md](VersionDb.md) (base game v16 and update 
 - Fewer shader stutters, faster rendering in levels
 
 ---
+
+**Online server:** pick the SplatPC community server, [Protarium Network](https://protarium.online) or your own in the builder settings.
 
 **More docs:** [Online play and anti-cheat](docs/ONLINE.md) · [Run your own server](docs/SERVER.md) · [Update 288](docs/update-288.md)
 

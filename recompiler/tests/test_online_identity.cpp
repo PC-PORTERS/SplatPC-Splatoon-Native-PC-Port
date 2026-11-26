@@ -15,8 +15,8 @@ int main() {
         const auto id = rbrew_online::create(rng);
         check(rbrew_online::valid(id) && id.pid >= 0x10000000u && int32_t(id.pid) > 0, "created identity is valid");
         for (int i = 0; i < 1000; ++i) {
-            const auto pc = rbrew_online::create(rng, rbrew_online::kProtariumPidBase, rbrew_online::kProtariumPidSpan);
-            check(rbrew_online::valid(pc) && pc.pid >= 0x7F000000u && pc.pid <= 0x7FFFFFFFu, "Protarium PC PID range");
+            const auto pc = rbrew_online::create(rng, rbrew_online::kAccountPidBase, rbrew_online::kAccountPidSpan);
+            check(rbrew_online::valid(pc) && pc.pid >= 0x7F000000u && pc.pid <= 0x7FFFFFFFu, "account server PC PID range");
         }
         std::istringstream text(rbrew_online::serialize(id));
         const auto back = rbrew_online::parse(text);

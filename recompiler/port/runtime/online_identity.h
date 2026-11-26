@@ -230,16 +230,13 @@ inline void fill_nex_token(uint8_t* out, std::string_view token, std::string_vie
 }
 
 inline constexpr std::string_view kPublicServer = "173.249.46.125:60000";
-// online_server=protarium: Protarium Network's Splatoon server. The PC account (protarium_identity.ini,
-// PID in the server's PC range 0x7F000000..0x7FFFFFFF) gets a real NEX token from kProtariumAccount.
-inline constexpr std::string_view kProtariumServer = "protarium";
-inline constexpr std::string_view kProtariumHost = "57.129.155.198";
-inline constexpr uint16_t kProtariumPort = 25300;
-inline constexpr std::string_view kProtariumAccount = "https://account.protarium.online";
-inline constexpr std::string_view kProtariumBoss = "https://npts.app.protarium.online"; // /pc/boss/<region>/<task>/<file>
-inline constexpr uint32_t kProtariumPidBase = 0x7F000000u, kProtariumPidSpan = 0x01000000u;
-inline bool protarium_selected() {
-    return rbrew_online_cfg::resolved("RBREW_ONLINE_SERVER", "online_server", "") == kProtariumServer;
+// Account server mode (online_account=https://... in settings.ini, e.g. Protarium Network): the PC account
+// (account_identity.ini, PID in the PC range 0x7F000000..0x7FFFFFFF that such a server reserves) gets a real NEX
+// token from POST <online_account>/v1/api/provider/nex_token/@me; there is no social server.
+inline constexpr uint32_t kAccountPidBase = 0x7F000000u, kAccountPidSpan = 0x01000000u;
+inline std::string account_url() {
+    std::string url = rbrew_online_cfg::resolved("RBREW_ONLINE_ACCOUNT", "online_account", "");
+    return url.rfind("https://", 0) == 0 ? url : std::string(); // the account password never goes over plain HTTP
 }
 inline constexpr std::string_view kPublicNncs1 = "173.249.46.125";
 inline constexpr std::string_view kPublicNncs2 = "13.140.129.165";
@@ -270,7 +267,8 @@ struct Config {
     bool online = false;
     std::string host;
     uint16_t port = 0;
-    bool protarium = false; // NEX token from the Protarium account server, no social server
+    bool account = false;    // NEX token from an account server (online_account), no social server
+    std::string account_url; // https://host[:port], see account_url()
 };
 inline const Identity& identity();
 // Reads the environment and settings.ini (uncached; config() keeps the result until the settings change).
@@ -279,12 +277,9 @@ inline Config read_config() {
     // RBREW_OFFLINE=1: offline whatever settings.ini or RBREW_ONLINE_SERVER names.
     if (const char* off = std::getenv("RBREW_OFFLINE"); off && off[0] == '1') return c;
     const std::string server = rbrew_online_cfg::resolved("RBREW_ONLINE_SERVER", "online_server", "");
-    if (server == kProtariumServer) {
-        c.online = c.protarium = true;
-        c.host = std::string(kProtariumHost);
-        c.port = kProtariumPort;
-    } else
-        c.online = !server.empty() && parse_server(server, c.host, c.port);
+    c.online = !server.empty() && parse_server(server, c.host, c.port);
+    c.account_url = account_url();
+    c.account = c.online && !c.account_url.empty();
     if (c.online && !valid(identity())) c.online = false; // failed persistence stays offline, with no invented account
     return c;
 }
@@ -317,6 +312,7 @@ inline std::string pseudo() {
 }
 inline std::string resolve_register_url(const Config& cfg) {
     if (const char* env = std::getenv("RBREW_SOCIAL_URL"); env && *env) return env;
+    if (cfg.account) return {}; // account server mode has no social server
     const std::string configured = rbrew_online_cfg::resolved("RBREW_ONLINE_REGISTER", "online_register", "");
     if (!configured.empty()) return configured;
     if (!cfg.online) return {};
@@ -421,8 +417,8 @@ inline const Identity& identity() {
     static const Identity id = [] {
         try {
             const auto dir = rbrew_online_cfg::settings_path().parent_path();
-            if (protarium_selected())
-                return load_or_create(dir / "protarium_identity.ini", kProtariumPidBase, kProtariumPidSpan);
+            if (!account_url().empty())
+                return load_or_create(dir / "account_identity.ini", kAccountPidBase, kAccountPidSpan);
             return load_or_create(dir / "online_identity.ini");
         } catch (const std::exception& e) {
             rbrew_net_note("identity unavailable", e.what());

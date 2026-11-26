@@ -37,13 +37,13 @@ LoginStatus login_status();
 void start_interactive_login(const LoginFormValues& form);
 void clear_saved_tokens();
 
-// online_server=protarium: asks the Protarium account server for a NEX token (PC account, trust on
-// first use). Blocking, a few seconds at most. False with error_out set on failure.
+// Account server mode (online_account): asks <account_url> for a NEX token for this PC account (the server
+// registers it on first use). Blocking, a few seconds at most. False with error_out set on failure.
 struct NexToken {
     std::string host, nex_password, token;
     uint16_t port = 0;
 };
-bool fetch_protarium_nex_token(uint32_t game_server_id, uint32_t pid, const std::string& password, NexToken& out,
-                               std::string& error_out);
+bool fetch_account_nex_token(const std::string& account_url, uint32_t game_server_id, uint32_t pid,
+                             const std::string& password, NexToken& out, std::string& error_out);
 
 } // namespace rbrew_native

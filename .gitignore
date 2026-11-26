@@ -92,7 +92,7 @@ server.json
 !/scripts/tests/**
 
 # Online config and integrity tool (integrity-manifest.txt is generated at release/build time)
-!/scripts/server.public.txt
+!/scripts/server.*.txt
 !/scripts/integrity.py
 
 *.lnk

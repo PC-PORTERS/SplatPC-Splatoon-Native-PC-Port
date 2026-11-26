@@ -90,20 +90,24 @@ bool valid_ipv4(const std::string& s) {
     return a <= 255 && b <= 255 && c <= 255 && d <= 255;
 }
 
-// online_server=protarium: the SpotPass files are Protarium's (what consoles get from its BOSS server, served
-// decrypted), not the generated ones. A file that cannot be fetched keeps its previous copy.
-std::vector<std::string> fetch_protarium_boss(const fs::path& boss_dir) {
+// online_boss=https://host/path in settings.ini: the SpotPass files are the server's own (what consoles get from its
+// BOSS server, served decrypted at <online_boss>/<task>/<file>), not generated ones. A file that cannot be fetched
+// keeps its previous copy.
+std::vector<std::string> fetch_boss_files(const std::string& boss_url, const fs::path& boss_dir) {
     static constexpr std::pair<const char*, const char*> kFiles[] = {{"schdat2", "VSSetting.byaml"},
                                                                      {"optdat2", "Festival.byaml"},
                                                                      {"optdat2", "HapTexture.bfres"},
                                                                      {"optdat2", "PanelTexture.bfres"}};
+    std::string base, prefix;
+    if (!split_url(boss_url, base, prefix)) return {"online_boss must be https://host/path"};
+    while (!prefix.empty() && prefix.back() == '/') prefix.pop_back();
     std::vector<std::string> problems;
-    const auto transport = make_http_transport(std::string(rbrew_online::kProtariumBoss), kTimeoutMs);
+    const auto transport = make_http_transport(base, kTimeoutMs);
     if (!transport) return {"cannot initialize HTTP transport"};
     for (const auto& [task, name] : kFiles) {
-        const Reply r = transport->request("GET", std::string("/pc/boss/eur/") + task + "/" + name, nullptr);
+        const Reply r = transport->request("GET", prefix + "/" + task + "/" + name, nullptr);
         if (r.http_status != 200 || r.raw.empty()) {
-            problems.push_back(std::string("Protarium ") + name + ": " +
+            problems.push_back(std::string("online_boss ") + name + ": " +
                                (r.http_status ? "HTTP " + std::to_string(r.http_status) : "unreachable"));
             continue;
         }
@@ -129,7 +133,8 @@ std::vector<std::string> fetch_protarium_boss(const fs::path& boss_dir) {
 
 std::vector<std::string> refresh_boss_files(const fs::path& game_dir) {
     const fs::path dir = env_path("RBREW_BOSS_DIR", game_dir / "boss");
-    if (rbrew_online::config().protarium) return fetch_protarium_boss(dir);
+    const std::string boss_url = rbrew_online_cfg::resolved("RBREW_ONLINE_BOSS", "online_boss", "");
+    if (rbrew_online::config().online && boss_url.rfind("https://", 0) == 0) return fetch_boss_files(boss_url, dir);
     return write_boss_files(dir, unix_micros_now());
 }
 
@@ -295,9 +300,9 @@ void online_shutdown() {
     if (s_login_thread.joinable()) s_login_thread.join();
 }
 
-bool fetch_protarium_nex_token(uint32_t game_server_id, uint32_t pid, const std::string& password, NexToken& out,
-                               std::string& error_out) {
-    const auto transport = make_http_transport(std::string(rbrew_online::kProtariumAccount), kTimeoutMs);
+bool fetch_account_nex_token(const std::string& account_url, uint32_t game_server_id, uint32_t pid,
+                             const std::string& password, NexToken& out, std::string& error_out) {
+    const auto transport = make_http_transport(account_url, kTimeoutMs);
     if (!transport) {
         error_out = "cannot initialize HTTP transport";
         return false;
@@ -325,7 +330,7 @@ bool fetch_protarium_nex_token(uint32_t game_server_id, uint32_t pid, const std:
 
 bool needs_startup_login() {
     if (rbrew_online::is_session_offline()) return false;
-    if (rbrew_online::protarium_selected()) return false; // no social server: the NEX token is the login
+    if (rbrew_online::config().account) return false; // no social server: the NEX token is the login
     const std::string raw_server = rbrew_online_cfg::resolved("RBREW_ONLINE_SERVER", "online_server", "");
     if (raw_server.empty()) return false;
     std::lock_guard lock(s_mu);

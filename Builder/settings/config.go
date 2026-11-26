@@ -42,6 +42,11 @@ type Configuration struct {
 	ConsoleRegion    string // "EUR", "USA", "JPN"
 	EnableOnline     bool   // default true (community multiplayer)
 	OnlineServer     string // e.g. "173.249.46.125:60000"
+	OnlineRegister   string // online_register: sign-up URL of a community server
+	OnlineAccount    string // online_account: account server URL (PC account + NEX token), e.g. Protarium
+	OnlineBoss       string // online_boss: URL of the server's SpotPass files (rotation, Splatfest)
+	OnlineNncs1      string // online_nncs1/online_nncs2: NAT check servers
+	OnlineNncs2      string
 	Resolution       string // "720p", "1080p", "1440p", "native"
 	FrameRate        int    // 30, 60, 120, 180
 	Plaza60FPS       bool
@@ -100,7 +105,7 @@ func DefaultConfiguration(repoRoot string) Configuration {
 	gpu := prereq.DetectGPU()
 	server := DefaultOnlineServer(repoRoot)
 
-	return Configuration{
+	cfg := Configuration{
 		BaseDumpPath:     "",
 		OutputDir:        outDir,
 		PlayerName:       "default",
@@ -133,6 +138,10 @@ func DefaultConfiguration(repoRoot string) Configuration {
 		ParallelJobs:     CalculateDefaultJobs(),
 		CleanBuild:       false,
 	}
+	if presets := ServerPresets(repoRoot); len(presets) > 0 && presets[0].Server == server {
+		cfg.ApplyPreset(presets[0])
+	}
+	return cfg
 }
 
 // OutputDirFor returns the folder the built game goes to: next to the program
