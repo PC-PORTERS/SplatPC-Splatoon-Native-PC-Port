@@ -10,6 +10,10 @@
 #endif
 #include <windows.h>
 #include <psapi.h>
+#elif defined(__linux__)
+#include <fstream>
+#include <sys/sysinfo.h>
+#include <unistd.h>
 #endif
 
 struct Gx2HostMemory {
@@ -31,6 +35,21 @@ inline Gx2HostMemory gx2_host_memory() {
                                 sizeof(counters))) {
         m.working_set = counters.WorkingSetSize;
         m.private_bytes = counters.PrivateUsage;
+    }
+#elif defined(__linux__)
+    struct sysinfo si{};
+    if (sysinfo(&si) == 0) {
+        m.total = uint64_t(si.totalram) * uint64_t(si.mem_unit);
+        m.available = uint64_t(si.freeram + si.bufferram) * uint64_t(si.mem_unit);
+    }
+    std::ifstream statm("/proc/self/statm");
+    unsigned long size_pages = 0, resident_pages = 0;
+    if (statm >> size_pages >> resident_pages) {
+        const long page_size = sysconf(_SC_PAGESIZE);
+        if (page_size > 0) {
+            m.working_set = uint64_t(resident_pages) * uint64_t(page_size);
+            m.private_bytes = uint64_t(size_pages) * uint64_t(page_size);
+        }
     }
 #endif
     return m;

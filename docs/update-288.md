@@ -1,10 +1,13 @@
-# Experimental EUR revision 288
+# Experimental EUR / USA / JPN revision 288
 
-Experimental build for the locally supplied EUR update RPX with SHA-256
+Experimental build for the locally supplied EUR, USA, and JPN update RPX with SHA-256
 `06684edefe90fea2de20430eb0e68500995980fef154caa88e4dcb59cdb7cd65`. Setup selects the
-matching `Manifest/Gambit_v288.manifest` from the merged ROM's executable, so the build uses that
-image's import addresses. The update is installed as a complete merged ROM, not as a second
-executable next to the base game.
+matching `Manifest/Gambit_v288.manifest` (EUR `WUP-P-AGMP`, `0005000E10176A00`),
+`Manifest/Gambit_usa_v288.manifest` (USA `WUP-P-AGME`, `0005000E10176900`), or
+`Manifest/Gambit_jpn_v288.manifest` (JPN `WUP-P-AGMJ`, `0005000E10162B00`) from the merged
+ROM's executable and sibling `app.xml` / `meta/meta.xml`, so the build uses that image's import
+addresses. The update is installed as a complete merged ROM, not as a second executable next to the
+base game.
 
 ## Status and limits
 

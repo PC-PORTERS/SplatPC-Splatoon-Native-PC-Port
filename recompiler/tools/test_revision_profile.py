@@ -6,6 +6,8 @@ from generate_revision_header import ROOT, load, render
 
 BASE = ROOT / 'Manifest/Gambit_v16.manifest'
 UPDATE = ROOT / 'Manifest/Gambit_v288.manifest'
+UPDATE_USA = ROOT / 'Manifest/Gambit_usa_v288.manifest'
+UPDATE_JPN = ROOT / 'Manifest/Gambit_jpn_v288.manifest'
 
 
 class RevisionManifestTests(unittest.TestCase):
@@ -55,6 +57,24 @@ class RevisionManifestTests(unittest.TestCase):
         self.assertEqual(text.count('= force'), 33)
         hooks = text.split('\n[hooks]', 1)[1].split('\n[', 1)[0]
         self.assertEqual(sorted(re.findall(r'^(0x[0-9A-F]+) = hook', hooks, re.M)), ['0x0242A8F8', '0x0264FF04', '0x0265BE4C', '0x02661878', '0x02662044', '0x02668434', '0x0285C3D0'])
+
+    def test_regional_v288_manifests_match_eur_layout(self):
+        _, eur_imports, eur_globals, eur_tables = load(UPDATE)
+        cases = (
+            (UPDATE_USA, '0x0005000E10176900', 'USA', 'WUP-P-AGME'),
+            (UPDATE_JPN, '0x0005000E10162B00', 'JPN', 'WUP-P-AGMJ'),
+        )
+        for manifest_path, title_id, region, product_code in cases:
+            text = manifest_path.read_text(encoding='utf-8')
+            self.assertIn(f'title_id        = {title_id}', text)
+            self.assertIn(f'region          = {region}', text)
+            self.assertIn(f'product_code    = {product_code}', text)
+            self.assertIn('image_sha256    = 06684edefe90fea2de20430eb0e68500995980fef154caa88e4dcb59cdb7cd65', text)
+            rev, imports, globals_, tables = load(manifest_path)
+            self.assertEqual(rev, 288)
+            self.assertEqual(imports, eur_imports)
+            self.assertEqual(globals_, eur_globals)
+            self.assertEqual(tables, eur_tables)
 
 
 if __name__ == '__main__':

@@ -55,6 +55,7 @@ struct Item {
     uint32_t ticket = 0;
 };
 std::mutex s_queue_mutex;
+
 std::vector<Item> s_queue;
 size_t s_queue_size = 0;    // guarded by s_queue_mutex
 bool s_executing = false;   // guarded by s_queue_mutex

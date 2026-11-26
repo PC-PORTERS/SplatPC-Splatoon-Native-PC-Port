@@ -9,6 +9,7 @@
 // pipelines and queries are in gx2_render_vk_draw.cpp; draw capture and
 // replay in gx2_render_vk_capture.cpp.
 #include "gx2_render.h"
+#include "gx2_shader_key.h"
 #include "gx2_pm4_state.h"
 #include "gx2_frame_interp.h"
 #include "gx2_weather.h"
@@ -1499,6 +1500,7 @@ void gx2_render_apply_registers(const Gx2RegisterWrite* w, size_t n) {
         any_changed |= changed;
         if (idx == 0xA216) S.vs_from_regs = true;
         if (idx == 0xA210) S.ps_from_regs = true;
+        if (idx == 0xA238) any_changed |= gx2_apply_semantic_clear(S.regs.data(), val);
         if (idx >= 0xF000 && idx < 0xF000 + 54 * 3) {
             const unsigned s = (idx - 0xF000) / 3;
             if (changed || !S.samplers[s].valid) {

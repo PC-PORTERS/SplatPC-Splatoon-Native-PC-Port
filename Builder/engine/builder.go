@@ -292,6 +292,15 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 		failDone(err)
 		return
 	}
+	cmdCacheToolBuild := proc.CommandContext(ctx, cmake.exe, cmake.buildArgs(gameBuild, "cache_prepare")...)
+	if err := runCmdWithLog(cmdCacheToolBuild, log); err != nil {
+		failDone(fmt.Errorf("compiling AOT shader tool (cache_prepare): %w", err))
+		return
+	}
+	if err := ctx.Err(); err != nil {
+		failDone(err)
+		return
+	}
 
 	// STEP 8: Packaging game folder
 	progress(8, "Packaging Game Directory", "Copying executable, assets, and custom settings", 0.90)
@@ -319,6 +328,24 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 	if err := copyDirectoryTreeContext(ctx, filepath.Join(gameSourceDump, "meta"), filepath.Join(cfg.OutputDir, "meta")); err != nil && ctx.Err() != nil {
 		failDone(ctx.Err())
 		return
+	}
+
+	// Ahead-of-time shader translation & SPIR-V compilation from ROM content.
+	if cacheToolExe, toolErr := builtExecutable(gameBuild, "cache_prepare"); toolErr == nil {
+		progress(8, "Packaging Game Directory", "Compiling game shaders ahead-of-time (this may take a few minutes)", 0.94)
+		vulkanCacheDir := filepath.Join(cfg.OutputDir, "vulkan_cache")
+		_ = os.MkdirAll(vulkanCacheDir, 0755)
+		log("Compiling game shaders ahead-of-time from %s into %s...", gameSourceDump, vulkanCacheDir)
+		cmdAot := proc.CommandContext(ctx, cacheToolExe, "--aot", gameSourceDump, vulkanCacheDir)
+		if aotErr := runCmdWithLog(cmdAot, log); aotErr != nil {
+			if ctx.Err() != nil {
+				failDone(ctx.Err())
+				return
+			}
+			log("Warning: AOT shader preparation finished with errors: %v", aotErr)
+		}
+	} else {
+		log("Warning: AOT shader tool unavailable: %v", toolErr)
 	}
 
 	if cfg.UpscaleTextures {

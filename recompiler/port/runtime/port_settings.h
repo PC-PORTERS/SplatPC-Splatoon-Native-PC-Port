@@ -64,6 +64,7 @@ struct Values {
     int frame_rate = 60;     // 60, 120, 180 (two in-between frames, not in the plaza), 30 (low-end)
     bool gsync = false;      // frames go to the display at once (IMMEDIATE) for G-Sync/FreeSync
     bool fullscreen = true;
+    bool borderless = false;        // windowed, no border, desktop size (used when fullscreen is off)
     bool rumble = false;            // GamePad rumble on the controller (vpad.cpp; RBREW_RUMBLE=0/1 wins)
     bool fps_overlay = false;       // debug overlay (F3), hidden at launch; RBREW_FPS_OVERLAY
     bool simple_overlay = false;    // FPS / frame time / max FPS readout; RBREW_SIMPLE_OVERLAY
