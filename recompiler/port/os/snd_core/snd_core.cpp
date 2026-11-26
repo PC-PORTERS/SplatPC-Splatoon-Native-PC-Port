@@ -21,6 +21,7 @@
 #include "../gx2/gx2_perf.h"
 #include "../../runtime/splatoon_diagnostics.h"
 #include "../../runtime/port_settings.h"
+#include "../../runtime/mod_loader.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -502,6 +503,7 @@ static bool s_device_open = false;
 static std::atomic<uint64_t> s_device_frames{0}, s_device_signal_frames{0};
 static void ax_audio_callback(ma_device*, void* output, const void*, ma_uint32 frames) {
     snd_core_render_frames(static_cast<float*>(output), frames);
+    rbrew_mod::on_audio_frames(static_cast<const float*>(output), frames);
     s_device_frames.fetch_add(frames, std::memory_order_relaxed);
     const auto* samples = static_cast<const float*>(output);
     for (uint32_t n = 0; n < frames; ++n)

@@ -172,8 +172,11 @@ bool CppEmitter::emit(const std::filesystem::path& outdir) {
           << "void " << m_ir.name << "_game_register(CPUState* cpu) {\n";
         for (const auto& func : m_ir.functions) {
             const std::string fn = m_names.function_name(func.entry_addr, func.name);
+            const bool hooked = m_cfg.hooked.contains(func.entry_addr);
             f << "    rbrew_register_func(cpu, 0x" << std::hex << std::uppercase << func.entry_addr << "u, " << fn
-              << "_entry);\n";
+              << "_entry);\n"
+              << "    rbrew_register_guest_body(0x" << func.entry_addr << "u, reinterpret_cast<void*>(" << fn << "), "
+              << (hooked ? "true" : "false") << ");\n";
         }
         f << "}\n";
         if (!write_text_if_changed(path, f.str())) {
@@ -607,7 +610,7 @@ void CppEmitter::emit_function(const ir::IRFunction& func, std::ostream& out) {
     // The body receives the arena base explicitly: host compilers then know
     // guest-memory accesses (through mem) cannot alias CPUState registers
     // (through cpu) and keep r[]/f[]/cr[] in host registers across them.
-    out << "void " << fname << "(CPUState* __restrict cpu, uint8_t* __restrict mem) {\n";
+    out << "RBREW_GUEST_BODY void " << fname << "(CPUState* __restrict cpu, uint8_t* __restrict mem) {\n";
     if (m_cfg.emit_coverage)
         out << "#ifdef RBREW_ENABLE_COVERAGE\n    RBREW_COVERAGE_FUNCTION(0x" << std::hex << func.entry_addr
             << "u);\n#endif\n";

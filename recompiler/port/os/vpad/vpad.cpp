@@ -32,6 +32,7 @@
 #include "../gx2/vk/gx2_imgui_overlay.h"
 #include "../gx2/gx2_env_light.h"
 #include "../../runtime/port_settings.h"
+#include "../../runtime/mod_loader.h"
 #include "../../hooks/camera_follow.h"
 #include "../../hooks/mouse_camera.h"
 #include <algorithm>
@@ -362,6 +363,7 @@ static void VPADRead(CPUState* cpu) {
 
     if (errp) rbrew_write32(MEM, errp, 0u); // VPAD_READ_SUCCESS
     vpad_apply_motion_policy(MEM);
+    rbrew_mod::on_vpad_read(MEM);
 
     if (!buf || count == 0 || !rbrew_memory_accessible(MEM, buf, kVpadStatusSize)) {
         RET = 0;
@@ -425,7 +427,7 @@ static void VPADRead(CPUState* cpu) {
     // Keyboard + mouse input (Splatoon layout, active in TV view)
     // KB+M additively overlays controller: pressing a key overrides that axis.
     // -----------------------------------------------------------------------
-    if (g_screen_mode == ScreenMode::TV) {
+    if (g_screen_mode == ScreenMode::TV || rbrew_mod::relative_mouse_in_gamepad()) {
         const uint8_t* keys = SDL_GetKeyboardState(nullptr);
 
         // Bindings from the ESC menu's keyboard page (port_settings.h):

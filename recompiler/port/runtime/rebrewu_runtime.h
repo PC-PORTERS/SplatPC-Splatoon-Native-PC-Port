@@ -23,16 +23,6 @@
 #endif
 
 // ---------------------------------------------------------------------------
-// Forward declaration
-// ---------------------------------------------------------------------------
-struct CPUState;
-
-// ---------------------------------------------------------------------------
-// Host function type
-// ---------------------------------------------------------------------------
-typedef void (*HostFunc)(CPUState* cpu);
-
-// ---------------------------------------------------------------------------
 // Memory size constants
 // Wii U address space used by this game:
 //   0x02000000 - 0x026143A5   .text (game code — executed natively on PC)
@@ -44,6 +34,29 @@ typedef void (*HostFunc)(CPUState* cpu);
 // ---------------------------------------------------------------------------
 #include "memory_layout.h"
 #define WIIU_MEM_SIZE RBREW_ARENA_END
+#ifndef SPLAT_DEFAULT_GUEST_MEMORY_SIZE
+#define SPLAT_DEFAULT_GUEST_MEMORY_SIZE WIIU_MEM_SIZE
+#endif
+#include "../include/splat_cpu_state.h"
+
+// Prevent host compilers from inlining or creating IPA clones (.constprop/.isra)
+// of guest function bodies so Tier 2 runtime x86-64 trampolines intercept every
+// direct and indirect call to the registered body address.
+#ifndef RBREW_GUEST_BODY
+#if defined(_MSC_VER)
+#define RBREW_GUEST_BODY __declspec(noinline)
+#elif defined(__has_attribute)
+#if __has_attribute(noipa)
+#define RBREW_GUEST_BODY __attribute__((noinline, noipa))
+#elif __has_attribute(noclone)
+#define RBREW_GUEST_BODY __attribute__((noinline, noclone))
+#else
+#define RBREW_GUEST_BODY __attribute__((noinline))
+#endif
+#else
+#define RBREW_GUEST_BODY __attribute__((noinline))
+#endif
+#endif
 
 // The virtual aperture is sparse: its reserved hole and disabled overlay are
 // not guest RAM. Ordinary low accesses stay inline without a registry lookup.
@@ -65,53 +78,6 @@ static inline bool rbrew_memory_accessible(const uint8_t* mem, uint32_t address,
     return address >= RBREW_OVERLAY_BASE && end <= uint64_t(RBREW_OVERLAY_BASE) + RBREW_OVERLAY_SIZE &&
            rbrew_overlay_accessible(mem);
 }
-
-// ---------------------------------------------------------------------------
-// CPUState — mirrors PowerPC Espresso register file
-// ---------------------------------------------------------------------------
-struct RbrewGuestCodeRange {
-    uint32_t begin, end;
-}; // exclusive end
-
-struct CPUState {
-    uint32_t r[32];   // GPRs
-    double f[32];     // FPRs (double precision on Espresso)
-    uint32_t cr[8];   // Condition Register fields CR0–CR7 (4 bits each, packed as uint32)
-    uint32_t lr;      // Link Register
-    uint32_t ctr;     // Count Register
-    uint32_t xer;     // Integer Exception Register
-    uint32_t fpscr{}; // Conversion status; other FP/control instructions remain partial
-
-    uint8_t* mem; // pointer to base of the flat guest memory arena
-    // Hybrid execution is opt-in. PC is authoritative only inside the stepper;
-    // legacy whole-function C++ does not yet expose every continuation.
-    uint32_t pc{};
-    uint32_t guest_memory_size{WIIU_MEM_SIZE};
-    const RbrewGuestCodeRange* guest_code_ranges{};
-    uint32_t guest_code_range_count{};
-    bool ppc_fallback_enabled{};
-    uint64_t ppc_instruction_budget{100000};
-    bool differential_validation{}; // detached pure replay: reject host dispatch
-
-    // Host function dispatch table: guest address → host implementation
-    // Populated at startup for all OS import addresses.
-    HostFunc* dispatch_table; // indexed by guest_addr >> 2
-    uint32_t dispatch_size;   // number of entries
-
-    // Scratch fields used by rbrew_dispatch / rbrew_call_indirect
-    uint32_t dispatch_ret_addr;
-
-    // One local reservation per emulated CPU; versions are shared by arena.
-    uint8_t* reservation_mem;
-    uint32_t reservation_addr;
-    uint64_t reservation_version;
-    bool reservation_valid;
-
-    // Espresso paired singles: f[n] is ps0, ps1[n] the second slot.
-    // GQR0-7 drive psq_l/psq_st quantization (SPR 912-919 / UGQR 896-903).
-    double ps1[32]{};
-    uint32_t gqr[8]{};
-};
 
 // Paired-single instruction (opcode 4/56/57/60/61, or mtspr/mfspr of a GQR)
 // executed on the register file; implemented per decaf-emu's interpreter.
@@ -811,8 +777,13 @@ RBREW_HOST_API void rbrew_register_func(CPUState* cpu, uint32_t guest_addr, Host
 // behavior. With no hook registered the wrapper calls the original directly.
 typedef void (*RbrewGuestHook)(CPUState* cpu, uint32_t guest_addr, HostFunc original);
 RBREW_HOST_API RbrewGuestHook rbrew_guest_hook(uint32_t guest_addr);
-// Register (or clear with null) before guest code runs; returns false when full.
+// Register (or clear with null) before guest code runs.
 RBREW_HOST_API bool rbrew_set_guest_hook(uint32_t guest_addr, RbrewGuestHook hook);
+
+// Registry of compiled guest function bodies (for runtime trampoline hooks on non-manifest functions).
+RBREW_HOST_API void rbrew_register_guest_body(uint32_t guest_addr, void* body, bool manifest_hooked);
+RBREW_HOST_API void* rbrew_find_guest_body(uint32_t guest_addr, bool* out_manifest_hooked);
+RBREW_HOST_API void rbrew_clear_guest_bodies(void);
 
 #ifdef __cplusplus
 }

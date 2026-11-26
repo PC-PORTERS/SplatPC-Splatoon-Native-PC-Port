@@ -549,33 +549,87 @@ void rbrew_register_func(CPUState* cpu, uint32_t guest_addr, HostFunc fn) {
     if (idx < cpu->dispatch_size) cpu->dispatch_table[idx] = fn;
 }
 
-// Few hooks, set at startup before guest threads run; read on every wrapped call.
+// Lock-free atomic snapshot reads for wrapped guest hooks; mutex serializes writes.
 namespace {
 struct GuestHookEntry {
     uint32_t address;
     RbrewGuestHook hook;
 };
-constexpr unsigned kMaxGuestHooks = 32;
-GuestHookEntry s_guest_hooks[kMaxGuestHooks];
-std::atomic<unsigned> s_guest_hook_count{0};
+struct GuestHookSnapshot {
+    std::vector<GuestHookEntry> entries;
+};
+std::mutex s_guest_hook_mutex;
+std::atomic<const GuestHookSnapshot*> s_guest_hook_snap{nullptr};
+// Old snapshots remain valid for lock-free concurrent readers for the process lifetime.
+std::vector<GuestHookSnapshot*> s_retired_hook_snaps;
+
+struct GuestBodyEntry {
+    uint32_t address;
+    void* body;
+    bool manifest_hooked;
+};
+std::mutex s_guest_body_mutex;
+std::vector<GuestBodyEntry> s_guest_bodies;
+bool s_guest_bodies_sorted = true;
+
+void ensure_guest_bodies_sorted() {
+    if (s_guest_bodies_sorted) return;
+    std::stable_sort(s_guest_bodies.begin(), s_guest_bodies.end(),
+                     [](const GuestBodyEntry& a, const GuestBodyEntry& b) { return a.address < b.address; });
+    size_t write_idx = 0;
+    for (size_t i = 0; i < s_guest_bodies.size(); ++i) {
+        if (i + 1 < s_guest_bodies.size() && s_guest_bodies[i].address == s_guest_bodies[i + 1].address) continue;
+        s_guest_bodies[write_idx++] = s_guest_bodies[i];
+    }
+    s_guest_bodies.resize(write_idx);
+    s_guest_bodies_sorted = true;
+}
 } // namespace
 RbrewGuestHook rbrew_guest_hook(uint32_t guest_addr) {
-    const unsigned count = s_guest_hook_count.load(std::memory_order_acquire);
-    for (unsigned i = 0; i < count; ++i)
-        if (s_guest_hooks[i].address == guest_addr) return s_guest_hooks[i].hook;
+    const GuestHookSnapshot* snap = s_guest_hook_snap.load(std::memory_order_acquire);
+    if (!snap) return nullptr;
+    for (const auto& entry : snap->entries)
+        if (entry.address == guest_addr) return entry.hook;
     return nullptr;
 }
 bool rbrew_set_guest_hook(uint32_t guest_addr, RbrewGuestHook hook) {
-    const unsigned count = s_guest_hook_count.load(std::memory_order_relaxed);
-    for (unsigned i = 0; i < count; ++i)
-        if (s_guest_hooks[i].address == guest_addr) {
-            s_guest_hooks[i].hook = hook;
-            return true;
+    std::lock_guard lock(s_guest_hook_mutex);
+    const GuestHookSnapshot* prev = s_guest_hook_snap.load(std::memory_order_relaxed);
+    auto* next = new GuestHookSnapshot();
+    if (prev) next->entries = prev->entries;
+    bool updated = false;
+    for (auto& entry : next->entries) {
+        if (entry.address == guest_addr) {
+            entry.hook = hook;
+            updated = true;
+            break;
         }
-    if (count == kMaxGuestHooks) return false;
-    s_guest_hooks[count] = {guest_addr, hook};
-    s_guest_hook_count.store(count + 1, std::memory_order_release);
+    }
+    if (!updated && hook) next->entries.push_back({guest_addr, hook});
+    std::erase_if(next->entries, [](const GuestHookEntry& e) { return e.hook == nullptr; });
+    s_retired_hook_snaps.push_back(next);
+    s_guest_hook_snap.store(next, std::memory_order_release);
     return true;
+}
+void rbrew_register_guest_body(uint32_t guest_addr, void* body, bool manifest_hooked) {
+    if (!body) return;
+    std::lock_guard lock(s_guest_body_mutex);
+    if (!s_guest_bodies.empty() && s_guest_bodies.back().address >= guest_addr) s_guest_bodies_sorted = false;
+    s_guest_bodies.push_back({guest_addr, body, manifest_hooked});
+}
+void* rbrew_find_guest_body(uint32_t guest_addr, bool* out_manifest_hooked) {
+    std::lock_guard lock(s_guest_body_mutex);
+    ensure_guest_bodies_sorted();
+    auto it = std::lower_bound(s_guest_bodies.begin(), s_guest_bodies.end(), guest_addr,
+                               [](const GuestBodyEntry& e, uint32_t addr) { return e.address < addr; });
+    if (it == s_guest_bodies.end() || it->address != guest_addr) return nullptr;
+    if (out_manifest_hooked) *out_manifest_hooked = it->manifest_hooked;
+    return it->body;
+}
+void rbrew_clear_guest_bodies(void) {
+    std::lock_guard lock(s_guest_body_mutex);
+    s_guest_bodies.clear();
+    s_guest_bodies_sorted = true;
 }
 
 #ifdef RBREW_ENABLE_COVERAGE

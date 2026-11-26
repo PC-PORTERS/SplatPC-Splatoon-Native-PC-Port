@@ -14,6 +14,7 @@
 
 #include "../../runtime/port_settings.h"
 #include "../../runtime/splatoon_diagnostics.h"
+#include "../../runtime/mod_loader.h"
 #include "../../runtime/online_identity.h"
 #include "../../online/online_boot.h"
 #include "../../nn_nfp/nn_nfp.h"
@@ -101,12 +102,13 @@ void update_shader_activity() {
     s_shader_compiling = ImGui::GetTime() - s_shader_last_change < 0.75;
 }
 
-enum class MenuPage { Main, Display, Keyboard, Controller, Friends, OnlineLogin, Amiibo };
+enum class MenuPage { Main, Display, Keyboard, Controller, Friends, OnlineLogin, Amiibo, Mods, ModPage };
 // F4 (GX2 thread) asks for the Friends page: when the menu is closed it opens on that page; when it is open the
 // render thread switches to it (or closes the menu when already there).
 std::atomic<bool> s_friends_request{false};
 std::atomic<int> s_friends_toggle{0};
 MenuPage s_menu_page = MenuPage::Main;
+uint64_t s_selected_mod_page = 0;
 gx2_graphics_menu::Page s_graphics_page = gx2_graphics_menu::Page::None; // graphics/weather/camera/cinema page
 bool s_prev_menu_open = false;
 bool s_capture = false; // waiting for the key/button of the selected action
@@ -933,6 +935,103 @@ void build_amiibo_page() {
     if (ImGui::Button("Back", ImVec2(width, 0))) set_menu_open(false);
 }
 
+namespace {
+
+const SplatModUi kModUi = {
+    nullptr,
+    [](void*, const char* text) { ImGui::TextUnformatted(text ? text : ""); },
+    [](void*, float r, float g, float b, float a, const char* text) {
+        ImGui::TextColored(ImVec4(r, g, b, a), "%s", text ? text : "");
+    },
+    [](void*, const char* text) { ImGui::TextWrapped("%s", text ? text : ""); },
+    [](void*) { ImGui::Separator(); },
+    [](void*, const char* label) { ImGui::SeparatorText(label ? label : ""); },
+    [](void*) { ImGui::Spacing(); },
+    [](void*) { ImGui::SameLine(); },
+    [](void*, const char* label, float width) { return ImGui::Button(label ? label : "", ImVec2(width, 0.0f)); },
+    [](void*, const char* label, bool* value) { return value ? ImGui::Checkbox(label ? label : "", value) : false; },
+    [](void*, const char* label, int* value, int min_val, int max_val, const char* format) {
+        if (!value) return false;
+        return ImGui::SliderInt(label ? label : "", value, min_val, max_val, (format && *format) ? format : "%d");
+    },
+    [](void*, const char* label, const char* hint, char* buf, size_t buf_size) {
+        if (!buf || buf_size == 0) return false;
+        return ImGui::InputTextWithHint(label ? label : "", hint ? hint : "", buf, buf_size);
+    },
+    [](void*, bool disabled) { ImGui::BeginDisabled(disabled); },
+    [](void*) { ImGui::EndDisabled(); },
+    [](void*, const char* text) { ImGui::SetClipboardText(text ? text : ""); },
+};
+
+} // namespace
+
+void build_mods_page() {
+    const auto mods = rbrew_mod::list_mods();
+    const auto pages = rbrew_mod::list_menu_pages();
+    const float width = ImGui::GetContentRegionAvail().x;
+
+    ImGui::TextDisabled("Loaded mods (%zu):", mods.size());
+    ImGui::Separator();
+    for (const auto& mod : mods) {
+        ImGui::Text("%s %s", mod.name.c_str(), mod.version.c_str());
+        if (!mod.author.empty()) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("by %s", mod.author.c_str());
+        }
+        ImGui::TextDisabled("  id: %s%s", mod.id.c_str(), mod.initialized ? "" : " (inactive)");
+    }
+
+    if (!pages.empty()) {
+        ImGui::Spacing();
+        ImGui::SeparatorText("Mod Menus");
+        for (const auto& page : pages) {
+            if (ImGui::Button(page.title.c_str())) {
+                s_selected_mod_page = page.handle;
+                s_menu_page = MenuPage::ModPage;
+            }
+            if (page.status) {
+                if (const char* st = page.status(page.user); st && *st) {
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("%s", st);
+                }
+            }
+        }
+    }
+
+    ImGui::Spacing();
+    if (ImGui::Button("Back", ImVec2(width, 0))) s_menu_page = MenuPage::Main;
+}
+
+void build_mod_custom_page() {
+    const auto pages = rbrew_mod::list_menu_pages();
+    const rbrew_mod::ModMenuPageView* active = nullptr;
+    for (const auto& page : pages) {
+        if (page.handle == s_selected_mod_page) {
+            active = &page;
+            break;
+        }
+    }
+    if (!active || !active->draw) {
+        s_selected_mod_page = 0;
+        s_menu_page = MenuPage::Mods;
+        return;
+    }
+
+    const int result = active->draw(&kModUi, active->user);
+    if (result == SPLATMOD_MENU_QUIT) {
+        open_quit_confirmation();
+    } else if (result == SPLATMOD_MENU_BACK) {
+        s_selected_mod_page = 0;
+        s_menu_page = MenuPage::Mods;
+        return;
+    }
+
+    ImGui::Separator();
+    if (ImGui::Button("Back", ImVec2(ImGui::GetContentRegionAvail().x, 0))) {
+        s_selected_mod_page = 0;
+        s_menu_page = MenuPage::Mods;
+    }
+}
 const char* menu_title(MenuPage page) {
     switch (page) {
     case MenuPage::Display: return "Display";
@@ -941,6 +1040,7 @@ const char* menu_title(MenuPage page) {
     case MenuPage::Friends: return "Friends";
     case MenuPage::OnlineLogin: return "Online Account";
     case MenuPage::Amiibo: return "amiibo";
+    case MenuPage::Mods: return "Mods";
     default: return "Settings";
     }
 }
@@ -1010,9 +1110,19 @@ void build_settings_window() {
     ImGui::SetNextWindowSize(ImVec2(560, 640), ImGuiCond_FirstUseEver);
     bool open = true;
     // One window ID for every page (the title shows the page).
-    const char* title = s_graphics_page != gx2_graphics_menu::Page::None ? gx2_graphics_menu::title(s_graphics_page)
-                                                                         : menu_title(s_menu_page);
-    const std::string window = std::string(title) + "###settings";
+    std::string page_title = s_graphics_page != gx2_graphics_menu::Page::None
+                                 ? gx2_graphics_menu::title(s_graphics_page)
+                                 : menu_title(s_menu_page);
+    if (s_graphics_page == gx2_graphics_menu::Page::None && s_menu_page == MenuPage::ModPage) {
+        page_title = "Mod";
+        for (const auto& p : rbrew_mod::list_menu_pages()) {
+            if (p.handle == s_selected_mod_page) {
+                page_title = p.title;
+                break;
+            }
+        }
+    }
+    const std::string window = page_title + "###settings";
     if (!ImGui::Begin(window.c_str(), &open)) {
         ImGui::End();
         return;
@@ -1043,6 +1153,18 @@ void build_settings_window() {
     }
     if (s_menu_page == MenuPage::Display) {
         build_display_page();
+        ImGui::End();
+        if (!open) set_menu_open(false);
+        return;
+    }
+    if (s_menu_page == MenuPage::Mods) {
+        build_mods_page();
+        ImGui::End();
+        if (!open) set_menu_open(false);
+        return;
+    }
+    if (s_menu_page == MenuPage::ModPage) {
+        build_mod_custom_page();
         ImGui::End();
         if (!open) set_menu_open(false);
         return;
@@ -1090,6 +1212,7 @@ void build_settings_window() {
     if (!gx2env::online_mode()) graphics_tile(gx2_graphics_menu::Page::Camera);
     graphics_tile(gx2_graphics_menu::Page::Weather);
     if (!gx2env::online_mode()) graphics_tile(gx2_graphics_menu::Page::Cinema);
+    if (rbrew_mod::has_mods()) menu_tile(MenuPage::Mods);
     ImGui::SeparatorText("General");
     dirty |= ImGui::SliderInt("Volume", &v.volume, 0, 100, "%d %%");
     dirty |= ImGui::Checkbox("Confirm before quitting", &v.confirm_quit);
@@ -1363,6 +1486,7 @@ ImDrawData* begin_frame(VkExtent2D extent) {
         const bool friends_page = s_friends_request.exchange(false, std::memory_order_relaxed);
         s_menu_page = friends_page ? MenuPage::Friends : MenuPage::Main;
         if (friends_page) friends_ui::s_focus_input = true;
+        s_selected_mod_page = 0;
         s_graphics_page = gx2_graphics_menu::Page::None;
         s_capture = false;
     }
