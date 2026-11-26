@@ -10,6 +10,8 @@ namespace rbrew_native {
 struct Reply {
     int status = 0; // 0: unreachable, or a 2xx answer that is not JSON (as friends_relay.py's call())
     nlohmann::json body = nlohmann::json::object();
+    int http_status = 0; // the real HTTP status, also for a body that is not JSON (0: no answer)
+    std::string raw;     // the body as received
 };
 
 class Transport {

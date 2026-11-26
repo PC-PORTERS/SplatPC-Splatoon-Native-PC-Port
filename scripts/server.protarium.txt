@@ -1,0 +1,9 @@
+# Protarium Network (https://protarium.online): PC accounts on Protarium's Splatoon server, shared with Wii U players.
+name=Protarium Network
+server=57.129.155.198:25300
+# Account server: PC account (account_identity.ini) and NEX token.
+account=https://account.protarium.online
+# SpotPass files (stage rotation, Splatfest) served by the server.
+boss=https://npts.app.protarium.online/pc/boss/eur
+nncs1=173.249.46.125
+nncs2=13.140.129.165

@@ -1,4 +1,5 @@
 # Default community server used by SplatPC Builder and the game.
+name=SplatPC community server
 server=173.249.46.125:60000
 nncs1=173.249.46.125
 nncs2=13.140.129.165

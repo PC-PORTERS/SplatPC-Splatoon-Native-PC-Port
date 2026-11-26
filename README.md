@@ -54,6 +54,8 @@ Supported game versions: [VersionDb.md](VersionDb.md) (base game v16 and update 
 
 ---
 
+**Online server:** pick the SplatPC community server, [Protarium Network](https://protarium.online) or your own in the builder settings.
+
 **More docs:** [Online play and anti-cheat](docs/ONLINE.md) · [Run your own server](docs/SERVER.md) · [Update 288](docs/update-288.md)
 
 ## Requirements

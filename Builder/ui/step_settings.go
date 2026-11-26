@@ -25,6 +25,14 @@ type StepSettingsView struct {
 	langSelect        *widget.Select
 	onlineCheck       *widget.Check
 	onlineServerEntry *widget.Entry
+	serverSelect      *widget.Select
+	serverPresets     []settings.ServerPreset
+	registerEntry     *widget.Entry
+	accountEntry      *widget.Entry
+	bossEntry         *widget.Entry
+	nncs1Entry        *widget.Entry
+	nncs2Entry        *widget.Entry
+	syncingServer     bool
 	onlineErrorLabel  *widget.Label
 	resSelect         *widget.Select
 	fpsSelect        *widget.Select
@@ -116,12 +124,42 @@ func (v *StepSettingsView) initUI() {
 	)
 
 	// 2. Online Multiplayer (Community Server)
-	v.onlineServerEntry = widget.NewEntry()
-	v.onlineServerEntry.SetText(cfg.OnlineServer)
-	v.onlineServerEntry.SetPlaceHolder(settings.FallbackOnlineServer)
-	v.onlineServerEntry.OnChanged = func(s string) {
-		cfg.OnlineServer = strings.TrimSpace(s)
+	// Server choice: one preset per scripts/server*.txt, or a custom (self-hosted) server whose
+	// addresses are edited under "Advanced". Editing a field of a preset turns the choice into Custom.
+	v.serverPresets = settings.ServerPresets(v.wizard.repoRoot)
+	const customServer = "Custom (self-hosted)"
+	names := make([]string, 0, len(v.serverPresets)+1)
+	for _, p := range v.serverPresets {
+		names = append(names, p.Name)
 	}
+	names = append(names, customServer)
+	field := func(target *string, placeholder string) *widget.Entry {
+		e := widget.NewEntry()
+		e.SetPlaceHolder(placeholder)
+		e.OnChanged = func(text string) {
+			*target = strings.TrimSpace(text)
+			v.refreshServerSelect()
+		}
+		return e
+	}
+	v.onlineServerEntry = field(&cfg.OnlineServer, settings.FallbackOnlineServer)
+	v.registerEntry = field(&cfg.OnlineRegister, "https://host/register (community server sign-up)")
+	v.accountEntry = field(&cfg.OnlineAccount, "https://account.host (account server: PC account + NEX token)")
+	v.bossEntry = field(&cfg.OnlineBoss, "https://host/path (SpotPass: rotation, Splatfest)")
+	v.nncs1Entry = field(&cfg.OnlineNncs1, "NAT check server 1 (IPv4)")
+	v.nncs2Entry = field(&cfg.OnlineNncs2, "NAT check server 2 (IPv4)")
+	v.serverSelect = widget.NewSelect(names, func(name string) {
+		if v.syncingServer {
+			return
+		}
+		for _, p := range v.serverPresets {
+			if p.Name == name {
+				cfg.ApplyPreset(p)
+				v.syncServerFields()
+				return
+			}
+		}
+	})
 
 	v.onlineErrorLabel = widget.NewLabelWithStyle(
 		"⚠️ Online requires the latest game version (v288). Add the v288 update in Step 1 (ROMs) to enable online play.",
@@ -141,9 +179,7 @@ func (v *StepSettingsView) initUI() {
 			v.syncingOnline = true
 			v.onlineCheck.SetChecked(false)
 			v.syncingOnline = false
-			if v.onlineServerEntry != nil {
-				v.onlineServerEntry.Disable()
-			}
+			v.setOnlineFieldsEnabled(false)
 			v.onlineErrorLabel.Show()
 			if v.wizard.window != nil {
 				dialog.ShowError(
@@ -154,26 +190,30 @@ func (v *StepSettingsView) initUI() {
 			return
 		}
 		v.wizard.config.EnableOnline = b
-		if v.onlineServerEntry == nil {
-			return
-		}
+		v.setOnlineFieldsEnabled(b)
 		if b {
-			v.onlineServerEntry.Enable()
 			v.onlineErrorLabel.Hide()
-		} else {
-			v.onlineServerEntry.Disable()
 		}
 	})
 
 	onlineHelp := widget.NewLabelWithStyle("Requires Splatoon v288. Automatic authentication linked to your PC (online_identity.ini). In-game friends overlay: Press F4.", fyne.TextAlignLeading, fyne.TextStyle{Italic: true})
 	onlineHelp.Wrapping = fyne.TextWrapWord
 
-	onlineCard := widget.NewCard("🌐 Online Multiplayer (Community Server)", "",
+	advanced := widget.NewAccordion(widget.NewAccordionItem("Advanced: self-hosted server addresses", container.NewVBox(
+		widget.NewLabel("Server Address (Host:Port):"), v.onlineServerEntry,
+		widget.NewLabel("Sign-up URL (community server):"), v.registerEntry,
+		widget.NewLabel("Account server URL:"), v.accountEntry,
+		widget.NewLabel("SpotPass URL:"), v.bossEntry,
+		widget.NewLabel("NAT check servers:"), v.nncs1Entry, v.nncs2Entry,
+	)))
+
+	onlineCard := widget.NewCard("🌐 Online Multiplayer", "",
 		container.NewVBox(
 			v.onlineCheck,
 			v.onlineErrorLabel,
-			widget.NewLabelWithStyle("Server Address (Host:Port):", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-			v.onlineServerEntry,
+			widget.NewLabelWithStyle("Server:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+			v.serverSelect,
+			advanced,
 			onlineHelp,
 		),
 	)
@@ -397,12 +437,8 @@ func (v *StepSettingsView) SyncUIFromConfig() {
 	v.syncingOnline = true
 	v.onlineCheck.SetChecked(effectiveOnline)
 	v.syncingOnline = false
-	v.onlineServerEntry.SetText(cfg.OnlineServer)
-	if effectiveOnline {
-		v.onlineServerEntry.Enable()
-	} else {
-		v.onlineServerEntry.Disable()
-	}
+	v.syncServerFields()
+	v.setOnlineFieldsEnabled(effectiveOnline)
 
 	for i, l := range settings.SupportedLanguages {
 		if l.ID == cfg.LanguageID {
@@ -439,4 +475,49 @@ func (v *StepSettingsView) SyncUIFromConfig() {
 
 func (v *StepSettingsView) Container() fyne.CanvasObject {
 	return v.container
+}
+
+// setOnlineFieldsEnabled enables or disables the server choice and every address field.
+func (v *StepSettingsView) setOnlineFieldsEnabled(enabled bool) {
+	if v.serverSelect == nil {
+		return
+	}
+	for _, w := range []fyne.Disableable{v.serverSelect, v.onlineServerEntry, v.registerEntry, v.accountEntry,
+		v.bossEntry, v.nncs1Entry, v.nncs2Entry} {
+		if enabled {
+			w.Enable()
+		} else {
+			w.Disable()
+		}
+	}
+}
+
+// syncServerFields shows the configuration's server addresses and the matching choice.
+func (v *StepSettingsView) syncServerFields() {
+	cfg := &v.wizard.config
+	v.syncingServer = true
+	defer func() { v.syncingServer = false }()
+	values := []string{cfg.OnlineServer, cfg.OnlineRegister, cfg.OnlineAccount, cfg.OnlineBoss, cfg.OnlineNncs1, cfg.OnlineNncs2}
+	for i, e := range []*widget.Entry{v.onlineServerEntry, v.registerEntry, v.accountEntry, v.bossEntry, v.nncs1Entry, v.nncs2Entry} {
+		e.SetText(values[i]) // OnChanged writes the same value back
+	}
+	v.refreshServerSelectLocked()
+}
+
+// refreshServerSelect selects the preset matching the fields, or Custom, without applying anything.
+func (v *StepSettingsView) refreshServerSelect() {
+	if v.serverSelect == nil || v.syncingServer {
+		return
+	}
+	v.syncingServer = true
+	defer func() { v.syncingServer = false }()
+	v.refreshServerSelectLocked()
+}
+
+func (v *StepSettingsView) refreshServerSelectLocked() {
+	if i := v.wizard.config.PresetIndex(v.serverPresets); i >= 0 {
+		v.serverSelect.SetSelectedIndex(i)
+	} else {
+		v.serverSelect.SetSelectedIndex(len(v.serverPresets))
+	}
 }
