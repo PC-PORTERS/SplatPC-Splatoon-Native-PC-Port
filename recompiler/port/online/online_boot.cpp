@@ -4,6 +4,7 @@
 #include "integrity_proof.h"
 #include "online_login.h"
 #include "social_http.h"
+#include "wg_tunnel.h"
 
 #include "online_identity.h"
 #include "rebrewu/logger.hpp"
@@ -120,6 +121,50 @@ void stop_relay_locked() {
     s_relay = nullptr; // detached thread cleans up or stops on next wake
 }
 
+bool start_wg_tunnel_if_enabled(Transport& transport, const std::string& register_path, const std::string& token,
+                                const std::string& public_server_host, const std::string& public_nncs1,
+                                const std::string& public_nncs2, std::string& error_out, int* out_http_status) {
+    error_out.clear();
+    if (out_http_status) *out_http_status = 0;
+    const char* disabled = std::getenv("RBREW_WG_DISABLE");
+    if (disabled && disabled[0] == '1') return true;
+    if (token.empty() || WgTunnel::instance().active()) return true;
+
+    std::string priv_key, pub_key;
+    if (!generate_wg_keypair(priv_key, pub_key)) return true;
+
+    WgConfig wg_cfg;
+    wg_cfg.public_server_ip = public_server_host;
+    wg_cfg.public_nncs1_ip = public_nncs1.empty() ? public_server_host : public_nncs1;
+    wg_cfg.public_nncs2_ip = public_nncs2.empty() ? public_server_host : public_nncs2;
+
+    int status = 0;
+    if (!fetch_wg_config(transport, derive_wg_path(register_path), token, pub_key, wg_cfg, error_out, &status)) {
+        if (out_http_status) *out_http_status = status;
+        RBREW_LOG_INFO("wireguard", "%s\n", error_out.c_str());
+        return false;
+    }
+    if (wg_cfg.private_key.empty()) wg_cfg.private_key = priv_key;
+    return WgTunnel::instance().start(wg_cfg);
+}
+
+void resolve_nncs_hosts(const rbrew_online::Config& cfg, std::string& nncs1_out, std::string& nncs2_out) {
+    nncs1_out = rbrew_online_cfg::resolved("RBREW_ONLINE_NNCS1", "online_nncs1", "");
+    nncs2_out = rbrew_online_cfg::resolved("RBREW_ONLINE_NNCS2", "online_nncs2", "");
+    if (nncs1_out.empty() || nncs2_out.empty()) {
+        if (cfg.host == "173.249.46.125") {
+            if (nncs1_out.empty()) nncs1_out = std::string(rbrew_online::kPublicNncs1);
+            if (nncs2_out.empty()) nncs2_out = std::string(rbrew_online::kPublicNncs2);
+        } else if (cfg.host == "127.0.0.1") {
+            if (nncs1_out.empty()) nncs1_out = "127.0.0.1";
+            if (nncs2_out.empty()) nncs2_out = "127.0.0.2";
+        } else if (!cfg.host.empty()) {
+            if (nncs1_out.empty()) nncs1_out = cfg.host;
+            if (nncs2_out.empty()) nncs2_out = cfg.host;
+        }
+    }
+}
+
 void relay_thread(RelayState* state, std::string register_url, std::string server, std::string pseudo,
                   fs::path game_dir, fs::path friends_dir, std::string initial_token, bool skip_register) {
     std::string base_url, register_path;
@@ -153,10 +198,17 @@ void relay_thread(RelayState* state, std::string register_url, std::string serve
 
     FriendsRelay relay(*transport, id.pid, id.password, pseudo, game_dir, friends_dir, client_proof(proof));
     if (!initial_token.empty()) relay.set_initial_token(initial_token);
-    relay.set_token_callback([game_dir, server, register_url, pseudo, pid = id.pid](const std::string& tok) {
+    relay.set_token_callback([game_dir, server, register_url, pseudo, pid = id.pid, &transport = *transport,
+                              register_path](const std::string& tok) {
         rbrew_online::save_session_token(
             rbrew_online::SessionToken{tok, server, register_url, pid, pseudo, int64_t(std::time(nullptr))},
             game_dir / "online_session.ini");
+        if (!WgTunnel::instance().active()) {
+            const auto cfg = rbrew_online::config();
+            std::string n1, n2, wg_err;
+            resolve_nncs_hosts(cfg, n1, n2);
+            start_wg_tunnel_if_enabled(transport, register_path, tok, cfg.host, n1, n2, wg_err, nullptr);
+        }
     });
 
     if (initial_token.empty()) relay.claim_pseudo();
@@ -236,6 +288,25 @@ void online_boot() {
         return;
     }
     if (has_reusable_session(cfg, url, pseudo, game_dir, saved_token)) {
+        std::string base_url, register_path;
+        if (split_url(url, base_url, register_path)) {
+            if (const auto transport = make_http_transport(base_url, kTimeoutMs)) {
+                std::string n1, n2, wg_err;
+                resolve_nncs_hosts(cfg, n1, n2);
+                int wg_status = 0;
+                if (!start_wg_tunnel_if_enabled(*transport, register_path, saved_token, cfg.host, n1, n2, wg_err,
+                                                &wg_status) &&
+                    (wg_status == 401 || wg_status == 403)) {
+                    rbrew_online::clear_session_token(game_dir / "online_session.ini");
+                    refresh_status_files_locked(game_dir, url);
+                    if (wg_status == 403) {
+                        s_status.has_error = true;
+                        s_status.message = wg_err;
+                    }
+                    return;
+                }
+            }
+        }
         s_status.logged_in = true;
         s_status.has_saved_token = true;
         s_status.message = "Signed in with saved session token";
@@ -245,6 +316,7 @@ void online_boot() {
 }
 
 void online_shutdown() {
+    WgTunnel::instance().stop();
     {
         std::lock_guard lock(s_mu);
         stop_relay_locked();
@@ -366,6 +438,16 @@ void start_interactive_login(const LoginFormValues& raw_form) {
         if (!perform_account_login(*transport, form.register_url, register_path, game_dir, id.pid, id.password,
                                    form.pseudo, proof.version, client_proof(proof), token, err, detail)) {
             fail(err, detail);
+            return;
+        }
+
+        std::string wg_err;
+        int wg_status = 0;
+        const std::string n1 = form.nncs1.empty() ? host : form.nncs1;
+        const std::string n2 = form.nncs2.empty() ? host : form.nncs2;
+        if (!start_wg_tunnel_if_enabled(*transport, register_path, token, host, n1, n2, wg_err, &wg_status) &&
+            wg_status == 403) {
+            fail(wg_err);
             return;
         }
 

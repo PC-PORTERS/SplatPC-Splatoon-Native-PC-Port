@@ -69,6 +69,7 @@ typedef int ssize_t;
 #include <thread>
 #include <climits>
 #include <charconv>
+#include "../../online/wg_tunnel.h"
 #include "../../runtime/online_identity.h"
 
 // ---------------------------------------------------------------------------
@@ -512,6 +513,7 @@ static void socketclose(CPUState* cpu) {
         return;
     }
     ++s_socket_modes[fd].generation;
+    rbrew_native::WgTunnel::instance().unregister_socket(int(fd));
     net_result(cpu, CLOSE_SOCKET(s));
 }
 static void socketlasterr(CPUState* cpu) {
@@ -536,15 +538,20 @@ static void bind_(CPUState* cpu) {
         net_fail(cpu, kErrBadFd);
         return;
     }
-    net_result(cpu, ::bind(s, reinterpret_cast<sockaddr*>(&sa), sizeof(sa)));
-    if (net_trace_file()) { // requested and actual local port (peer-to-peer diagnosis, 27/10)
+    const int bind_rc = ::bind(s, reinterpret_cast<sockaddr*>(&sa), sizeof(sa));
+    net_result(cpu, bind_rc);
+    if (bind_rc == 0) {
         sockaddr_in local{};
         socklen_t size = sizeof(local);
-        ::getsockname(s, reinterpret_cast<sockaddr*>(&local), &size);
-        char detail[96];
-        std::snprintf(detail, sizeof(detail), "fd=%u requested=%u bound=%u", fd, unsigned(ntohs(sa.sin_port)),
-                      unsigned(ntohs(local.sin_port)));
-        net_note("bind", detail);
+        if (::getsockname(s, reinterpret_cast<sockaddr*>(&local), &size) == 0) {
+            rbrew_native::WgTunnel::instance().register_udp_socket(int(fd), ntohs(local.sin_port));
+            if (net_trace_file()) { // requested and actual local port (peer-to-peer diagnosis, 27/10)
+                char detail[96];
+                std::snprintf(detail, sizeof(detail), "fd=%u requested=%u bound=%u", fd, unsigned(ntohs(sa.sin_port)),
+                              unsigned(ntohs(local.sin_port)));
+                net_note("bind", detail);
+            }
+        }
     }
 }
 static void connect_(CPUState* cpu) {
@@ -555,7 +562,14 @@ static void connect_(CPUState* cpu) {
     }
     sockaddr_in sa{};
     guest_to_host_sockaddr(MEM, p, &sa);
-    if (!net_policy().allow_destination(ntohl(sa.sin_addr.s_addr))) {
+    auto& wg = rbrew_native::WgTunnel::instance();
+    uint32_t dest = wg.rewrite_destination(ntohl(sa.sin_addr.s_addr));
+    sa.sin_addr.s_addr = htonl(dest);
+    if (wg.active() && !rbrew_net::Policy::is_loopback(dest) && !wg.contains_ip(dest)) {
+        net_fail(cpu, kErrBlocked);
+        return;
+    }
+    if (!wg.contains_ip(dest) && !net_policy().allow_destination(dest)) {
         net_fail(cpu, kErrBlocked);
         return;
     }
@@ -601,6 +615,10 @@ static void getsockname_(CPUState* cpu) {
     const int rc = ::getsockname(s, reinterpret_cast<sockaddr*>(&sa), &size);
     net_result(cpu, rc);
     if (rc == 0) {
+        const auto& wg = rbrew_native::WgTunnel::instance();
+        if (wg.active() && wg.client_ip_host() != 0 && sa.sin_addr.s_addr == 0) {
+            sa.sin_addr.s_addr = htonl(wg.client_ip_host());
+        }
         host_to_guest_sockaddr(MEM, p, &sa, cap);
         rbrew_write32(MEM, lp, 16);
     }
@@ -643,7 +661,46 @@ static void sendto_(CPUState* cpu) {
         net_fail(cpu, kErrFamily);
         return;
     }
-    const uint32_t dest = ntohl(sa.sin_addr.s_addr);
+    auto& wg = rbrew_native::WgTunnel::instance();
+    const uint32_t dest = wg.rewrite_destination(ntohl(sa.sin_addr.s_addr));
+    sa.sin_addr.s_addr = htonl(dest);
+    if (wg.contains_ip(dest)) {
+        net_policy().add_peer(dest);
+        uint16_t local_port = 0;
+        {
+            std::lock_guard lock(s_socket_io_mutex);
+            const HostSocket s = host_socket(fd);
+            if (s == HostSocket(INVALID_SOCKET)) {
+                net_fail(cpu, kErrBadFd);
+                return;
+            }
+            sockaddr_in local{};
+            socklen_t lsize = sizeof(local);
+            if (::getsockname(s, reinterpret_cast<sockaddr*>(&local), &lsize) != 0 || local.sin_port == 0) {
+                sockaddr_in bind_sa{};
+                bind_sa.sin_family = AF_INET;
+                bind_sa.sin_addr.s_addr = htonl(INADDR_ANY);
+                bind_sa.sin_port = 0;
+                ::bind(s, reinterpret_cast<sockaddr*>(&bind_sa), sizeof(bind_sa));
+                lsize = sizeof(local);
+                ::getsockname(s, reinterpret_cast<sockaddr*>(&local), &lsize);
+            }
+            local_port = ntohs(local.sin_port);
+        }
+        const int n = wg.send_udp(int(fd), local_port, dest, ntohs(sa.sin_port), MEM + buffer, size_t(length));
+        net_packet("sendto(wg)", fd, dest, ntohs(sa.sin_port), MEM + buffer, n);
+        if (n < 0)
+            net_fail(cpu, kErrInvalid);
+        else
+            RET = uint32_t(n);
+        return;
+    }
+    if (wg.active() && !rbrew_net::Policy::is_loopback(dest)) {
+        // Never leak raw UDP datagrams outside the WireGuard tunnel.
+        net_packet("sendto(wg) BLOCKED", fd, dest, ntohs(sa.sin_port), MEM + buffer, int(length));
+        net_fail(cpu, kErrBlocked);
+        return;
+    }
     // Online: a match host learns its players' addresses from the server's NAT traversal
     // calls, which this layer cannot read, so a datagram to any unicast address is let
     // through and that address joins the bounded, expiring peer list. Names still resolve
@@ -670,6 +727,7 @@ static void recvfrom_(CPUState* cpu) {
         return;
     }
     if (address) capacity = rbrew_read32(MEM, alen);
+    auto& wg = rbrew_native::WgTunnel::instance();
     sockaddr_in sa{};
     socklen_t size = sizeof(sa);
     // RBREW_STRICT_UDP_IN=1 (off by default until it is tested between two real networks): online,
@@ -680,7 +738,21 @@ static void recvfrom_(CPUState* cpu) {
         const char* v = std::getenv("RBREW_STRICT_UDP_IN");
         return v && v[0] == '1';
     }();
+    bool from_wg = false;
     const int n = socket_io(fd, flags, [&](HostSocket s, int hf) {
+        if (wg.has_pending_rx(int(fd))) {
+            uint32_t src_ip = 0;
+            uint16_t src_port = 0;
+            const int wn = wg.recv_udp(int(fd), MEM + buffer, size_t(length), &src_ip, &src_port, true);
+            if (wn >= 0) {
+                sa = {};
+                sa.sin_family = AF_INET;
+                sa.sin_addr.s_addr = htonl(src_ip);
+                sa.sin_port = htons(src_port);
+                from_wg = true;
+                return wn;
+            }
+        }
         for (;;) {
             size = sizeof(sa);
             const int r = int(recvfrom(s, reinterpret_cast<char*>(MEM + buffer), int(length), hf,
@@ -698,7 +770,8 @@ static void recvfrom_(CPUState* cpu) {
             host_to_guest_sockaddr(MEM, address, &sa, capacity);
             rbrew_write32(MEM, alen, 16);
         }
-        net_packet("recvfrom", fd, ntohl(sa.sin_addr.s_addr), ntohs(sa.sin_port), MEM + buffer, n);
+        net_packet(from_wg ? "recvfrom(wg)" : "recvfrom", fd, ntohl(sa.sin_addr.s_addr), ntohs(sa.sin_port),
+                   MEM + buffer, n);
         net_calls_arm();
     }
     RET = uint32_t(n);
@@ -812,6 +885,15 @@ static void select_(CPUState* cpu) {
                         if (FD_ISSET(h, &w)) wout |= 1u << i;
                         if (FD_ISSET(h, &e)) eout |= 1u << i;
                     }
+            auto& wg = rbrew_native::WgTunnel::instance();
+            if (wg.active()) {
+                for (int i = 0; i < nfds; ++i) {
+                    if ((rbits & (1u << i)) && !(rout & (1u << i)) && wg.has_pending_rx(i)) {
+                        rout |= 1u << i;
+                        ++rc;
+                    }
+                }
+            }
         }
         const bool expired =
             timeout >= 0 &&
@@ -973,7 +1055,8 @@ static void gethostbyname_(CPUState* cpu) {
     }
 
     // Confinement: no real DNS; only RBREW_DNS_OVERRIDE names (or a loopback literal).
-    const auto resolved = net_policy().resolve(hostname);
+    auto resolved = net_policy().resolve(hostname);
+    if (resolved) *resolved = rbrew_native::WgTunnel::instance().rewrite_destination(*resolved);
     net_note(resolved ? "dns gethostbyname" : "dns gethostbyname BLOCKED", hostname);
     if (!resolved) {
         RET = 0;
@@ -1059,7 +1142,8 @@ static void getaddrinfo_(CPUState* cpu) {
     // Confinement: no real DNS. A named host resolves only through
     // RBREW_DNS_OVERRIDE (or a loopback literal); a null host (passive bind)
     // is loopback. Numeric services only; one AF_INET entry.
-    const auto resolved = *hostname ? net_policy().resolve(hostname) : std::optional<uint32_t>(rbrew_net::kLoopback);
+    auto resolved = *hostname ? net_policy().resolve(hostname) : std::optional<uint32_t>(rbrew_net::kLoopback);
+    if (resolved && *hostname) *resolved = rbrew_native::WgTunnel::instance().rewrite_destination(*resolved);
     net_note(resolved ? "dns getaddrinfo" : "dns getaddrinfo BLOCKED", *hostname ? hostname : "(passive)");
     if (!resolved) {
         RET = 8u;
@@ -1139,6 +1223,8 @@ static void ac_GetLastErrorCode(CPUState* cpu) {
 // the host's public IP and no distinct private address). Found by connecting a UDP socket
 // to the server, which sends nothing; loopback if that fails.
 static uint32_t assigned_address() {
+    const auto& wg = rbrew_native::WgTunnel::instance();
+    if (wg.active() && wg.client_ip_host() != 0) return wg.client_ip_host();
     static const uint32_t address = [] {
         if (!net_policy().online()) return rbrew_net::kLoopback;
         uint32_t server = 0;
@@ -1168,11 +1254,16 @@ static void ac_GetAssignedAddress(CPUState* cpu) {
     RET = 0;
 }
 static void ac_GetAssignedSubnet(CPUState* cpu) {
-    if (ARG0)
-        rbrew_write32(MEM, ARG0,
-                      !ac_online()                                         ? 0u
-                      : rbrew_net::Policy::is_loopback(assigned_address()) ? 0xFF000000u
-                                                                           : 0xFFFFFF00u);
+    if (ARG0) {
+        const auto& wg = rbrew_native::WgTunnel::instance();
+        uint32_t mask = 0u;
+        if (ac_online()) {
+            mask = (wg.active() && wg.subnet_mask_host() != 0)
+                       ? wg.subnet_mask_host()
+                       : (rbrew_net::Policy::is_loopback(assigned_address()) ? 0xFF000000u : 0xFFFFFF00u);
+        }
+        rbrew_write32(MEM, ARG0, mask);
+    }
     RET = 0;
 }
 

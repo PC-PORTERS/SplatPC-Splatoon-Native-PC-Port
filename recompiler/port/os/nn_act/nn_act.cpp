@@ -1,5 +1,6 @@
 #include "nn_act.h"
 #include "../stubs/stubs_addrs.h"
+#include "../../online/wg_tunnel.h"
 #include "../../runtime/online_identity.h"
 #include <atomic>
 #include <cstdio>
@@ -203,10 +204,12 @@ void AcquireNexServiceToken(CPUState* cpu) {
     char token[48];
     std::snprintf(token, sizeof token, "rbrew1:%08x:%08x", id.pid, game_server);
     uint8_t buffer[rbrew_online::kNexTokenSize];
-    rbrew_online::fill_nex_token(buffer, token, id.password, online.host, online.port);
+    const auto& wg = rbrew_native::WgTunnel::instance();
+    const std::string nex_host = (wg.active() && wg.server_ip_host() != 0) ? wg.server_ip_str() : online.host;
+    rbrew_online::fill_nex_token(buffer, token, id.password, nex_host, online.port);
     for (uint32_t i = 0; i < rbrew_online::kNexTokenSize; ++i) rbrew_write8(cpu->mem, out + i, buffer[i]);
     char note[96];
-    std::snprintf(note, sizeof note, "game_server=%08x pid=%08x -> %s:%u", game_server, id.pid, online.host.c_str(),
+    std::snprintf(note, sizeof note, "game_server=%08x pid=%08x -> %s:%u", game_server, id.pid, nex_host.c_str(),
                   online.port);
     rbrew_net_note("nex token", note);
     cpu->r[3] = 0;

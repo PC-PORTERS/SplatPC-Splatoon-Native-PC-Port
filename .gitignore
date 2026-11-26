@@ -20,6 +20,7 @@ build_vscode/
 # Auto-fetched third-party headers/sources
 recompiler/third_party/nlohmann/
 recompiler/third_party/miniaudio.h
+recompiler/port/third_party/boringtun/
 
 # Never commit game files
 *.rpx

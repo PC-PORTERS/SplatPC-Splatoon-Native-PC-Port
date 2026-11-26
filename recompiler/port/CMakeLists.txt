@@ -246,8 +246,10 @@ add_library(gambit_online STATIC
     online/online_login.cpp
     online/py_random.cpp
     online/social_http.cpp
+    online/wg_tunnel.cpp
 )
-target_include_directories(gambit_online PRIVATE ${RBREW_NLOHMANN_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+target_include_directories(gambit_online PUBLIC ${RBREW_NLOHMANN_DIR})
+target_include_directories(gambit_online PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
 get_filename_component(RBREW_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
 set(RBREW_APP_VERSION "" CACHE STRING "Client release version injected from release tag")
 set(RBREW_BUILD_VERSION "" CACHE STRING "Game build version shown in the window title (defaults to RBREW_APP_VERSION or dev)")
@@ -289,6 +291,118 @@ if(WIN32)
     target_link_libraries(gambit_online PUBLIC winhttp bcrypt)
 else()
     target_link_libraries(gambit_online PUBLIC CURL::libcurl)
+endif()
+
+# Userspace WireGuard P2P client (boringtun fetched from GitHub + thin C-ABI shim).
+option(RBREW_ENABLE_BORINGTUN "Build and link the boringtun WireGuard P2P client" ON)
+find_program(CARGO_EXECUTABLE cargo)
+if(RBREW_ENABLE_BORINGTUN AND CARGO_EXECUTABLE)
+    set(RBREW_BORINGTUN_SRC "${CMAKE_CURRENT_SOURCE_DIR}/third_party/boringtun")
+    if(NOT EXISTS "${RBREW_BORINGTUN_SRC}/boringtun/Cargo.toml")
+        message(STATUS "boringtun: fetching tag boringtun-cli-0.7.1 from GitHub")
+        FetchContent_Declare(
+            boringtun_dl
+            GIT_REPOSITORY https://github.com/cloudflare/boringtun.git
+            GIT_TAG        boringtun-cli-0.7.1
+            GIT_SHALLOW    TRUE
+            SOURCE_DIR     "${RBREW_BORINGTUN_SRC}"
+            SOURCE_SUBDIR  "__none__"
+        )
+        FetchContent_GetProperties(boringtun_dl)
+        if(NOT boringtun_dl_POPULATED)
+            FetchContent_Populate(boringtun_dl)
+        endif()
+    else()
+        message(STATUS "boringtun: using cached source (third_party/boringtun)")
+    endif()
+    set(RBREW_BORINGTUN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/online/boringtun_ffi")
+    set(RBREW_BORINGTUN_TARGET_DIR "${CMAKE_CURRENT_BINARY_DIR}/boringtun_target")
+    set(RBREW_BORINGTUN_CARGO_ARGS build --release --manifest-path "${RBREW_BORINGTUN_DIR}/Cargo.toml")
+    if(MINGW)
+        if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR CMAKE_C_COMPILER_ID STREQUAL "Clang")
+            set(_rbrew_rust_target "x86_64-pc-windows-gnullvm")
+        else()
+            set(_rbrew_rust_target "x86_64-pc-windows-gnu")
+        endif()
+        find_program(RUSTUP_EXECUTABLE rustup)
+        if(RUSTUP_EXECUTABLE)
+            execute_process(
+                COMMAND "${RUSTUP_EXECUTABLE}" target list --installed
+                OUTPUT_VARIABLE _rbrew_rust_targets
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+                ERROR_QUIET)
+            if(NOT _rbrew_rust_targets MATCHES "${_rbrew_rust_target}")
+                message(STATUS "boringtun: adding Rust target ${_rbrew_rust_target} for MinGW")
+                execute_process(COMMAND "${RUSTUP_EXECUTABLE}" target add "${_rbrew_rust_target}")
+            endif()
+        endif()
+        list(APPEND RBREW_BORINGTUN_CARGO_ARGS --target "${_rbrew_rust_target}")
+        set(RBREW_BORINGTUN_LIB "${RBREW_BORINGTUN_TARGET_DIR}/${_rbrew_rust_target}/release/libboringtun_client.a")
+    elseif(WIN32)
+        set(RBREW_BORINGTUN_LIB "${RBREW_BORINGTUN_TARGET_DIR}/release/boringtun_client.lib")
+    else()
+        set(RBREW_BORINGTUN_LIB "${RBREW_BORINGTUN_TARGET_DIR}/release/libboringtun_client.a")
+    endif()
+    set(RBREW_BORINGTUN_ENV "CARGO_TARGET_DIR=${RBREW_BORINGTUN_TARGET_DIR}")
+    if(UNIX AND NOT APPLE)
+        # Prefer system gcc/clang over userspace Zig cc (whose CLI rejects Rust target triples like x86_64-unknown-linux-gnu).
+        find_program(RBREW_SYSTEM_CC NAMES gcc clang PATHS /usr/bin /usr/local/bin /bin NO_DEFAULT_PATH)
+        find_program(RBREW_SYSTEM_AR NAMES gcc-ar ar PATHS /usr/bin /usr/local/bin /bin NO_DEFAULT_PATH)
+        if(RBREW_SYSTEM_CC)
+            list(APPEND RBREW_BORINGTUN_ENV "CC=${RBREW_SYSTEM_CC}")
+            if(RBREW_SYSTEM_AR)
+                list(APPEND RBREW_BORINGTUN_ENV "AR=${RBREW_SYSTEM_AR}")
+            endif()
+        else()
+            find_program(_rbrew_fallback_cc NAMES cc clang gcc)
+            if(NOT _rbrew_fallback_cc)
+                set(_rbrew_fallback_cc "cc")
+            endif()
+            set(_rbrew_zig_cc_wrapper "${CMAKE_CURRENT_BINARY_DIR}/boringtun_cc_wrapper.sh")
+            file(WRITE "${_rbrew_zig_cc_wrapper}"
+"#!/bin/sh
+n=$#
+i=0
+while [ $i -lt $n ]; do
+    a=$1
+    shift
+    case \"$a\" in
+        --target=x86_64-unknown-linux-gnu) set -- \"$@\" -target x86_64-linux-gnu ;;
+        --target=aarch64-unknown-linux-gnu) set -- \"$@\" -target aarch64-linux-gnu ;;
+        --target=*) ;;
+        *) set -- \"$@\" \"$a\" ;;
+    esac
+    i=$((i + 1))
+done
+exec \"${_rbrew_fallback_cc}\" \"$@\"
+")
+            file(CHMOD "${_rbrew_zig_cc_wrapper}" PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+            list(APPEND RBREW_BORINGTUN_ENV "CC=${_rbrew_zig_cc_wrapper}")
+        endif()
+    elseif(NOT MINGW)
+        list(APPEND RBREW_BORINGTUN_ENV --unset=CC --unset=CXX)
+    endif()
+    add_custom_command(
+        OUTPUT "${RBREW_BORINGTUN_LIB}"
+        COMMAND "${CMAKE_COMMAND}" -E env ${RBREW_BORINGTUN_ENV}
+                "${CARGO_EXECUTABLE}" ${RBREW_BORINGTUN_CARGO_ARGS}
+        DEPENDS "${RBREW_BORINGTUN_DIR}/Cargo.toml" "${RBREW_BORINGTUN_DIR}/src/lib.rs"
+                "${RBREW_BORINGTUN_SRC}/boringtun/Cargo.toml"
+        COMMENT "Building boringtun_client static library"
+        VERBATIM
+    )
+    add_custom_target(boringtun_client_build DEPENDS "${RBREW_BORINGTUN_LIB}")
+    add_library(boringtun_client STATIC IMPORTED GLOBAL)
+    set_target_properties(boringtun_client PROPERTIES IMPORTED_LOCATION "${RBREW_BORINGTUN_LIB}")
+    add_dependencies(boringtun_client boringtun_client_build)
+    target_include_directories(gambit_online PRIVATE "${RBREW_BORINGTUN_DIR}/include")
+    target_compile_definitions(gambit_online PRIVATE RBREW_HAS_BORINGTUN=1)
+    target_link_libraries(gambit_online PUBLIC boringtun_client)
+    if(WIN32)
+        target_link_libraries(gambit_online PUBLIC ws2_32 userenv ntdll bcrypt synchronization advapi32 dbghelp)
+    else()
+        target_link_libraries(gambit_online PUBLIC pthread dl m)
+    endif()
 endif()
 if(MSVC)
     target_compile_options(gambit_online PRIVATE /utf-8)

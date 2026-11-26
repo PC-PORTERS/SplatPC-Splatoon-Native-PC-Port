@@ -1,0 +1,12 @@
+[package]
+name = "boringtun_client"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+base64 = "0.22"
+boringtun = { path = "../../third_party/boringtun/boringtun" }
+rand_core = { version = "0.6", features = ["getrandom"] }
