@@ -5,6 +5,7 @@
 #include "Standalone.h"
 #include "Cafe/HW/Latte/Core/FetchShader.h"
 #include "Cafe/HW/Latte/Core/LatteShader.h"
+#include "Cafe/HW/Latte/Core/LatteShaderAssembly.h"
 #include "Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompiler.h"
 #include "util/helpers/StringBuf.h"
 #include <string_view>
@@ -175,6 +176,57 @@ void r700_texture_registers(uint32_t* r, const uint8_t* p, uint32_t native_slot)
 static thread_local R700TranslationReads s_last_reads;
 R700TranslationReads r700_last_translation_reads() {
     return s_last_reads;
+}
+
+R700TranslationReads r700_scan_shader_reads(const uint8_t* data, uint32_t size, bool is_pixel) {
+    R700TranslationReads reads{};
+    if (!data || !size || (size & 7)) return reads;
+    auto le32 = [&](uint64_t offset) -> uint32_t {
+        uint32_t w = 0;
+        std::memcpy(&w, data + offset, sizeof(w));
+        return w;
+    };
+    const uint32_t cf_count = size / 8;
+    bool end_of_program = false;
+    for (uint32_t i = 0; i < cf_count; ++i) {
+        const uint32_t cf_word0 = le32(uint64_t(i) * 8);
+        const uint32_t cf_word1 = le32(uint64_t(i) * 8 + 4);
+        const uint32_t cf_inst = (cf_word1 >> 23) & 0x7Fu;
+        if (cf_inst < 0x40u) {
+            end_of_program = ((cf_word1 >> 21) & 1u) != 0;
+            if (!is_pixel && (cf_inst == GPU7_CF_INST_EXPORT || cf_inst == GPU7_CF_INST_EXPORT_DONE)) {
+                const uint32_t ed_type = (cf_word0 >> 13) & 3u;
+                const uint32_t base = cf_word0 & 0x1FFFu;
+                const uint32_t burst = (cf_word1 >> 17) & 0xFu;
+                if (ed_type == 2u && base < 32u) {
+                    const uint32_t end_param = std::min(31u, base + burst);
+                    for (uint32_t p = base; p <= end_param; ++p) reads.vs_parameter_mask |= 1u << p;
+                }
+            } else if (cf_inst == GPU7_CF_INST_TEX) {
+                const uint32_t addr = cf_word0;
+                uint32_t count = (cf_word1 >> 10) & 7u;
+                if (((cf_word1 >> 19) & 1u) != 0) count |= 0x8u;
+                ++count;
+                for (uint32_t k = 0; k < count; ++k) {
+                    const uint64_t tex_off = uint64_t(addr) * 8ull + uint64_t(k) * 16ull;
+                    if (tex_off + 16ull > size) return R700TranslationReads{};
+                    const uint32_t word0 = le32(tex_off);
+                    const uint32_t op = word0 & 0x1Fu;
+                    if (op == GPU7_TEX_INST_SAMPLE || op == GPU7_TEX_INST_SAMPLE_L || op == GPU7_TEX_INST_SAMPLE_LB ||
+                        op == GPU7_TEX_INST_SAMPLE_LZ || op == GPU7_TEX_INST_SAMPLE_C ||
+                        op == GPU7_TEX_INST_SAMPLE_C_L || op == GPU7_TEX_INST_SAMPLE_C_LZ ||
+                        op == GPU7_TEX_INST_FETCH4 || op == GPU7_TEX_INST_SAMPLE_G || op == GPU7_TEX_INST_LD ||
+                        op == GPU7_TEX_INST_GET_COMP_TEX_LOD || op == GPU7_TEX_INST_GET_TEXTURE_RESINFO) {
+                        const uint32_t unit = (word0 >> 8) & 0xFFu;
+                        if (unit < LATTE_NUM_MAX_TEX_UNITS && unit < 32u) reads.texture_unit_mask |= 1u << unit;
+                    }
+                }
+            }
+            if (end_of_program) break;
+        }
+    }
+    reads.valid = end_of_program;
+    return reads;
 }
 
 char* r700_to_glsl(const R700TranslateInput& in) {

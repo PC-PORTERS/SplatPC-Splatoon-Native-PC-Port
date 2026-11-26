@@ -1,5 +1,8 @@
 // Authored synthetic shaders and R700 bytecode. No title assets, guest code,
 // game entry point, window, audio, or game executable is used by this tool.
+#include "os/gx2/gx2_render.h"
+#include "os/gx2/gx2_pm4_state.h"
+#include "os/gx2/gx2_shader_key.h"
 #include "os/gx2/r700_to_glsl.h"
 #include "runtime/rebrewu_runtime.h"
 #include "os/gx2/vk/gx2_vk_shader.h"
@@ -430,6 +433,80 @@ void compiler() {
 }
 void translation() {
     {
+        // SQ_VTX_SEMANTIC_CLEAR (0xA238) must reset each cleared slot 0xA0E0..0xA0FF to 0xFF.
+        const Gx2RegisterWrite setup[] = {{0xA238u, 0xFFFFFFFFu}, {0xA0E0u, 0u}, {0xA0E1u, 1u},
+                                          {0xA0E4u, 2u},          {0xA0FFu, 7u}, {0xA238u, 0xFFFFFFFCu}};
+        gx2_render_apply_registers(setup, std::size(setup));
+        require(gx2_render_register(0xA0E0u) == 0u && gx2_render_register(0xA0E1u) == 1u,
+                "SQ_VTX_SEMANTIC_CLEAR cleared preserved slots");
+        require(gx2_render_register(0xA0E4u) == 0xFFu && gx2_render_register(0xA0FFu) == 0xFFu,
+                "SQ_VTX_SEMANTIC_CLEAR left stale vertex semantic slots");
+        const Gx2RegisterWrite after_write[] = {{0xA0E2u, 5u}};
+        gx2_render_apply_registers(after_write, 1);
+        require(gx2_render_register(0xA0E2u) == 5u, "semantic write after clear was lost");
+        const Gx2RegisterWrite reset[] = {{0xA238u, 0xFFFFFFFFu}};
+        gx2_render_apply_registers(reset, 1);
+    }
+    {
+        // Canonical shader key normalizations must match translator-visible state only.
+        struct TestHash {
+            uint64_t h = 14695981039346656037ull;
+            void add(const void* data, size_t bytes) {
+                const auto* p = static_cast<const uint8_t*>(data);
+                for (size_t i = 0; i < bytes; ++i) {
+                    h ^= p[i];
+                    h *= 1099511628211ull;
+                }
+            }
+        };
+        auto canonical_hash = [](const std::array<uint32_t, kGx2ExactKeyRegisterCount>& words,
+                                 const std::array<uint32_t, 36>& tex, const std::vector<R700FetchAttribute>& attrs) {
+            TestHash fn;
+            gx2_hash_canonical_state(fn, words.data(), tex.data(), &attrs,
+                                     [](uint32_t fmt) { return r700_native_attribute(fmt).default_endian; });
+            return fn.h;
+        };
+        std::array<uint32_t, kGx2ExactKeyRegisterCount> base_words{};
+        std::array<uint32_t, 36> base_tex{};
+        std::vector<R700FetchAttribute> base_attrs{{0u, 0u, 0u, 0x813u, 0u, 2u, 0x00010203u, false}};
+        const uint64_t base_h = canonical_hash(base_words, base_tex, base_attrs);
+
+        auto w = base_words;
+        w[gx2_exact_word_index(0xA104u)] = 1u; // disabled alpha func (bit 3 == 0)
+        require(canonical_hash(w, base_tex, base_attrs) == base_h, "disabled alpha func changed canonical key");
+        w[gx2_exact_word_index(0xA104u)] = 0xEu; // enabled GEQUAL
+        require(canonical_hash(w, base_tex, base_attrs) != base_h, "enabled alpha test collided with disabled");
+
+        w = base_words;
+        for (uint32_t r : {0xA1B5u, 0xA1E8u, 0xA22Bu, 0xA232u, 0xA29Bu}) w[gx2_exact_word_index(r)] = 0x12345678u;
+        w[gx2_exact_word_index(0xA2B5u)] = 16u; // ignored while 0xA2AC == 0
+        require(canonical_hash(w, base_tex, base_attrs) == base_h,
+                "unused/disabled-strmout registers changed canonical key");
+
+        w[gx2_exact_word_index(0xA2ACu)] = 1u;
+        const uint64_t so_h1 = canonical_hash(w, base_tex, base_attrs);
+        w[gx2_exact_word_index(0xA2ACu)] = 3u;
+        require(so_h1 != base_h && canonical_hash(w, base_tex, base_attrs) == so_h1,
+                "nonzero VGT_STRMOUT_EN values failed to canonicalize equally");
+
+        auto t = base_tex;
+        t[0] = (2u << 3) | 1u; // SCALED vs NORM (both non-integer samplers)
+        auto t_norm = base_tex;
+        t_norm[0] = 1u;
+        require(canonical_hash(base_words, t, base_attrs) == canonical_hash(base_words, t_norm, base_attrs),
+                "non-integer NUM_FORMAT_ALL changed canonical key");
+        t[0] = (1u << 3) | 1u; // INT
+        require(canonical_hash(base_words, t, base_attrs) != canonical_hash(base_words, t_norm, base_attrs),
+                "integer NUM_FORMAT_INT collided with normalized");
+
+        auto a = base_attrs;
+        a[0].endian = 3u;
+        a[0].offset = 3u;
+        a[0].buffer = 7u;
+        require(canonical_hash(base_words, base_tex, a) == base_h,
+                "endian=3/offset/low-buffer changed canonical attribute key");
+    }
+    {
         const auto code = bytecode(4, false, 0);
         std::array<uint32_t, 0x10000> registers{};
         registers[0xA1B3] = 2;
@@ -464,6 +541,23 @@ void translation() {
     auto* without_registers = r700_to_glsl(zero_registers);
     require(without_registers && expected[0] == without_registers, "absent register snapshot was not zeroed");
     std::free(without_registers);
+    {
+        // Fast bytecode read scanner must match full translation reads for VS/PS.
+        const auto scan_vs = r700_scan_shader_reads(reinterpret_cast<const uint8_t*>(programs[0].data()),
+                                                    uint32_t(programs[0].size() * 4), false);
+        const auto full_vs = r700_last_translation_reads();
+        require(scan_vs.valid && full_vs.valid && scan_vs.vs_parameter_mask == full_vs.vs_parameter_mask &&
+                    scan_vs.texture_unit_mask == full_vs.texture_unit_mask,
+                "r700_scan_shader_reads mismatch for VS");
+        const auto ps_code = bytecode(8, true, 0);
+        auto ps_src = translate(ps_code, true);
+        const auto full_ps = r700_last_translation_reads();
+        const auto scan_ps = r700_scan_shader_reads(reinterpret_cast<const uint8_t*>(ps_code.data()),
+                                                    uint32_t(ps_code.size() * 4), true);
+        require(!ps_src.text.empty() && scan_ps.valid && full_ps.valid && scan_ps.vs_parameter_mask == 0 &&
+                    scan_ps.texture_unit_mask == full_ps.texture_unit_mask,
+                "r700_scan_shader_reads mismatch for PS");
+    }
     measure("gx2_to_glsl", 240, [&](unsigned i) {
         auto source = translate(programs[i % programs.size()], false);
         require(source.text == expected[i % programs.size()], "GX2 translation is nondeterministic");

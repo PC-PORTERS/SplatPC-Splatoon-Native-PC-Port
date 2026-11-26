@@ -1,6 +1,7 @@
 # Build outputs, downloads and the installed game are created by SplatPC Builder
 # and must never be committed (they contain or derive from your game files).
 /build/
+build_vscode/
 /Game/
 /Out/
 /dist/

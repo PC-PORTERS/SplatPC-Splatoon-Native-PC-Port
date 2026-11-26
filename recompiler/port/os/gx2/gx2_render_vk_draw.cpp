@@ -1686,7 +1686,8 @@ void translation_writer_post(std::string path, std::vector<uint8_t> bytes) {
     writer->ready.notify_one();
 }
 
-void store_translation(uint64_t key, const char* vs, const char* ps, const std::array<R700TranslationInfo, 2>& info) {
+void store_translation(uint64_t key, const char* vs, const char* ps, const std::array<R700TranslationInfo, 2>& info,
+                       uint64_t canon_key = 0) {
     if (!vs || !ps) return;
     const std::string dir = translation_cache_dir();
     if (dir.empty()) return;
@@ -1724,6 +1725,7 @@ void store_translation(uint64_t key, const char* vs, const char* ps, const std::
     }
     write_u32(kTranslationMagic);
     remember_translation(dir, key, out);
+    if (canon_key && canon_key != key) remember_translation(dir, canon_key, out);
     translation_writer_post(translation_cache_path(key), std::move(out));
 }
 
@@ -1901,26 +1903,12 @@ bool dynamic_key_registers_excluded() {
 }
 // Exact program key (RBREW_SHADER_KEY_EXACT, default on; "0" restores the
 // previous key): only what the translator reads (gx2_shader_key.h).
-constexpr unsigned kExactKeyRegisterCount = gx2_translator_register_count();
+constexpr unsigned kExactKeyRegisterCount = kGx2ExactKeyRegisterCount;
 constexpr uint32_t kExactKeyTag = 0x45584B33u; // "EXK3": disk entries never alias another key layout
-// Index of register r in the kGx2TranslatorRegisters word list.
 constexpr unsigned kExactWordIndex(uint32_t r) {
-    unsigned i = 0;
-    for (const auto& range : kGx2TranslatorRegisters) {
-        if (r >= range.first && r <= range.last) return i + (r - range.first);
-        i += range.last - range.first + 1u;
-    }
-    return ~0u;
+    return gx2_exact_word_index(r);
 }
-// Register number of each key word, in order: one flat gather per draw
-// instead of a per-range copy (most ranges hold a single register).
-constexpr std::array<uint16_t, kExactKeyRegisterCount> kExactKeyRegisters = [] {
-    std::array<uint16_t, kExactKeyRegisterCount> registers{};
-    unsigned i = 0;
-    for (const auto& range : kGx2TranslatorRegisters)
-        for (uint32_t r = range.first; r <= range.last; ++r) registers[i++] = uint16_t(r);
-    return registers;
-}();
+constexpr const auto& kExactKeyRegisters = kGx2ExactKeyRegisters;
 static_assert(kExactWordIndex(0xA18E) - kExactWordIndex(0xA185) == 9 &&
               kExactWordIndex(0xA1B0) - kExactWordIndex(0xA191) == 31);
 // Per exact base key: the VS parameters and texture units the translation
@@ -2015,24 +2003,11 @@ ExactKeyMemo& exact_key_memo_slot(const ExactKeyInputs& in, const GX2ShaderProgr
     return s_exact_key_memos[h.finish() & (kExactKeyMemoSlots - 1)];
 }
 
-// Canonical translation identity: the exact key's inputs with every register
-// word reduced to the bits the translator reads (gx2_translator_register_bits)
-// and the fetch layout to the attribute fields it reads (semantic, format,
-// endian, destination select, offset & 3, buffer >= 16, order). Exact keys
-// with one canonical key translate to identical output: entering a new area
-// produced ~6,400 exact-key misses for ~520 distinct translations (owner
-// cache 2026-10-17), each translated synchronously on the render thread.
+// Canonical translation identity: the exact key's inputs reduced via
+// gx2_hash_canonical_state to only the state that affects VS/PS translation.
 // A new exact key whose canonical key is known reuses that program and
 // stores its translation under the new key (disk cache and boot warm-up
 // stay keyed exactly as before). RBREW_SHADER_KEY_CANONICAL=0 disables.
-constexpr uint32_t kCanonicalKeyTag = 0x43414E31u; // "CAN1"
-constexpr std::array<uint32_t, kExactKeyRegisterCount> kCanonicalWordBits = [] {
-    std::array<uint32_t, kExactKeyRegisterCount> bits{};
-    unsigned i = 0;
-    for (const auto& range : kGx2TranslatorRegisters)
-        for (uint32_t r = range.first; r <= range.last; ++r) bits[i++] = gx2_translator_register_bits(r);
-    return bits;
-}();
 struct CanonicalEntry {
     Program* program = nullptr;
     ExactReads reads{};
@@ -2282,17 +2257,19 @@ Program* resolve_active_program(uint8_t* mem) {
             if (memo)
                 memo_slot->capture(inputs, mem + vs_program.address, vs_program.size, code[0].generation,
                                    mem + ps_program.address, ps_program.size, code[1].generation, current_batch);
+            const uint8_t* vs_bytes = memo ? memo_slot->vs.data() : mem + vs_program.address;
+            const uint8_t* ps_bytes = memo ? memo_slot->ps.data() : mem + ps_program.address;
             KeyHash h;
             h.add(&kExactKeyTag, sizeof(kExactKeyTag));
             // Hash exactly the bytes retained for future comparisons, rather than
             // copying guest code a second time after computing its identity.
-            h.add(memo ? memo_slot->vs.data() : mem + vs_program.address, vs_program.size);
-            h.add(memo ? memo_slot->ps.data() : mem + ps_program.address, ps_program.size);
+            h.add(vs_bytes, vs_program.size);
+            h.add(ps_bytes, ps_program.size);
             gx2_perf_bytes(kBytesShaderKey, vs_program.size + ps_program.size);
             h.add(&rect, sizeof(rect));
             h.add(&points, sizeof(points));
+            const KeyHash canon_base = h; // tag, bytecode, primitive kind
             h.add(&vs_attribs, sizeof(vs_attribs));
-            const KeyHash code = h; // tag, bytecode, primitive kind, attribute count
             // Base: everything except the per-parameter VS output IDs and the
             // per-unit texture words, whose read sets the translation reports.
             KeyHash base = h;
@@ -2300,6 +2277,15 @@ Program* resolve_active_program(uint8_t* mem) {
                 if (i < kExactWordIndex(0xA185) || i > kExactWordIndex(0xA18E)) base.add(&words[i], 4);
             base.add(&fetch_hash, sizeof(fetch_hash));
             exact_base = base.finish();
+            if (s_exact_reads.find(exact_base) == s_exact_reads.end()) {
+                const auto vs_scan = r700_scan_shader_reads(vs_bytes, vs_program.size, false);
+                const auto ps_scan = r700_scan_shader_reads(ps_bytes, ps_program.size, true);
+                if (vs_scan.valid && ps_scan.valid) {
+                    const ExactReads scanned{vs_scan.vs_parameter_mask, vs_scan.texture_unit_mask,
+                                             ps_scan.texture_unit_mask};
+                    if (s_exact_reads.try_emplace(exact_base, scanned).second) warm_record_masks(exact_base, scanned);
+                }
+            }
             uint32_t known = 0;
             if (auto reads = s_exact_reads.find(exact_base); reads != s_exact_reads.end()) {
                 known = 1;
@@ -2317,21 +2303,9 @@ Program* resolve_active_program(uint8_t* mem) {
             h.add(texture_bits.data(), sizeof(texture_bits));
             key = h.finish();
             if (canonical_key_enabled()) {
-                KeyHash c = code;
-                c.add(&kCanonicalKeyTag, sizeof(kCanonicalKeyTag));
-                for (unsigned i = 0; i < n; ++i) {
-                    const uint32_t w = words[i] & kCanonicalWordBits[i];
-                    c.add(&w, sizeof(w));
-                }
-                c.add(texture_bits.data(), sizeof(texture_bits));
-                const uint32_t attribute_count = fetch_attributes ? uint32_t(fetch_attributes->size()) : 0u;
-                c.add(&attribute_count, sizeof(attribute_count));
-                if (fetch_attributes)
-                    for (const auto& a : *fetch_attributes) {
-                        const uint32_t data[] = {a.semantic,           a.format,      a.endian,
-                                                 a.destination_select, a.offset & 3u, a.buffer >= 16 ? 1u : 0u};
-                        c.add(data, sizeof(data));
-                    }
+                KeyHash c = canon_base;
+                gx2_hash_canonical_state(c, words.data(), texture_bits.data(), fetch_attributes,
+                                         [](uint32_t fmt) { return r700_native_attribute(fmt).default_endian; });
                 canon = c.finish();
             }
             fresh_key = true;
@@ -2341,6 +2315,7 @@ Program* resolve_active_program(uint8_t* mem) {
                                     words.data(), texture_bits.data(), fetch_hash,
                                     rect | points << 2 | vs_attribs << 3);
             if (memo) {
+                memo_slot->masks = s_exact_reads.size();
                 memo_slot->key = key;
                 memo_slot->base = exact_base;
                 memo_slot->valid = true;
@@ -2423,23 +2398,33 @@ Program* resolve_active_program(uint8_t* mem) {
         }
         return cached_prog;
     }
-    if (exact && canon)
+    if (exact && canon) {
+        Program* canon_prog = nullptr;
         if (auto known = s_canonical.find(canon); known != s_canonical.end() && known->second.program) {
+            canon_prog = known->second.program;
+        } else if (auto warmed = s_prog_cache.find(canon); warmed != s_prog_cache.end() && warmed->second) {
+            canon_prog = warmed->second;
+            s_canonical.try_emplace(canon, CanonicalEntry{canon_prog});
+        }
+        if (canon_prog) {
             // Same translation as an existing program: no translation, no new
             // program. Recorded under this key for the disk cache and warm-up.
-            Program* prog = known->second.program;
-            s_prog_cache[key] = prog;
-            pm = {key, prog, true};
+            s_prog_cache[key] = canon_prog;
+            pm = {key, canon_prog, true};
             ++s_canonical_reuses;
-            if (!still_compiling(prog->compiled) && !await_compile(prog->compiled)) return nullptr;
-            if (known->second.reads_valid && s_exact_reads.try_emplace(exact_base, known->second.reads).second)
-                warm_record_masks(exact_base, known->second.reads);
+            if (!still_compiling(canon_prog->compiled) && !await_compile(canon_prog->compiled)) return nullptr;
+            if (auto reads_it = s_canonical.find(canon);
+                reads_it != s_canonical.end() && reads_it->second.reads_valid &&
+                s_exact_reads.try_emplace(exact_base, reads_it->second.reads).second)
+                warm_record_masks(exact_base, reads_it->second.reads);
             static const bool solid_ps = std::getenv("RBREW_DEBUG_SOLID_PS") != nullptr;
-            if (!solid_ps) store_translation(key, prog->vs_source.c_str(), prog->ps_source.c_str(), prog->info);
-            if (!prog->warm_key) prog->warm_key = key;
+            if (!solid_ps)
+                store_translation(key, canon_prog->vs_source.c_str(), canon_prog->ps_source.c_str(), canon_prog->info);
+            if (!canon_prog->warm_key) canon_prog->warm_key = key;
             warm_record_program(key, rect, points);
-            return prog;
+            return canon_prog;
         }
+    }
     std::vector<R700FetchAttribute> attributes;
     if (fetch_attributes) attributes = *fetch_attributes;
 
@@ -2500,7 +2485,11 @@ Program* resolve_active_program(uint8_t* mem) {
 #endif
     std::shared_ptr<TranslateJob> ps_job;
     R700TranslationReads vs_reads, ps_reads;
-    const bool from_disk = load_translation(disk_key, vs_glsl, ps_glsl, info);
+    bool from_disk = load_translation(disk_key, vs_glsl, ps_glsl, info);
+    if (!from_disk && exact && canon && canon != disk_key) {
+        from_disk = load_translation(canon, vs_glsl, ps_glsl, info);
+        if (from_disk) store_translation(disk_key, vs_glsl, ps_glsl, info);
+    }
     if (!from_disk) {
         // A cache hit already owns both translated stages. Only a miss needs the
         // helper, its bytecode/register snapshot and the eventual compiler work.
@@ -2550,7 +2539,7 @@ Program* resolve_active_program(uint8_t* mem) {
             ps_glsl = serial;
             info[1] = std::move(serial_info);
         }
-        store_translation(disk_key, vs_glsl, ps_glsl, info);
+        store_translation(disk_key, vs_glsl, ps_glsl, info, exact ? canon : 0);
         if (exact && vs_glsl && ps_glsl && vs_reads.valid && ps_reads.valid)
             if (s_exact_reads
                     .try_emplace(exact_base, ExactReads{vs_reads.vs_parameter_mask, vs_reads.texture_unit_mask,
