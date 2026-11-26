@@ -181,7 +181,9 @@ void render_thread() {
             rbrew_thread_core_slot = item.core;
             gx2interp::before_item(); // 120 FPS mode: a new frame's capture starts here
             if (item.work) {
-                const auto work_start = std::chrono::steady_clock::now();
+                const bool measure_busy = gx2interp::mode_enabled();
+                const auto work_start =
+                    measure_busy ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
                 try {
                     item.work->run();
                 } catch (...) {
@@ -189,9 +191,10 @@ void render_thread() {
                     if (!s_async_error) s_async_error = std::current_exception();
                     s_has_async_error.store(true, std::memory_order_release);
                 }
-                gx2interp::add_busy(uint64_t(
-                    std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - work_start)
-                        .count()));
+                if (measure_busy)
+                    gx2interp::add_busy(uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                     std::chrono::steady_clock::now() - work_start)
+                                                     .count()));
                 gx2interp::keep(item.work); // kept for the 120 FPS replay, else deleted
                 gx2interp::service();
             } else {

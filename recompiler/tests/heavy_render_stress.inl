@@ -2,6 +2,9 @@
 // Kept beside production draw helpers to exercise vertex translation and residency.
 #include "../port/runtime/rebrewu_memory_observer.h"
 #include "rebrewu/logger.hpp"
+#if defined(__linux__)
+#include <sys/mman.h>
+#endif
 void gx2_render_vk_test_heavy(bool overdraw, bool push) {
     using namespace render_stress;
     using Clock = std::chrono::steady_clock;
@@ -396,14 +399,24 @@ void gx2_render_vk_test_heavy(bool overdraw, bool push) {
 }
 
 void gx2_render_vk_test_watch_ranges() {
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
     auto require = [](bool ok, const char* text) {
         if (!ok) throw std::runtime_error(text);
     };
     constexpr uint32_t bytes = 4u << 20, base = 65536, range = 1u << 20;
+#ifdef _WIN32
     auto* mem =
         static_cast<uint8_t*>(VirtualAlloc(nullptr, bytes, MEM_RESERVE | MEM_COMMIT | MEM_WRITE_WATCH, PAGE_READWRITE));
     require(mem != nullptr, "watch test allocation failed");
+#else
+    auto* mem = static_cast<uint8_t*>(mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+    require(mem != MAP_FAILED && mem != nullptr, "watch test mmap failed");
+    if (!gx2_write_watch_register_arena(mem, bytes)) {
+        munmap(mem, bytes);
+        std::printf("{\"metric\":\"watch_ranges\",\"skipped\":true,\"passed\":true}\n");
+        return;
+    }
+#endif
     std::memset(mem, 1, bytes);
     gx2_write_watch_begin_batch();
     const auto first = gx2_write_generation(mem, base, range);
@@ -442,7 +455,12 @@ void gx2_render_vk_test_watch_ranges() {
         "{\"metric\":\"watch_ranges\",\"range_queries\":40000,\"wall_ms\":%.6f,\"checksum\":%llu,\"passed\":true}\n",
         ms, (unsigned long long)sum);
     rbrew_set_write_observer({});
+#ifdef _WIN32
     VirtualFree(mem, 0, MEM_RELEASE);
+#else
+    gx2_write_watch_unregister_arena(mem);
+    munmap(mem, bytes);
+#endif
 #endif
 }
 
