@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 
 	"splatpc-builder/proc"
@@ -49,7 +50,14 @@ func isPython3(versionOutput string) bool {
 func FindPython() (Python, string, bool) {
 	var fallback Python
 	var fallbackVer string
-	for _, candidate := range pythonCandidates(runtime.GOOS) {
+	candidates := pythonCandidates(runtime.GOOS)
+	// A Windows Store / Python install manager alias (...\WindowsApps\python3.exe) runs in an app
+	// container whose AppData is virtualized: it cannot see the CMake installed in UserToolsDir, and
+	// the dependency build then fails with "file not found". Such aliases are tried last.
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return !isStoreAlias(candidates[i][0]) && isStoreAlias(candidates[j][0])
+	})
+	for _, candidate := range candidates {
 		if _, err := exec.LookPath(candidate[0]); err != nil {
 			continue
 		}
@@ -70,6 +78,11 @@ func FindPython() (Python, string, bool) {
 		return fallback, fallbackVer, true
 	}
 	return nil, "", false
+}
+
+func isStoreAlias(name string) bool {
+	p, err := exec.LookPath(name)
+	return err == nil && strings.Contains(strings.ToLower(p), `\windowsapps\`)
 }
 
 // Command runs a Python script or module with this interpreter.
