@@ -98,6 +98,16 @@ func LoadSettingsIni(filePath string, cfg *Configuration) error {
 		case "online_server":
 			cfg.OnlineServer = val
 			cfg.EnableOnline = (val != "")
+		case "online_register":
+			cfg.OnlineRegister = val
+		case "online_account":
+			cfg.OnlineAccount = val
+		case "online_boss":
+			cfg.OnlineBoss = val
+		case "online_nncs1":
+			cfg.OnlineNncs1 = val
+		case "online_nncs2":
+			cfg.OnlineNncs2 = val
 		case "pseudo":
 			if val != "" {
 				cfg.PlayerName = val
@@ -114,8 +124,14 @@ func WriteSettingsIni(cfg Configuration, outFolder string) error {
 	filePath := filepath.Join(outFolder, "settings.ini")
 
 	onlineServerVal := ""
+	online := map[string]string{"online_register": "", "online_account": "", "online_boss": "", "online_nncs1": "", "online_nncs2": ""}
 	if cfg.EnableOnline {
 		onlineServerVal = strings.TrimSpace(cfg.OnlineServer)
+		online["online_register"] = strings.TrimSpace(cfg.OnlineRegister)
+		online["online_account"] = strings.TrimSpace(cfg.OnlineAccount)
+		online["online_boss"] = strings.TrimSpace(cfg.OnlineBoss)
+		online["online_nncs1"] = strings.TrimSpace(cfg.OnlineNncs1)
+		online["online_nncs2"] = strings.TrimSpace(cfg.OnlineNncs2)
 	}
 
 	managedValues := map[string]string{
@@ -141,6 +157,9 @@ func WriteSettingsIni(cfg Configuration, outFolder string) error {
 		"sun_rays":          strconv.Itoa(boolToInt(cfg.SunRays)),
 		"bloom":             strconv.Itoa(cfg.Bloom),
 		"camera_fov":        strconv.Itoa(cfg.CameraFOV),
+	}
+	for key, val := range online {
+		managedValues[key] = val
 	}
 
 	data, err := os.ReadFile(filePath)
@@ -270,6 +289,11 @@ bindings=2
 		boolToInt(cfg.UpscaleTextures),
 	)
 
+	for _, key := range []string{"online_register", "online_account", "online_boss", "online_nncs1", "online_nncs2"} {
+		if online[key] != "" {
+			content += key + "=" + online[key] + "\n"
+		}
+	}
 	return os.WriteFile(filePath, []byte(content), 0644)
 }
 
