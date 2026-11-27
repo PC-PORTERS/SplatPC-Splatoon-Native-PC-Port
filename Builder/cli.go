@@ -90,6 +90,9 @@ func runPrepareWithOptions(repoRoot string, standalone bool, gamePath string, au
 		},
 		OnDone: func(success bool, err error, _ time.Duration, _ string) {
 			if success {
+				settings.RemoveOldBuild(repoRoot, cfg.OutputDir, func(format string, args ...interface{}) {
+					fmt.Printf(format+"\n", args...)
+				})
 				exit = 0
 				return
 			}

@@ -145,21 +145,32 @@ func DefaultConfiguration(repoRoot string) Configuration {
 }
 
 // OutputDirFor returns the folder the built game goes to: next to the program
-// in a standalone release (beside the AppImage when one is running), or
-// repoRoot/Game inside the repository.
+// in a standalone release (beside the AppImage when one is running, or at the
+// top of an unpacked AppImage), or repoRoot/Game inside the repository.
 func OutputDirFor(repoRoot string, standalone bool) string {
-	if standalone {
-		if appImage := os.Getenv("APPIMAGE"); appImage != "" {
-			return filepath.Join(filepath.Dir(appImage), "Game")
+	if !standalone {
+		return filepath.Join(repoRoot, "Game")
+	}
+	if appImage := os.Getenv("APPIMAGE"); appImage != "" {
+		return filepath.Join(filepath.Dir(appImage), "Game")
+	}
+	beside := besideProgram(repoRoot)
+	// RecompLauncher runs the unpacked AppImage from its AppRun with APPDIR set
+	// and APPIMAGE unset; its recomplauncher.json looks for APPDIR/Game.
+	if appDir := os.Getenv("APPDIR"); appDir != "" && runtime.GOOS == "linux" {
+		return unpackedGameDir(filepath.Join(appDir, "Game"), beside)
+	}
+	return beside
+}
+
+func besideProgram(repoRoot string) string {
+	if exe, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(exe)
+		if !strings.HasPrefix(exeDir, os.TempDir()) {
+			return filepath.Join(exeDir, "Game")
 		}
-		if exe, err := os.Executable(); err == nil {
-			exeDir := filepath.Dir(exe)
-			if !strings.HasPrefix(exeDir, os.TempDir()) {
-				return filepath.Join(exeDir, "Game")
-			}
-		} else if cwd, err := os.Getwd(); err == nil {
-			return filepath.Join(cwd, "Game")
-		}
+	} else if cwd, err := os.Getwd(); err == nil {
+		return filepath.Join(cwd, "Game")
 	}
 	return filepath.Join(repoRoot, "Game")
 }

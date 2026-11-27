@@ -37,7 +37,11 @@
     }
   ],
   "folders": {
-    "saves": [{ "path": "{install}/Game/save" }],
+    "saves": [
+      { "path": "{install}/Game/save", "if": "{install}/Game/save" },
+      { "path": "{install}/usr/bin/Game/save", "if": "{install}/usr/bin/Game/save" },
+      { "path": "{install}/Game/save" }
+    ],
     "game": [{ "path": "{install}/Game" }]
   },
   "exit_codes": {
@@ -135,7 +139,7 @@
       "defaults": { "antialiasing": "1" }
     }
   ],
-  "saves": ["{install}/Game/save", "{install}/Game/settings.ini"],
+  "saves": ["{install}/Game/save", "{install}/Game/settings.ini", "{install}/usr/bin/Game/save", "{install}/usr/bin/Game/settings.ini"],
   "looks": { "graphics": "vulkan" },
   "actions": [
     { "id": "saves", "label": "Saves", "help": "Your progress in the game.", "open": "saves" },
