@@ -42,6 +42,7 @@ typedef enum SplatModMenuResult {
     SPLATMOD_MENU_STAY = 0,
     SPLATMOD_MENU_BACK = 1,
     SPLATMOD_MENU_QUIT = 2,
+    SPLATMOD_MENU_CLOSE = 3,
 } SplatModMenuResult;
 
 typedef enum SplatModScreenMode {
@@ -72,6 +73,73 @@ typedef struct SplatModProPad {
     float ry;
 } SplatModProPad;
 
+typedef enum SplatModUiCol {
+    SPLATMOD_COL_TEXT = 0,
+    SPLATMOD_COL_TEXT_DISABLED = 1,
+    SPLATMOD_COL_WINDOW_BG = 2,
+    SPLATMOD_COL_CHILD_BG = 3,
+    SPLATMOD_COL_BORDER = 4,
+    SPLATMOD_COL_FRAME_BG = 5,
+    SPLATMOD_COL_BUTTON = 6,
+    SPLATMOD_COL_BUTTON_HOVERED = 7,
+    SPLATMOD_COL_BUTTON_ACTIVE = 8,
+    SPLATMOD_COL_SCROLLBAR_BG = 9,
+    SPLATMOD_COL_SCROLLBAR_GRAB = 10,
+    SPLATMOD_COL_SCROLLBAR_GRAB_HOVERED = 11,
+} SplatModUiCol;
+
+typedef enum SplatModUiVar {
+    SPLATMOD_VAR_WINDOW_PADDING = 0,
+    SPLATMOD_VAR_WINDOW_ROUNDING = 1,
+    SPLATMOD_VAR_WINDOW_BORDER_SIZE = 2,
+    SPLATMOD_VAR_CHILD_ROUNDING = 3,
+    SPLATMOD_VAR_FRAME_PADDING = 4,
+    SPLATMOD_VAR_FRAME_ROUNDING = 5,
+    SPLATMOD_VAR_FRAME_BORDER_SIZE = 6,
+    SPLATMOD_VAR_ITEM_SPACING = 7,
+    SPLATMOD_VAR_SCROLLBAR_ROUNDING = 8,
+} SplatModUiVar;
+
+// Extended rich-UI & texture API (optional; check ui->ex && ui->ex->struct_size >= sizeof(SplatModUiEx)).
+typedef struct SplatModUiEx {
+    uint32_t struct_size;
+    uint64_t (*texture_epoch)(void* user);
+    uint64_t (*create_rgba_texture)(void* user, const uint8_t* rgba, uint32_t w, uint32_t h);
+    void (*destroy_texture)(void* user, uint64_t tex_id);
+    bool (*detile_gx2_mip0)(void* user, uint32_t w_elem, uint32_t h_elem, uint32_t pitch_elem, uint32_t bpe,
+                            uint32_t tile_mode, uint32_t swizzle, const uint8_t* tiled, size_t tiled_size,
+                            uint8_t* out);
+    void (*get_viewport_size)(void* user, float* out_w, float* out_h);
+    void (*get_avail_size)(void* user, float* out_w, float* out_h);
+    double (*get_time)(void* user);
+    bool (*consume_back_pressed)(void* user);
+    void (*set_font_scale)(void* user, float scale);
+    void (*push_style_color)(void* user, int col_id, float r, float g, float b, float a);
+    void (*pop_style_color)(void* user, int count);
+    void (*push_style_var_f)(void* user, int var_id, float val);
+    void (*push_style_var_v2)(void* user, int var_id, float x, float y);
+    void (*pop_style_var)(void* user, int count);
+    bool (*begin_child)(void* user, const char* id, float w, float h, bool border);
+    void (*end_child)(void* user);
+    void (*same_line_ex)(void* user, float offset_x, float spacing);
+    void (*dummy)(void* user, float w, float h);
+    void (*set_cursor_x)(void* user, float x);
+    void (*set_cursor_y)(void* user, float y);
+    float (*get_cursor_x)(void* user);
+    float (*get_cursor_y)(void* user);
+    void (*set_focus_here)(void* user);
+    bool (*button_ex)(void* user, const char* label, float w, float h);
+    void (*image_rounded)(void* user, uint64_t tex_id, float w, float h, float rounding, float border_r, float border_g,
+                          float border_b, float border_a);
+    void (*draw_rect_filled)(void* user, float x, float y, float w, float h, float r, float g, float b, float a,
+                             float rounding);
+    bool (*stage_card)(void* user, const char* id, uint64_t tex_id, const char* title, const char* badge, bool selected,
+                       float w, float h, float accent_r, float accent_g, float accent_b);
+    bool (*option_card)(void* user, const char* id, const char* title, const char* subtitle, const char* badge,
+                        bool selected, float w, float h, float accent_r, float accent_g, float accent_b);
+    void (*text_centered)(void* user, float width, float r, float g, float b, float a, const char* text);
+} SplatModUiEx;
+
 // Minimal C-ABI UI builder exposed to mod menu pages (no ImGui linkage needed).
 typedef struct SplatModUi {
     void* user;
@@ -89,6 +157,7 @@ typedef struct SplatModUi {
     void (*begin_disabled)(void* user, bool disabled);
     void (*end_disabled)(void* user);
     void (*set_clipboard_text)(void* user, const char* text);
+    const SplatModUiEx* ex;
 } SplatModUi;
 
 typedef uint64_t SplatModHookHandle;
@@ -150,6 +219,8 @@ typedef struct SplatModHost {
     void (*request_screen_mode)(int screen_mode);
     int (*current_screen_mode)(void);
     void (*request_quit)(void);
+    void (*open_menu_page)(SplatModHookHandle page_handle);
+    void (*close_menu)(void);
 } SplatModHost;
 
 // Plugin entrypoints exported by each mod library:

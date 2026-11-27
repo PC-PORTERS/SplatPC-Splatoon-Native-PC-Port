@@ -25,6 +25,14 @@ func main() {
 	prepare := flag.Bool("prepare", false, "Run the setup without a window, print progress lines and exit")
 	play := flag.Bool("play", false, "Start the built game and wait for it")
 	gamePath := flag.String("game", "", "Path to the player's dump folder (with --prepare)")
+	listMods := flag.Bool("list-mods", false, "List downloadable mods and exit")
+	checkModUpdates := flag.Bool("check-mod-updates", false, "Check GitHub releases for mod updates and exit")
+	installMod := flag.String("install-mod", "", "Download and install a mod by ID into the game folder")
+	updateMod := flag.String("update-mod", "", "Update an installed catalog mod by ID to its latest release")
+	updateAllMods := flag.Bool("update-all-mods", false, "Update all installed catalog mods that have newer releases")
+	uninstallMod := flag.String("uninstall-mod", "", "Remove an installed mod by ID from the game folder")
+	deleteMod := flag.String("delete-mod", "", "Delete a mod by catalog ID or filename from mods/")
+	outputDir := flag.String("output", "", "Target game folder for mod CLI commands")
 
 	// Launch options players add come after ours: an unknown flag must not
 	// abort the process.
@@ -57,14 +65,36 @@ func main() {
 	if *installDeps {
 		os.Exit(runInstallDeps())
 	}
+	if *listMods {
+		os.Exit(runListMods())
+	}
 
 	repoRoot, isStandalone, err := embedded.ResolveRepoRoot()
 	if err != nil {
-		if *prepare || *play || *cleanupDeps || *buildRuntime {
+		if *prepare || *play || *cleanupDeps || *buildRuntime || *checkModUpdates || *installMod != "" || *updateMod != "" || *updateAllMods || *uninstallMod != "" || *deleteMod != "" {
 			fmt.Fprintf(os.Stderr, "Resolving builder environment: %v\n", err)
 			os.Exit(exitSetupFailed)
 		}
 		fmt.Fprintf(os.Stderr, "Warning resolving builder environment: %v\n", err)
+	}
+
+	if *checkModUpdates {
+		os.Exit(runCheckModUpdates(repoRoot, isStandalone, *outputDir))
+	}
+	if *installMod != "" {
+		os.Exit(runInstallMod(repoRoot, isStandalone, *outputDir, *installMod))
+	}
+	if *updateMod != "" {
+		os.Exit(runUpdateMod(repoRoot, isStandalone, *outputDir, *updateMod))
+	}
+	if *updateAllMods {
+		os.Exit(runUpdateAllMods(repoRoot, isStandalone, *outputDir))
+	}
+	if *uninstallMod != "" {
+		os.Exit(runUninstallMod(repoRoot, isStandalone, *outputDir, *uninstallMod))
+	}
+	if *deleteMod != "" {
+		os.Exit(runDeleteMod(repoRoot, isStandalone, *outputDir, *deleteMod))
 	}
 
 	if *buildRuntime {

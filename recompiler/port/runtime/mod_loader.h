@@ -16,11 +16,14 @@ struct ModSummary {
     std::string name;
     std::string version;
     std::string author;
+    std::string file_name;
+    bool enabled = true;
     bool initialized = false;
 };
 
 struct ModMenuPageView {
     uint64_t handle = 0;
+    std::string mod_id;
     std::string title;
     SplatModMenuPageCallback draw = nullptr;
     SplatModMenuStatusCallback status = nullptr;
@@ -58,14 +61,19 @@ void shutdown_mods();
 
 // Test helpers for headless unit tests.
 bool load_mod_from_path(const char* path, uint32_t game_revision);
+void set_mods_dir_for_test(const char* dir);
 void set_dispatch_cpu_for_test(CPUState* cpu);
 void unload_mods_for_test();
 const SplatModHost* host_api();
 
-// Introspection for the ImGui ESC menu.
+// Introspection & live enable/disable for the ImGui ESC menu.
 bool has_mods();
 std::vector<ModSummary> list_mods();
 std::vector<ModMenuPageView> list_menu_pages();
+bool set_mod_enabled(const std::string& mod_id, bool enabled, std::string* out_error = nullptr);
+bool is_mod_enabled(const std::string& mod_id);
+bool delete_mod(const std::string& mod_id, std::string* out_error = nullptr);
+size_t rescan_mods();
 
 // Zero-overhead host extension fast-paths.
 inline bool has_vpad_hooks() {
@@ -119,5 +127,7 @@ bool consume_screen_mode_request(int* out_mode);
 void note_screen_mode(int mode);
 int current_screen_mode();
 bool consume_quit_request();
+bool consume_open_menu_page_request(uint64_t* out_handle);
+bool consume_close_menu_request();
 
 } // namespace rbrew_mod

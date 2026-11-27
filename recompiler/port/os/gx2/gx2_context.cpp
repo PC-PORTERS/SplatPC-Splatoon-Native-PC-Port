@@ -100,13 +100,29 @@ static bool imgui_wants_cursor() {
         const char* v = std::getenv("RBREW_OVERLAY_CURSOR");
         return v && v[0] == '1';
     }();
-    return gx2_imgui::menu_open() || (overlay_cursor && gx2_imgui::visible());
+    return gx2_imgui::menu_open() || gx2_imgui::startup_login_active() || (overlay_cursor && gx2_imgui::visible());
 }
 static void sync_overlay_mouse_mode() {
-    if (g_screen_mode == ScreenMode::TV || rbrew_mod::relative_mouse_in_gamepad())
-        SDL_SetRelativeMouseMode(imgui_wants_cursor() ? SDL_FALSE : SDL_TRUE);
-    else
+    if (!s_window) return;
+    if (imgui_wants_cursor()) {
+        g_touch_state.touched = false;
         SDL_SetRelativeMouseMode(SDL_FALSE);
+        SDL_SetWindowGrab(s_window, SDL_FALSE);
+        SDL_ShowCursor(SDL_ENABLE);
+        return;
+    }
+    if (g_screen_mode == ScreenMode::TV || rbrew_mod::relative_mouse_in_gamepad()) {
+        SDL_ShowCursor(SDL_DISABLE);
+        SDL_SetRelativeMouseMode(SDL_TRUE);
+        // Drain any mouse delta accumulated while the menu cursor was unlocked so
+        // returning to gameplay never jerks the camera.
+        int dx = 0, dy = 0;
+        SDL_GetRelativeMouseState(&dx, &dy);
+        SDL_FlushEvent(SDL_MOUSEMOTION);
+    } else {
+        SDL_SetRelativeMouseMode(SDL_FALSE);
+        SDL_ShowCursor(SDL_ENABLE);
+    }
 }
 
 static void apply_screen_mode(ScreenMode mode) {
@@ -1107,6 +1123,7 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
             default: break;
             }
         }
+        if (gx2_imgui::consume_menu_changed()) sync_overlay_mouse_mode();
 
         // Blit game FBO to window and swap (events stay on this thread)
         bool gamepad = (g_screen_mode == ScreenMode::Gamepad);
@@ -1282,6 +1299,10 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
             apply_screen_mode(req_mode == SPLATMOD_SCREEN_GAMEPAD ? ScreenMode::Gamepad : ScreenMode::TV);
         }
         if (rbrew_nfp::consume_search_started()) gx2_imgui::open_amiibo_picker();
+        if (uint64_t mod_page = 0; rbrew_mod::consume_open_menu_page_request(&mod_page) && mod_page != 0) {
+            gx2_imgui::open_mod_page(mod_page);
+        }
+        if (rbrew_mod::consume_close_menu_request()) gx2_imgui::set_menu_open(false);
         if (gx2_imgui::consume_menu_changed()) sync_overlay_mouse_mode();
         gx2_imgui::note_fullscreen(window_fullscreen());
         // The overlay window's close button flips visibility on the render

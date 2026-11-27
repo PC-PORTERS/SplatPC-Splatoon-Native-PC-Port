@@ -8,6 +8,7 @@
 #include "player_nan_guard.h"
 #include "mouse_camera.h"
 #include "../os/gx2/gx2_render.h"
+#include "../os/gx2/vk/gx2_imgui_overlay.h"
 #include "../runtime/port_settings.h"
 #include "../runtime/rebrewu_runtime.h"
 #include "rebrewu/logger.hpp"
@@ -604,13 +605,15 @@ void camera_frame(const CameraFrameContext& context) {
 #if defined(HAVE_SDL2)
     {
         const Uint8* keys = SDL_GetKeyboardState(nullptr);
+        const bool menu_active = gx2_imgui::menu_open() || gx2_imgui::startup_login_active();
         static bool f7_was = false;
-        const bool f7 = keys && keys[SDL_SCANCODE_F7];
+        const bool f7 = !menu_active && keys && keys[SDL_SCANCODE_F7];
         if (f7 && !f7_was && !online_mode()) {
             s_fly.store(!s_fly.load());
             RBREW_LOG_INFO("camera", "fly camera %s", s_fly.load() ? "on" : "off");
         }
         f7_was = f7;
+        if (menu_active) s_fly_input = {};
         // RBREW_FLY_TEST=1 (diagnostics): the fly camera turns on in the
         // plaza and drifts up and back by itself, for replays.
         static const bool fly_test = [] {
@@ -636,7 +639,7 @@ void camera_frame(const CameraFrameContext& context) {
                 s_fly_input.yaw += 0.004f;
             }
         }
-        if (keys && s_fly.load() && s_fly_state.started) {
+        if (keys && !menu_active && s_fly.load() && s_fly_state.started) {
             Fly& f = s_fly_state;
             const float speed =
                             (keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT] || s_fly_input.fast) ? 6.f : 1.5f,

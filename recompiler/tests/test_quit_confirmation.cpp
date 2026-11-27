@@ -56,6 +56,43 @@ void test_disabled_confirm_quits_immediately() {
     rbrew_settings::g_confirm_quit.store(true);
 }
 
+void test_menu_blocks_mouse_and_gameplay_input() {
+    gx2_imgui::set_menu_open(true);
+    require(gx2_imgui::menu_blocks_input(false), "input is blocked while menu is open");
+
+    SDL_Event motion{};
+    motion.type = SDL_MOUSEMOTION;
+    require(gx2_imgui::menu_event(motion), "mouse motion is consumed when menu is open");
+
+    SDL_Event click{};
+    click.type = SDL_MOUSEBUTTONDOWN;
+    click.button.button = SDL_BUTTON_LEFT;
+    require(gx2_imgui::menu_event(click), "mouse button down is consumed when menu is open");
+
+    SDL_Event wheel{};
+    wheel.type = SDL_MOUSEWHEEL;
+    require(gx2_imgui::menu_event(wheel), "mouse wheel is consumed when menu is open");
+
+    SDL_Event tab_key{};
+    tab_key.type = SDL_KEYDOWN;
+    tab_key.key.keysym.scancode = SDL_SCANCODE_TAB;
+    require(gx2_imgui::menu_event(tab_key), "gameplay keys are consumed when menu is open");
+
+    SDL_Event f11_key{};
+    f11_key.type = SDL_KEYDOWN;
+    f11_key.key.keysym.scancode = SDL_SCANCODE_F11;
+    require(!gx2_imgui::menu_event(f11_key), "F11 fullscreen toggle still passes through");
+
+    SDL_Event quit_ev{};
+    quit_ev.type = SDL_QUIT;
+    require(!gx2_imgui::menu_event(quit_ev), "SDL_QUIT is not swallowed by menu");
+
+    gx2_imgui::set_menu_open(false);
+    require(gx2_imgui::menu_blocks_input(true), "closing click remains blocked until released");
+    require(!gx2_imgui::menu_blocks_input(false), "input resumes once closing input is released");
+    require(!gx2_imgui::menu_event(motion), "mouse motion passes to game once menu closes");
+}
+
 } // namespace
 
 int main() {
@@ -64,6 +101,7 @@ int main() {
     test_escape_event_consumes();
     test_touchpad_event_consumes();
     test_disabled_confirm_quits_immediately();
+    test_menu_blocks_mouse_and_gameplay_input();
     RBREW_LOG_INFO("quit_confirm", "PASS: all quit confirmation tests passed\n");
     return 0;
 }

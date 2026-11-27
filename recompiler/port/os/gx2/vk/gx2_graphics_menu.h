@@ -19,6 +19,9 @@ void build_gyro_rows();
 
 const char* title(Page page);
 
+// The page's widgets without a Back button (for tabbed/sidebar navigation).
+void build_page_contents(Page page);
+
 // The page's widgets; returns true when "Back" was pressed.
 bool build_page(Page page);
 

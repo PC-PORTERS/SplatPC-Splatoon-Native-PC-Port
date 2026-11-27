@@ -2647,17 +2647,31 @@ bool present(Image& source, uint32_t width, uint32_t height) {
         if ((s_presents & 63) == 0) std::fflush(present_log);
     }
     // Captured presents feed exact image tests: they never carry an overlay.
+    bool drew_overlay = false;
     if (!s_capture_presents) {
         if (gx2_imgui::ensure_ready(s_window, s_instance, s_physical, s_device, s_queue_family, s_queue,
                                     s_swapchain.format, uint32_t(s_swapchain.images.size()))) {
-            if (ImDrawData* overlay = gx2_imgui::begin_frame(s_swapchain.extent))
+            if (ImDrawData* overlay = gx2_imgui::begin_frame(s_swapchain.extent)) {
                 gx2_imgui::render_draw_data(overlay, cb, target, swapchain_view(index), s_swapchain.extent);
+                drew_overlay = true;
+            }
         }
     }
+    static const char* const s_dump_dir = std::getenv("RBREW_FRAME_DUMP_DIR");
+    static const bool s_dump_overlay = [] {
+        const char* v = std::getenv("RBREW_FRAME_DUMP_OVERLAY");
+        return v && v[0] == '1';
+    }();
+    static const unsigned s_dump_every = [] {
+        const char* v = std::getenv("RBREW_FRAME_DUMP_EVERY");
+        return v ? std::max(1u, unsigned(std::strtoul(v, nullptr, 10))) : 30u;
+    }();
+    const bool want_overlay_dump = !s_capture_presents && drew_overlay && s_dump_overlay && s_dump_dir && *s_dump_dir &&
+                                   ((s_presents % s_dump_every) == 0);
     VkImageLayout last_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     Buffer readback;
     const VkExtent2D extent = s_swapchain.extent;
-    if (s_capture_presents) {
+    if (s_capture_presents || want_overlay_dump) {
         readback = create_buffer(VkDeviceSize(extent.width) * extent.height * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                  MemoryUse::Readback);
         VkImageMemoryBarrier2 to_read = to_transfer;
@@ -2697,13 +2711,53 @@ bool present(Image& source, uint32_t width, uint32_t height) {
     const uint64_t serial = submit_with(&acquired, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, &rendered);
     if (readback.buffer) {
         if (wait_serial(serial) && invalidate_mapped(readback.memory)) {
-            s_last_present_w = extent.width;
-            s_last_present_h = extent.height;
-            s_last_present.assign(readback.memory.mapped,
-                                  readback.memory.mapped + size_t(extent.width) * extent.height * 4);
-            if (s_swapchain.format == VK_FORMAT_B8G8R8A8_UNORM || s_swapchain.format == VK_FORMAT_B8G8R8A8_SRGB)
-                for (size_t i = 0; i < s_last_present.size(); i += 4)
-                    std::swap(s_last_present[i], s_last_present[i + 2]);
+            const bool is_bgra =
+                (s_swapchain.format == VK_FORMAT_B8G8R8A8_UNORM || s_swapchain.format == VK_FORMAT_B8G8R8A8_SRGB);
+            if (want_overlay_dump) {
+                const uint32_t stride = (extent.width * 3u + 3u) & ~3u;
+                std::vector<uint8_t> bmp_px(size_t(stride) * extent.height);
+                const uint8_t* src_px = readback.memory.mapped;
+                for (uint32_t y = 0; y < extent.height; ++y) {
+                    for (uint32_t x = 0; x < extent.width; ++x) {
+                        const uint8_t* p = src_px + (size_t(y) * extent.width + x) * 4u;
+                        uint8_t* o = bmp_px.data() + size_t(y) * stride + x * 3u;
+                        o[0] = is_bgra ? p[0] : p[2];
+                        o[1] = p[1];
+                        o[2] = is_bgra ? p[2] : p[0];
+                    }
+                }
+                std::array<uint8_t, 54> hdr{};
+                hdr[0] = 'B';
+                hdr[1] = 'M';
+                auto put32 = [&](unsigned off, uint32_t v) {
+                    for (unsigned i = 0; i < 4; ++i) hdr[off + i] = uint8_t(v >> (i * 8u));
+                };
+                put32(2, 54u + uint32_t(bmp_px.size()));
+                put32(10, 54u);
+                put32(14, 40u);
+                put32(18, extent.width);
+                put32(22, uint32_t(-int32_t(extent.height)));
+                hdr[26] = 1;
+                hdr[28] = 24;
+                put32(34, uint32_t(bmp_px.size()));
+                char path[1024];
+                std::snprintf(path, sizeof(path), "%s/overlay_%05llu.bmp", s_dump_dir,
+                              static_cast<unsigned long long>(s_presents));
+                if (FILE* f = std::fopen(path, "wb")) {
+                    std::fwrite(hdr.data(), 1, hdr.size(), f);
+                    std::fwrite(bmp_px.data(), 1, bmp_px.size(), f);
+                    std::fclose(f);
+                }
+            }
+            if (s_capture_presents) {
+                s_last_present_w = extent.width;
+                s_last_present_h = extent.height;
+                s_last_present.assign(readback.memory.mapped,
+                                      readback.memory.mapped + size_t(extent.width) * extent.height * 4);
+                if (is_bgra)
+                    for (size_t i = 0; i < s_last_present.size(); i += 4)
+                        std::swap(s_last_present[i], s_last_present[i + 2]);
+            }
         }
         destroy_buffer(readback);
     }

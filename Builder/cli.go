@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"splatpc-builder/engine"
+	"splatpc-builder/mods"
 	"splatpc-builder/prereq"
 	"splatpc-builder/roms"
 	"splatpc-builder/settings"
@@ -212,4 +213,146 @@ func selectManifest(repoRoot, gamePath string) ([]byte, error) {
 		"select", "--rpx", filepath.Join(gamePath, "code", "Gambit.rpx"),
 		"--manifest-dir", filepath.Join(repoRoot, "Manifest"))
 	return cmd.CombinedOutput()
+}
+
+func runListMods() int {
+	for _, entry := range mods.CatalogWithExtras(mods.DefaultExtrasPath()) {
+		fmt.Printf("%s\t%s\t%s\t%s\n", entry.ID, entry.Name, entry.Version, entry.HomepageURL)
+	}
+	return 0
+}
+
+func resolveModOutputDir(repoRoot string, standalone bool, override string) string {
+	if override != "" {
+		return override
+	}
+	return settings.OutputDirFor(repoRoot, standalone)
+}
+
+func runInstallMod(repoRoot string, standalone bool, outputOverride, modID string) int {
+	catalog := mods.CatalogWithExtras(mods.DefaultExtrasPath())
+	entry, ok := mods.FindByIDInCatalog(catalog, modID)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "Unknown mod ID %q. Use --list-mods to list available mods.\n", modID)
+		return exitSetupFailed
+	}
+	outDir := resolveModOutputDir(repoRoot, standalone, outputOverride)
+	if err := mods.Install(context.Background(), outDir, entry, nil); err != nil {
+		fmt.Fprintf(os.Stderr, "Installing mod %s failed: %v\n", entry.ID, err)
+		return exitSetupFailed
+	}
+	binPath, _ := mods.BinaryPath(outDir, entry)
+	fmt.Printf("Installed %s (%s) to %s\n", entry.Name, entry.Version, binPath)
+	return 0
+}
+
+func runUninstallMod(repoRoot string, standalone bool, outputOverride, modID string) int {
+	catalog := mods.CatalogWithExtras(mods.DefaultExtrasPath())
+	entry, ok := mods.FindByIDInCatalog(catalog, modID)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "Unknown mod ID %q. Use --list-mods to list available mods.\n", modID)
+		return exitSetupFailed
+	}
+	outDir := resolveModOutputDir(repoRoot, standalone, outputOverride)
+	if err := mods.Uninstall(outDir, entry); err != nil {
+		fmt.Fprintf(os.Stderr, "Uninstalling mod %s failed: %v\n", entry.ID, err)
+		return exitSetupFailed
+	}
+	_ = mods.SetModDisabled(outDir, entry.ID, false)
+	fmt.Printf("Uninstalled %s from %s\n", entry.Name, outDir)
+	return 0
+}
+
+func runDeleteMod(repoRoot string, standalone bool, outputOverride, target string) int {
+	catalog := mods.CatalogWithExtras(mods.DefaultExtrasPath())
+	outDir := resolveModOutputDir(repoRoot, standalone, outputOverride)
+	if entry, ok := mods.FindByIDInCatalog(catalog, target); ok {
+		if err := mods.Uninstall(outDir, entry); err != nil {
+			fmt.Fprintf(os.Stderr, "Deleting mod %s failed: %v\n", entry.ID, err)
+			return exitSetupFailed
+		}
+		_ = mods.SetModDisabled(outDir, entry.ID, false)
+		fmt.Printf("Deleted %s from %s\n", entry.Name, mods.ModsDir(outDir))
+		return 0
+	}
+	if err := mods.DeleteFile(outDir, target, catalog); err != nil {
+		fmt.Fprintf(os.Stderr, "Deleting mod file %s failed: %v\n", target, err)
+		return exitSetupFailed
+	}
+	fmt.Printf("Deleted %s from %s\n", target, mods.ModsDir(outDir))
+	return 0
+}
+
+func runCheckModUpdates(repoRoot string, standalone bool, outputOverride string) int {
+	outDir := resolveModOutputDir(repoRoot, standalone, outputOverride)
+	catalog := mods.CatalogWithExtras(mods.DefaultExtrasPath())
+	exit := 0
+	for _, entry := range catalog {
+		info, err := mods.CheckUpdate(context.Background(), outDir, entry)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", entry.ID, err)
+			exit = exitSetupFailed
+			continue
+		}
+		state := "not-installed"
+		if mods.IsInstalled(outDir, entry) {
+			if info.UpdateAvailable {
+				state = "update-available"
+			} else {
+				state = "up-to-date"
+			}
+		}
+		fmt.Printf("%s\tinstalled=%q\tlatest=%q\tstatus=%s\n", entry.ID, info.InstalledVersion, info.LatestVersion, state)
+	}
+	return exit
+}
+
+func runUpdateMod(repoRoot string, standalone bool, outputOverride, modID string) int {
+	catalog := mods.CatalogWithExtras(mods.DefaultExtrasPath())
+	entry, ok := mods.FindByIDInCatalog(catalog, modID)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "Unknown mod ID %q. Use --list-mods to list available mods.\n", modID)
+		return exitSetupFailed
+	}
+	outDir := resolveModOutputDir(repoRoot, standalone, outputOverride)
+	info, err := mods.CheckUpdate(context.Background(), outDir, entry)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Checking update for %s failed: %v\n", entry.ID, err)
+		return exitSetupFailed
+	}
+	if err := mods.InstallUpdate(context.Background(), outDir, entry, info, nil); err != nil {
+		fmt.Fprintf(os.Stderr, "Updating %s failed: %v\n", entry.ID, err)
+		return exitSetupFailed
+	}
+	fmt.Printf("Updated %s to %s in %s\n", entry.Name, info.LatestVersion, mods.ModsDir(outDir))
+	return 0
+}
+
+func runUpdateAllMods(repoRoot string, standalone bool, outputOverride string) int {
+	outDir := resolveModOutputDir(repoRoot, standalone, outputOverride)
+	catalog := mods.CatalogWithExtras(mods.DefaultExtrasPath())
+	updated := 0
+	for _, entry := range catalog {
+		if !mods.IsInstalled(outDir, entry) {
+			continue
+		}
+		info, err := mods.CheckUpdate(context.Background(), outDir, entry)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Checking update for %s failed: %v\n", entry.ID, err)
+			return exitSetupFailed
+		}
+		if !info.UpdateAvailable {
+			continue
+		}
+		if err := mods.InstallUpdate(context.Background(), outDir, entry, info, nil); err != nil {
+			fmt.Fprintf(os.Stderr, "Updating %s failed: %v\n", entry.ID, err)
+			return exitSetupFailed
+		}
+		fmt.Printf("Updated %s to %s\n", entry.Name, info.LatestVersion)
+		updated++
+	}
+	if updated == 0 {
+		fmt.Println("All installed mods are already up to date.")
+	}
+	return 0
 }

@@ -8,6 +8,8 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
+
+	"splatpc-builder/mods"
 )
 
 type StepBuildConfigView struct {
@@ -87,6 +89,31 @@ func (v *StepBuildConfigView) initUI() {
 		),
 	)
 
+	selectedMods := make(map[string]bool, len(cfg.SelectedModIDs))
+	for _, id := range cfg.SelectedModIDs {
+		selectedMods[id] = true
+	}
+	syncSelectedMods := func() {
+		cfg.SelectedModIDs = cfg.SelectedModIDs[:0]
+		for _, entry := range mods.CatalogWithExtras(mods.DefaultExtrasPath()) {
+			if selectedMods[entry.ID] {
+				cfg.SelectedModIDs = append(cfg.SelectedModIDs, entry.ID)
+			}
+		}
+	}
+
+	modsBox := container.NewVBox()
+	for _, entry := range mods.CatalogWithExtras(mods.DefaultExtrasPath()) {
+		m := entry
+		chk := widget.NewCheck(fmt.Sprintf("%s %s (%s)", m.Name, m.Version, m.Description), func(b bool) {
+			selectedMods[m.ID] = b
+			syncSelectedMods()
+		})
+		chk.SetChecked(selectedMods[m.ID])
+		modsBox.Add(chk)
+	}
+	cardMods := widget.NewCard("Optional Mods", "Selected mods will be downloaded into Game/mods after compilation finishes.", modsBox)
+
 	v.prevBtn = widget.NewButtonWithIcon("Settings", theme.NavigateBackIcon(), func() {
 		v.wizard.GoToStep(StepSettings)
 	})
@@ -118,6 +145,8 @@ func (v *StepBuildConfigView) initUI() {
 				cardJobs,
 				widget.NewSeparator(),
 				cardClean,
+				widget.NewSeparator(),
+				cardMods,
 			),
 		),
 	)
