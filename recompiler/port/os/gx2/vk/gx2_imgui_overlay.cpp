@@ -117,7 +117,8 @@ int s_capture_action = 0;
 MenuPage s_focused_page = MenuPage::Keyboard;
 int s_focused_action = -1; // binding row focused for keyboard/gamepad Clear
 
-const char* const kResolutionLabels[rs::kResolutionCount] = {"720p (console)", "1080p", "1440p", "Display"};
+const char* const kResolutionLabels[rs::kResolutionCount] = {"720p (console)", "1080p",      "1440p",
+                                                             "4K (2160p)",     "8K (4320p)", "Display"};
 // GamePad input, with what it does in Splatoon where it is fixed.
 const char* const kActionLabels[rs::kActionCount] = {"A  (Confirm)",
                                                      "B ",
@@ -1474,8 +1475,8 @@ ImDrawData* begin_frame(VkExtent2D extent) {
     ImGui_ImplSDL2_NewFrame();
     ImGui::NewFrame();
 
-    // Keep the interface readable from 720p to 4K.
-    ImGui::GetIO().FontGlobalScale = std::clamp(float(extent.height) / 1080.0f, 1.0f, 2.0f);
+    // Keep the interface readable from 720p through 8K.
+    ImGui::GetIO().FontGlobalScale = std::clamp(float(extent.height) / 1080.0f, 1.0f, 4.0f);
 
     const bool fresh_menu = show_menu && !s_prev_menu_open;
     if (show_menu != s_prev_menu_open)

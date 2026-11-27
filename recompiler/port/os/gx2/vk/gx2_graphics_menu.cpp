@@ -35,7 +35,8 @@ void apply_preset(rs::Values& v, int preset) {
     }
     if (v.shader_quality == rs::kShadersOff) day_defaults(v);
     v.shader_quality = preset == kBalanced ? rs::kShadersBalanced : rs::kShadersHigh;
-    v.clouds = v.big_cloud = v.sun_rays = v.realistic_look = v.antialiasing = v.film_look = v.motion_blur = true;
+    v.clouds = v.big_cloud = v.sun_rays = v.realistic_look = v.antialiasing = v.film_look = v.motion_blur =
+        v.depth_of_field = true;
     v.bloom = preset == kCinematic ? 35 : 25;
     v.cinema_mode = v.camera_motion = preset == kCinematic;
     v.focus_blur = preset == kCinematic ? 40 : 0;
@@ -48,8 +49,8 @@ int preset_of(const rs::Values& v) {
         apply_preset(t, preset);
         if (t.shader_quality == v.shader_quality && t.clouds == v.clouds && t.big_cloud == v.big_cloud &&
             t.sun_rays == v.sun_rays && t.realistic_look == v.realistic_look && t.antialiasing == v.antialiasing &&
-            t.film_look == v.film_look && t.motion_blur == v.motion_blur && t.bloom == v.bloom &&
-            t.cinema_mode == v.cinema_mode && t.camera_motion == v.camera_motion &&
+            t.film_look == v.film_look && t.motion_blur == v.motion_blur && t.depth_of_field == v.depth_of_field &&
+            t.bloom == v.bloom && t.cinema_mode == v.cinema_mode && t.camera_motion == v.camera_motion &&
             (preset == kOriginal || t.focus_blur == v.focus_blur))
             return preset;
     }
@@ -119,6 +120,17 @@ bool build_graphics(rs::Values& v) {
     dirty |= combo("Shader quality", v.shader_quality, kQualities, rs::kShaderQualityCount,
                    "Higher: finer clouds and light. Off: the original game, unlocks 30/120/180 FPS.");
     if (quality_before == rs::kShadersOff && v.shader_quality != rs::kShadersOff) day_defaults(v);
+    section("Texture filtering");
+    static const char* const kAnisoLabels[] = {"Auto (game)", "2x", "4x", "8x", "16x"};
+    static const int kAnisoValues[] = {0, 2, 4, 8, 16};
+    int aniso_idx = 0;
+    for (int i = 0; i < 5; ++i)
+        if (kAnisoValues[i] == v.anisotropic_filtering) aniso_idx = i;
+    if (combo("Anisotropic filtering", aniso_idx, kAnisoLabels, 5,
+              "Sharpens ground and ink textures viewed at steep angles (works with shaders off too).")) {
+        v.anisotropic_filtering = kAnisoValues[aniso_idx];
+        dirty = true;
+    }
     section("Sky and light");
     dirty |= check("Realistic colours", v.realistic_look, "Colours and contrast of a modern game.");
     dirty |= check("Volumetric clouds", v.clouds, "Real 3D clouds that drift with the wind.");
@@ -126,7 +138,11 @@ bool build_graphics(rs::Values& v) {
     dirty |= check("Sun rays", v.sun_rays, "Light shafts through clouds and around buildings.");
     dirty |= slider("Glow (bloom)", v.bloom, 0, 100, "%d %%", "Glow around the sun, lamps and bright signs.");
     dirty |= slider("Ground fog", v.fog, 0, 100, "%d %%", "Fog over the ground. 0 % = clear air.");
-    dirty |= check("Edge smoothing", v.antialiasing, "Smooths jagged edges (FXAA + TAA).");
+    dirty |=
+        check("Depth of field", v.depth_of_field, "Background blur (depth of field) in the plaza and cinema mode.");
+    dirty |= check("Anti-aliasing (FXAA + TAA)", v.antialiasing,
+                   "Built-in edge smoothing (FXAA + TAA). Turn off to remove smoothing/blur.");
+    dirty |= check("Motion blur", v.motion_blur, "Slight blur as the camera turns (requires anti-aliasing).");
     dirty |= check("Film look", v.film_look, "Fine film grain and lens effects at the picture edges.");
     section("Picture");
     dirty |= slider("Saturation", v.saturation, 0, 200, "%d %%", "Colour strength. 100 % = normal.");
@@ -225,6 +241,8 @@ bool build_camera(rs::Values& v) {
     dirty |= slider("Camera height", v.camera_height, -20, 60, "%d",
                     "Raises the camera above the game's own. 0 = original.");
     dirty |= check("Motion blur (experimental)", v.motion_blur, "Blur when the camera turns quickly.");
+    dirty |= check("Disable auto downward tilt", v.disable_auto_pitch,
+                   "Stops the camera from automatically tilting downward while moving (Y still recenters).");
     dirty |= check("Camera wiggle", v.camera_motion, "The camera moves gently like a hand-held camera.");
     dirty |= slider("Wiggle strength", v.sway_strength, 25, 300, "%d %%", "How much the camera wiggles.");
     if (button("Reset camera to the original", "Field of view 55, distance 100 %, height 0: the game's own camera.")) {
@@ -318,6 +336,8 @@ void build_mouse_rows() {
     v.mouse_direct = aim == 1;
     dirty |= slider("Mouse sensitivity", v.mouse_sensitivity, 25, 400, "%d %%",
                     "How far the camera turns per mouse movement.");
+    dirty |= check("Disable auto downward tilt", v.disable_auto_pitch,
+                   "Stops the camera from automatically tilting downward while moving (Y still recenters).");
     if (dirty) rs::set(v);
 }
 
@@ -327,6 +347,8 @@ void build_gyro_rows() {
     dirty |= slider("Gyro sensitivity", v.gyro_sensitivity, 25, 300, "%d %%",
                     "How far the camera turns when the controller moves.");
     dirty |= check("Invert gyro up/down", v.gyro_invert_pitch, "Tilting the controller up looks down.");
+    dirty |= check("Disable auto downward tilt", v.disable_auto_pitch,
+                   "Stops the camera from automatically tilting downward while moving (Y still recenters).");
     if (dirty) rs::set(v);
 }
 

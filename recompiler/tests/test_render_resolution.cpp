@@ -1,5 +1,6 @@
 #include "os/gx2/gx2_render.h"
 #include "os/gx2/vk/gx2_render_vk_state.h"
+#include "os/gx2/vk/gx2_sampler_anisotropy.h"
 #include "os/gx2/vk/gx2_vk_shader.h"
 #include "rebrewu/logger.hpp"
 #define SDL_MAIN_HANDLED
@@ -331,6 +332,48 @@ void check_resolution(VkExtent2D display) {
     gx2_render_shutdown();
     std::printf("GPU attachments, depth, post-processing and scan-out: %ux%u\n", display.width, display.height);
 }
+void check_anisotropy_and_8k_scaling() {
+    gx2_render_init();
+    const VkExtent2D ext8k{7680, 4320};
+    require(gx2r::screen_target_extent(1280, 720, ext8k).width == 7680 &&
+                gx2r::screen_target_extent(1280, 720, ext8k).height == 4320,
+            "8K scaling of main 720p target failed");
+    require(gx2r::screen_target_extent(640, 360, ext8k).width == 3840 &&
+                gx2r::screen_target_extent(640, 360, ext8k).height == 2160,
+            "8K scaling of half-res target failed");
+    require(gx2r::screen_target_extent(320, 180, ext8k).width == 1920 &&
+                gx2r::screen_target_extent(320, 180, ext8k).height == 1080,
+            "8K scaling of quarter-res target failed");
+    require(gx2r::screen_target_extent(854, 480, ext8k).width == 7680 &&
+                gx2r::screen_target_extent(854, 480, ext8k).height == 4320,
+            "8K scaling of GamePad output target failed");
+    const auto lim = gx2vk::caps().limits;
+    const bool ok8k = gx2_render_set_display_resolution(7680, 4320);
+    const bool supported8k = 7680 <= lim.maxImageDimension2D && 4320 <= lim.maxImageDimension2D &&
+                             7680 <= lim.maxFramebufferWidth && 4320 <= lim.maxFramebufferHeight;
+    require(ok8k == supported8k, "8K display resolution acceptance disagreed with Vulkan device limits");
+    require(!gx2_render_set_display_resolution(lim.maxImageDimension2D + 1u, 720),
+            "resolution exceeding maxImageDimension2D was accepted");
+    gx2_render_shutdown();
+
+    using gx2_anisotropy::effective_anisotropy;
+    require(effective_anisotropy(4.0f, true, true, false, false, 0, true, 16.0f) == 4.0f,
+            "AF=0 must preserve guest anisotropy");
+    require(effective_anisotropy(1.0f, true, true, false, false, 16, true, 16.0f) == 16.0f,
+            "AF=16 did not upgrade eligible mipmapped linear color sampler");
+    require(effective_anisotropy(1.0f, true, true, false, false, 16, true, 8.0f) == 8.0f,
+            "forced AF must clamp to device maxAnisotropy");
+    require(effective_anisotropy(1.0f, true, true, true, false, 16, true, 16.0f) == 1.0f,
+            "forced AF must not apply to shadow samplers");
+    require(effective_anisotropy(1.0f, true, true, false, true, 16, true, 16.0f) == 1.0f,
+            "forced AF must not apply to integer textures");
+    require(effective_anisotropy(1.0f, false, true, false, false, 16, true, 16.0f) == 1.0f,
+            "forced AF must not apply to non-mipmapped samplers");
+    require(effective_anisotropy(1.0f, true, false, false, false, 16, true, 16.0f) == 1.0f,
+            "forced AF must not apply to nearest-filtered samplers");
+    require(effective_anisotropy(16.0f, true, true, false, false, 16, false, 16.0f) == 1.0f,
+            "AF must stay off when device anisotropy is unsupported");
+}
 } // namespace
 int main(int argc, char**) {
     try {
@@ -348,6 +391,7 @@ int main(int argc, char**) {
             return 0;
         }
         if (!gx2vk::init(nullptr)) return 77;
+        check_anisotropy_and_8k_scaling();
         check_alias_history();
         for (const auto display :
              {VkExtent2D{1920, 1080}, {1366, 768}, {2560, 1440}, {3840, 2160}, {1024, 768}, {960, 540}, {1280, 720}})

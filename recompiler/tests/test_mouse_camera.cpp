@@ -1,4 +1,5 @@
 // Mouse angle queues and pitch share between the pad reads and the camera (hooks/mouse_camera.h).
+#include "hooks/camera_auto_pitch.h"
 #include "hooks/mouse_camera.h"
 #include <cmath>
 #include <cstdio>
@@ -48,10 +49,45 @@ static void pitch_aim() {
     check(aim.share() == 0.0f, "the game re-centred the pad: the share goes back to 0");
 }
 
+static void auto_pitch_guard() {
+    using rbrew_camera_auto_pitch::filter_gyro_target;
+    using rbrew_camera_auto_pitch::Guard;
+
+    check(near(filter_gyro_target(0.25f, 0.0f, false, false), 0.0f), "disabled filter must not alter gyro target");
+    check(near(filter_gyro_target(0.25f, 0.0f, true, false), 0.25f),
+          "idle downward gyro target must clamp to current aim");
+    check(near(filter_gyro_target(0.25f, 0.45f, true, false), 0.45f), "upward gyro target must pass through");
+    check(near(filter_gyro_target(0.25f, 0.0f, true, true), 0.0f),
+          "manual input or Y-reset must allow downward gyro target");
+
+    Guard guard;
+    // First frame establishes baseline camera pointer without restoring.
+    auto r0 = guard.post_update(0x12340000u, 0.30f, 0.20f, 10.0f, 8.0f, true, false);
+    check(!r0.restore_aim && !r0.restore_stick, "first observation must only latch camera address");
+
+    // Gradual downward auto-tilt while moving without input -> restored.
+    auto r1 = guard.post_update(0x12340000u, 0.30f, 0.27f, 10.0f, 9.2f, true, false);
+    check(r1.restore_aim && near(r1.aim, 0.30f), "downward auto-pitch must restore aim");
+    check(r1.restore_stick && near(r1.stick, 10.0f), "downward auto-pitch must restore stick pitch");
+
+    // Disabled -> never restores.
+    auto r2 = guard.post_update(0x12340000u, 0.30f, 0.27f, 10.0f, 9.2f, false, false);
+    check(!r2.restore_aim && !r2.restore_stick, "disabled guard must not restore");
+
+    // Manual input or Y reset active -> allows downward movement.
+    auto r3 = guard.post_update(0x12340000u, 0.30f, 0.27f, 10.0f, 9.2f, true, true);
+    check(!r3.restore_aim && !r3.restore_stick, "manual input or Y reset must not be blocked");
+
+    // Instantaneous big jump (cutscene/respawn) -> allowed.
+    auto r4 = guard.post_update(0x12340000u, 0.40f, -0.20f, 20.0f, 0.0f, true, false);
+    check(!r4.restore_aim && !r4.restore_stick, "large cutscene/respawn snap must not be blocked");
+}
+
 int main() {
     try {
         angle_queue();
         pitch_aim();
+        auto_pitch_guard();
     } catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL: %s\n", error.what());
         return 1;

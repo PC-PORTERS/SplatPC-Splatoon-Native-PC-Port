@@ -47,20 +47,25 @@ type Configuration struct {
 	OnlineBoss       string // online_boss: URL of the server's SpotPass files (rotation, Splatfest)
 	OnlineNncs1      string // online_nncs1/online_nncs2: NAT check servers
 	OnlineNncs2      string
-	Resolution       string // "720p", "1080p", "1440p", "native"
-	FrameRate        int    // 30, 60, 120, 180
-	Plaza60FPS       bool
-	ShaderQuality    int  // 0: Off, 1: Low, 2: Balanced, 3: High
-	Fullscreen       bool // default true
-	GSync            bool // default false
-	FPSOverlay       bool
-	Gyro             bool
-	GyroSensitivity  int
-	GyroInvertPitch  bool
-	MouseSensitivity int
-	MouseDirect      bool
-	Volume           int
-	CameraFOV        int
+	Resolution           string // "720p", "1080p", "1440p", "4k", "8k", "native"
+	FrameRate            int    // 30, 60, 120, 180
+	Plaza60FPS           bool
+	ShaderQuality        int  // 0: Off, 1: Low, 2: Balanced, 3: High
+	AnisotropicFiltering int  // 0: Auto, 2, 4, 8, 16
+	DepthOfField         bool // Background DOF blur
+	AntiAliasing         bool // FXAA + TAA edge smoothing
+	MotionBlur           bool // Camera motion blur
+	Fullscreen           bool // default true
+	GSync                bool // default false
+	FPSOverlay           bool
+	Gyro                 bool
+	GyroSensitivity      int
+	GyroInvertPitch      bool
+	MouseSensitivity     int
+	MouseDirect          bool
+	DisableAutoPitch     bool
+	Volume               int
+	CameraFOV            int
 	DayCycle         bool
 	Clouds           bool
 	SunRays          bool
@@ -113,20 +118,25 @@ func DefaultConfiguration(repoRoot string) Configuration {
 		ConsoleRegion:    "EUR",
 		EnableOnline:     true,
 		OnlineServer:     server,
-		Resolution:       "1080p",
-		FrameRate:        60,
-		Plaza60FPS:       true,
-		ShaderQuality:    0, // Original clean game at 60 fps
-		Fullscreen:       true,
-		GSync:            false,
-		FPSOverlay:       false,
-		Gyro:             true,
-		GyroSensitivity:  100,
-		GyroInvertPitch:  false,
-		MouseSensitivity: 100,
-		MouseDirect:      true,
-		Volume:           100,
-		CameraFOV:        55,
+		Resolution:           "1080p",
+		FrameRate:            60,
+		Plaza60FPS:           true,
+		ShaderQuality:        0, // Original clean game at 60 fps
+		AnisotropicFiltering: 0, // Auto (game default)
+		DepthOfField:         true,
+		AntiAliasing:         true,
+		MotionBlur:           true,
+		Fullscreen:           true,
+		GSync:                false,
+		FPSOverlay:           false,
+		Gyro:                 true,
+		GyroSensitivity:      100,
+		GyroInvertPitch:      false,
+		MouseSensitivity:     100,
+		MouseDirect:          true,
+		DisableAutoPitch:     false,
+		Volume:               100,
+		CameraFOV:            55,
 		DayCycle:         false,
 		Clouds:           true,
 		SunRays:          true,

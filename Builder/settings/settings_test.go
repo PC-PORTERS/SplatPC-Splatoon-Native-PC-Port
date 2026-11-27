@@ -280,3 +280,52 @@ func TestLoadThenWriteKeepsPlayerSettings(t *testing.T) {
 		}
 	}
 }
+
+func TestGraphicsAndCameraQoLSettingsRoundTrip(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "test_qol_settings_*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	for _, res := range []string{"4k", "8k"} {
+		cfg := DefaultConfiguration("/tmp/splatpc")
+		cfg.Resolution = res
+		cfg.AnisotropicFiltering = 16
+		cfg.DepthOfField = false
+		cfg.AntiAliasing = false
+		cfg.MotionBlur = false
+		cfg.DisableAutoPitch = true
+
+		if err := WriteSettingsIni(cfg, tempDir); err != nil {
+			t.Fatalf("WriteSettingsIni(%s) failed: %v", res, err)
+		}
+		iniPath := filepath.Join(tempDir, "settings.ini")
+		data, err := os.ReadFile(iniPath)
+		if err != nil {
+			t.Fatalf("ReadFile failed: %v", err)
+		}
+		content := string(data)
+		for _, want := range []string{
+			"resolution=" + res,
+			"anisotropic_filtering=16",
+			"depth_of_field=0",
+			"antialiasing=0",
+			"motion_blur=0",
+			"disable_auto_pitch=1",
+		} {
+			if !strings.Contains(content, want) {
+				t.Errorf("Expected %q in settings.ini, got:\n%s", want, content)
+			}
+		}
+
+		loaded := DefaultConfiguration("/tmp/splatpc")
+		if err := LoadSettingsIni(iniPath, &loaded); err != nil {
+			t.Fatalf("LoadSettingsIni(%s) failed: %v", res, err)
+		}
+		if loaded.Resolution != res || loaded.AnisotropicFiltering != 16 || loaded.DepthOfField ||
+			loaded.AntiAliasing || loaded.MotionBlur || !loaded.DisableAutoPitch {
+			t.Errorf("Round-trip mismatch for %s: %+v", res, loaded)
+		}
+	}
+}

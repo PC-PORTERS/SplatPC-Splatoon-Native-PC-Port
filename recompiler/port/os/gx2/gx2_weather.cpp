@@ -442,7 +442,7 @@ void fill(Params& p, const Frame& f, uint32_t w, uint32_t h) {
         const char* v = std::getenv("RBREW_DOF");
         return v && v[0] == '0';
     }();
-    p.look[3] = dof_off || !s.plaza ? 0.f : 2.5f * float(h) / 1440.f;
+    p.look[3] = (!f.settings.depth_of_field || dof_off || !s.plaza) ? 0.f : 2.5f * float(h) / 1440.f;
     static const bool haze_off = [] {
         const char* v = std::getenv("RBREW_HAZE");
         return v && v[0] == '0';
@@ -502,7 +502,8 @@ void fill(Params& p, const Frame& f, uint32_t w, uint32_t h) {
         p.extra[2] = -dz * 18.f + along2 * 0.35f;
         p.extra[3] = coverage > .3f ? clear * life2 : 0.f;
     }
-    p.cinema[0] = f.settings.focus_blur / 100.f * 9.f * float(h) / 1440.f; // up to 9 px at 1440p
+    p.cinema[0] = f.settings.depth_of_field ? f.settings.focus_blur / 100.f * 9.f * float(h) / 1440.f
+                                            : 0.f; // up to 9 px at 1440p
     p.cinema[1] = f.settings.vignette / 100.f;
     p.cinema[2] = f.settings.white_balance / 50.f;
     p.picture[0] = f.settings.saturation / 100.f;

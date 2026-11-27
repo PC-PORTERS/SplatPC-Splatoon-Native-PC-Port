@@ -14,7 +14,15 @@
 
 namespace rbrew_settings {
 
-enum Resolution : int { k720p, k1080p, k1440p, kNative, kResolutionCount };
+enum Resolution : int { k720p, k1080p, k1440p, k4K, k8K, kNative, kResolutionCount };
+
+inline int sanitize_anisotropy(int value) {
+    if (value <= 1) return 0;
+    if (value <= 2) return 2;
+    if (value <= 4) return 4;
+    if (value <= 8) return 8;
+    return 16;
+}
 enum ShaderQuality : int { kShadersOff, kShadersLow, kShadersBalanced, kShadersHigh, kShaderQualityCount };
 enum Weather : int { kClear, kCloudy, kRain, kStorm, kAfterRain, kLiveWeather, kWeatherCount };
 
@@ -95,22 +103,25 @@ struct Values {
     int gamma = 100, shadow_lift = 0, highlight_softness = 0, sharpness = 100, clarity = 100;
     std::array<PictureLook, 3> looks{};
     bool sun_rays = true;
-    int bloom = 25;             // percent
-    bool antialiasing = true;   // FXAA on the final image
-    bool motion_blur = true;    // camera motion blur (with TAA)
-    int camera_fov = 55;        // degrees, the game's own (wider is optional)
-    int camera_distance = 100;  // percent of the game's camera distance
-    int camera_height = 0;      // game units above the game's camera
-    bool realistic_look = true; // colour grade fitted to the realistic reference images
-    bool film_look = true;      // fine grain and lens fringes at the edges
-    bool camera_motion = false; // a gentle hand-held sway (cinema mode only)
-    int focus_blur = 0;         // percent: background/foreground blur around the screen centre (cinema/photo)
-    int vignette = 0;           // percent: darker picture corners
-    int white_balance = 0;      // -50 cool .. +50 warm
-    int sway_strength = 100;    // percent of the cinema camera sway
-    bool cinema_mode = false;   // no HUD in the plaza, only the picture
-    int keys[kActionCount];     // keyboard/mouse binding per action
-    int pad[kActionCount];      // controller binding per action
+    int bloom = 25;                  // percent
+    bool antialiasing = true;        // FXAA + TAA edge smoothing
+    bool motion_blur = true;         // camera motion blur (with TAA)
+    bool depth_of_field = true;      // background depth-of-field blur
+    int anisotropic_filtering = 0;   // 0 = auto (game default), 2, 4, 8, 16
+    int camera_fov = 55;             // degrees, the game's own (wider is optional)
+    int camera_distance = 100;       // percent of the game's camera distance
+    int camera_height = 0;           // game units above the game's camera
+    bool disable_auto_pitch = false; // stop automatic downward camera tilt while moving
+    bool realistic_look = true;      // colour grade fitted to the realistic reference images
+    bool film_look = true;           // fine grain and lens fringes at the edges
+    bool camera_motion = false;      // a gentle hand-held sway (cinema mode only)
+    int focus_blur = 0;              // percent: background/foreground blur around the screen centre (cinema/photo)
+    int vignette = 0;                // percent: darker picture corners
+    int white_balance = 0;           // -50 cool .. +50 warm
+    int sway_strength = 100;         // percent of the cinema camera sway
+    bool cinema_mode = false;        // no HUD in the plaza, only the picture
+    int keys[kActionCount];          // keyboard/mouse binding per action
+    int pad[kActionCount];           // controller binding per action
     Values() { default_bindings(keys, pad); }
 };
 
@@ -144,6 +155,8 @@ inline std::atomic<bool> g_mouse_direct{true};
 inline std::atomic<float> g_volume{1.0f};
 inline std::atomic<bool> g_confirm_quit{true};
 inline std::atomic<int> g_shader_quality{kShadersOff}; // load() publishes the player's selection
+inline std::atomic<int> g_anisotropic_filtering{0};
+inline std::atomic<bool> g_disable_auto_pitch{false};
 inline std::atomic<int> g_keys[kActionCount];
 inline std::atomic<int> g_pad[kActionCount];
 
