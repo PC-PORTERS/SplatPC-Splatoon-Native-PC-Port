@@ -1,7 +1,9 @@
 #include "os/gx2/gx2_render.h"
+#include "os/gx2/vk/gx2_present_fx.h"
 #include "os/gx2/vk/gx2_render_vk_state.h"
 #include "os/gx2/vk/gx2_sampler_anisotropy.h"
 #include "os/gx2/vk/gx2_vk_shader.h"
+#include "runtime/port_settings.h"
 #include "rebrewu/logger.hpp"
 #define SDL_MAIN_HANDLED
 #include <SDL2/SDL.h>
@@ -374,6 +376,89 @@ void check_anisotropy_and_8k_scaling() {
     require(effective_anisotropy(16.0f, true, true, false, false, 16, false, 16.0f) == 1.0f,
             "AF must stay off when device anisotropy is unsupported");
 }
+void check_present_fx_gpu() {
+    gx2_render_init();
+    constexpr uint32_t kW = 128, kH = 72;
+    gx2vk::Image src;
+    gx2vk::ImageDesc desc{};
+    desc.format = VK_FORMAT_R8G8B8A8_UNORM;
+    desc.width = kW;
+    desc.height = kH;
+    desc.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    require(gx2vk::create_image(src, desc), "present FX test source image creation failed");
+
+    auto span = gx2vk::upload(size_t(kW) * kH * 4, 16);
+    require(span.data != nullptr, "present FX upload allocation failed");
+    for (uint32_t y = 0; y < kH; ++y) {
+        for (uint32_t x = 0; x < kW; ++x) {
+            const bool hi = (int(x) - int(y) * 2) > 0;
+            uint8_t* p = span.data + (size_t(y) * kW + x) * 4;
+            p[0] = hi ? 240 : 20;
+            p[1] = hi ? 240 : 20;
+            p[2] = hi ? 240 : 20;
+            p[3] = 255;
+        }
+    }
+    VkBufferImageCopy region{};
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.imageExtent = {kW, kH, 1};
+    gx2vk::barrier_if_dirty();
+    vkCmdCopyBufferToImage(gx2vk::cmd(), span.buffer, src.image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+    gx2vk::note_gpu_write(src);
+
+    // 1. Off + Off fast path.
+    const auto off =
+        gx2_present_fx::apply_explicit(src, kW, kH, 256, 144, rbrew_settings::kAAOff, rbrew_settings::kUpscalerOff, 70);
+    require(off.image == nullptr, "present FX Off+Off did not take fast path");
+
+    // 2. FXAA + Off (same resolution).
+    const auto fxaa =
+        gx2_present_fx::apply_explicit(src, kW, kH, kW, kH, rbrew_settings::kAAFXAA, rbrew_settings::kUpscalerOff, 70);
+    require(fxaa.image && fxaa.width == kW && fxaa.height == kH, "FXAA output invalid");
+    std::vector<uint8_t> pixels;
+    require(gx2vk::read_image(const_cast<gx2vk::Image&>(*fxaa.image), VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, kW, kH, pixels),
+            "FXAA readback failed");
+    require(pixels[(2 * kW + 100) * 4] >= 230 && pixels[(50 * kW + 4) * 4] <= 30,
+            "FXAA altered flat light/dark regions");
+
+    // 3. SMAA + Off (same resolution, 3-pass).
+    const auto smaa =
+        gx2_present_fx::apply_explicit(src, kW, kH, kW, kH, rbrew_settings::kAASMAA, rbrew_settings::kUpscalerOff, 70);
+    require(smaa.image && smaa.width == kW && smaa.height == kH, "SMAA output invalid");
+    require(gx2vk::read_image(const_cast<gx2vk::Image&>(*smaa.image), VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, kW, kH, pixels),
+            "SMAA readback failed");
+    require(pixels[(2 * kW + 100) * 4] >= 230 && pixels[(50 * kW + 4) * 4] <= 30,
+            "SMAA altered flat light/dark regions");
+
+    // 4. FSR 1.0 (EASU + RCAS 2x upscale, and RCAS-only 1x).
+    const auto fsr2x = gx2_present_fx::apply_explicit(src, kW, kH, kW * 2, kH * 2, rbrew_settings::kAAOff,
+                                                      rbrew_settings::kUpscalerFSR, 80);
+    require(fsr2x.image && fsr2x.width == kW * 2 && fsr2x.height == kH * 2, "FSR 2x output invalid");
+    require(gx2vk::read_image(const_cast<gx2vk::Image&>(*fsr2x.image), VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, kW * 2, kH * 2,
+                              pixels),
+            "FSR 2x readback failed");
+    require(pixels[(4 * (kW * 2) + 200) * 4] >= 230 && pixels[(100 * (kW * 2) + 8) * 4] <= 30,
+            "FSR 2x distorted flat regions");
+    const auto fsr1x =
+        gx2_present_fx::apply_explicit(src, kW, kH, kW, kH, rbrew_settings::kAAOff, rbrew_settings::kUpscalerFSR, 80);
+    require(fsr1x.image && fsr1x.width == kW && fsr1x.height == kH, "FSR 1x RCAS output invalid");
+
+    // 5. SMAA + Anime4K 2x upscale.
+    const auto a4k = gx2_present_fx::apply_explicit(src, kW, kH, kW * 2, kH * 2, rbrew_settings::kAASMAA,
+                                                    rbrew_settings::kUpscalerAnime4K, 75);
+    require(a4k.image && a4k.width == kW * 2 && a4k.height == kH * 2, "Anime4K 2x output invalid");
+    require(gx2vk::read_image(const_cast<gx2vk::Image&>(*a4k.image), VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, kW * 2, kH * 2,
+                              pixels),
+            "Anime4K 2x readback failed");
+    require(pixels[(4 * (kW * 2) + 200) * 4] >= 230 && pixels[(100 * (kW * 2) + 8) * 4] <= 30,
+            "Anime4K 2x distorted flat regions");
+
+    require(gx2vk::validation_error_count() == 0, "present FX passes caused Vulkan validation errors");
+    gx2_present_fx::shutdown();
+    gx2vk::destroy_image(src);
+    gx2_render_shutdown();
+    std::printf("Present FX GPU: FXAA, SMAA, FSR 1.0 (EASU+RCAS), Anime4K passed with 0 validation errors\n");
+}
 } // namespace
 int main(int argc, char**) {
     try {
@@ -392,6 +477,7 @@ int main(int argc, char**) {
         }
         if (!gx2vk::init(nullptr)) return 77;
         check_anisotropy_and_8k_scaling();
+        check_present_fx_gpu();
         check_alias_history();
         for (const auto display :
              {VkExtent2D{1920, 1080}, {1366, 768}, {2560, 1440}, {3840, 2160}, {1024, 768}, {960, 540}, {1280, 720}})

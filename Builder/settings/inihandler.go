@@ -81,6 +81,36 @@ func LoadSettingsIni(filePath string, cfg *Configuration) error {
 			cfg.DepthOfField = (val != "0")
 		case "antialiasing":
 			cfg.AntiAliasing = (val != "0")
+			if !cfg.AntiAliasing {
+				cfg.AAMode = "off"
+			} else if cfg.AAMode == "off" || cfg.AAMode == "" {
+				cfg.AAMode = "fxaa"
+			}
+		case "aa_mode":
+			switch strings.ToLower(val) {
+			case "0", "off":
+				cfg.AAMode = "off"
+				cfg.AntiAliasing = false
+			case "2", "smaa":
+				cfg.AAMode = "smaa"
+				cfg.AntiAliasing = true
+			case "1", "fxaa":
+				cfg.AAMode = "fxaa"
+				cfg.AntiAliasing = true
+			}
+		case "upscaler":
+			switch strings.ToLower(val) {
+			case "1", "fsr", "fsr1":
+				cfg.Upscaler = "fsr"
+			case "2", "anime4k":
+				cfg.Upscaler = "anime4k"
+			default:
+				cfg.Upscaler = "off"
+			}
+		case "upscaler_sharpness":
+			if n, err := strconv.Atoi(val); err == nil {
+				cfg.UpscalerSharpness = n
+			}
 		case "motion_blur":
 			cfg.MotionBlur = (val != "0")
 		case "camera_fov":
@@ -146,6 +176,19 @@ func WriteSettingsIni(cfg Configuration, outFolder string) error {
 		online["online_nncs2"] = strings.TrimSpace(cfg.OnlineNncs2)
 	}
 
+	aaMode := strings.ToLower(strings.TrimSpace(cfg.AAMode))
+	if aaMode != "off" && aaMode != "fxaa" && aaMode != "smaa" {
+		if cfg.AntiAliasing {
+			aaMode = "fxaa"
+		} else {
+			aaMode = "off"
+		}
+	}
+	upscaler := strings.ToLower(strings.TrimSpace(cfg.Upscaler))
+	if upscaler != "fsr" && upscaler != "anime4k" {
+		upscaler = "off"
+	}
+
 	managedValues := map[string]string{
 		"player_name":       cfg.PlayerName,
 		"pseudo":            cfg.PlayerName,
@@ -167,7 +210,10 @@ func WriteSettingsIni(cfg Configuration, outFolder string) error {
 		"shader_quality":        strconv.Itoa(cfg.ShaderQuality),
 		"anisotropic_filtering": strconv.Itoa(cfg.AnisotropicFiltering),
 		"depth_of_field":        strconv.Itoa(boolToInt(cfg.DepthOfField)),
-		"antialiasing":          strconv.Itoa(boolToInt(cfg.AntiAliasing)),
+		"antialiasing":          strconv.Itoa(boolToInt(aaMode != "off")),
+		"aa_mode":               aaMode,
+		"upscaler":              upscaler,
+		"upscaler_sharpness":    strconv.Itoa(cfg.UpscalerSharpness),
 		"motion_blur":           strconv.Itoa(boolToInt(cfg.MotionBlur)),
 		"day_cycle":         strconv.Itoa(boolToInt(cfg.DayCycle)),
 		"clouds":            strconv.Itoa(boolToInt(cfg.Clouds)),
@@ -251,6 +297,9 @@ clouds=%d
 sun_rays=%d
 bloom=%d
 antialiasing=%d
+aa_mode=%s
+upscaler=%s
+upscaler_sharpness=%d
 motion_blur=%d
 depth_of_field=%d
 anisotropic_filtering=%d
@@ -304,7 +353,10 @@ bindings=2
 		boolToInt(cfg.Clouds),
 		boolToInt(cfg.SunRays),
 		cfg.Bloom,
-		boolToInt(cfg.AntiAliasing),
+		boolToInt(aaMode != "off"),
+		aaMode,
+		upscaler,
+		cfg.UpscalerSharpness,
 		boolToInt(cfg.MotionBlur),
 		boolToInt(cfg.DepthOfField),
 		cfg.AnisotropicFiltering,

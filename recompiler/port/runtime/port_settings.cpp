@@ -76,6 +76,22 @@ std::mutex s_lock;
 Values s_values;
 int s_active_resolution = k720p;
 const char* const kResolutionNames[kResolutionCount] = {"720p", "1080p", "1440p", "4k", "8k", "native"};
+const char* const kAAModeNames[kAACount] = {"off", "fxaa", "smaa"};
+const char* const kUpscalerNames[kUpscalerCount] = {"off", "fsr", "anime4k"};
+
+int parse_aa_mode(std::string_view value) {
+    if (value == "0" || value == "off" || value == "Off") return kAAOff;
+    if (value == "1" || value == "fxaa" || value == "FXAA") return kAAFXAA;
+    if (value == "2" || value == "smaa" || value == "SMAA") return kAASMAA;
+    return -1;
+}
+
+int parse_upscaler(std::string_view value) {
+    if (value == "0" || value == "off" || value == "Off") return kUpscalerOff;
+    if (value == "1" || value == "fsr" || value == "FSR" || value == "fsr1") return kUpscalerFSR;
+    if (value == "2" || value == "anime4k" || value == "Anime4K") return kUpscalerAnime4K;
+    return -1;
+}
 
 int parse_resolution_name(std::string_view value) {
     for (int i = 0; i < kResolutionCount; ++i)
@@ -116,6 +132,9 @@ void publish(const Values& v) {
     g_fps30.store(v.frame_rate == 30, std::memory_order_relaxed);
     g_shader_quality.store(v.shader_quality, std::memory_order_relaxed);
     g_anisotropic_filtering.store(v.anisotropic_filtering, std::memory_order_relaxed);
+    g_aa_mode.store(v.aa_mode, std::memory_order_relaxed);
+    g_upscaler.store(v.upscaler, std::memory_order_relaxed);
+    g_upscaler_sharpness.store(v.upscaler_sharpness, std::memory_order_relaxed);
     g_disable_auto_pitch.store(v.disable_auto_pitch, std::memory_order_relaxed);
     g_mouse_direct.store(v.mouse_direct, std::memory_order_relaxed);
     g_gsync.store(v.gsync, std::memory_order_relaxed);
@@ -164,6 +183,10 @@ void normalize(Values& v) {
     }
     v.resolution = std::clamp(v.resolution, 0, kResolutionCount - 1);
     v.anisotropic_filtering = sanitize_anisotropy(v.anisotropic_filtering);
+    v.aa_mode = std::clamp(v.aa_mode, 0, kAACount - 1);
+    v.antialiasing = v.aa_mode != kAAOff;
+    v.upscaler = std::clamp(v.upscaler, 0, kUpscalerCount - 1);
+    v.upscaler_sharpness = std::clamp(v.upscaler_sharpness, 0, 100);
     v.gyro_sensitivity = std::clamp(v.gyro_sensitivity, 25, 300);
     v.mouse_sensitivity = std::clamp(v.mouse_sensitivity, 25, 400);
     v.volume = std::clamp(v.volume, 0, 100);
@@ -260,6 +283,9 @@ std::string foreign_lines() {
                                              "sun_rays",
                                              "bloom",
                                              "antialiasing",
+                                             "aa_mode",
+                                             "upscaler",
+                                             "upscaler_sharpness",
                                              "motion_blur",
                                              "depth_of_field",
                                              "anisotropic_filtering",
@@ -330,6 +356,9 @@ void write(const Values& v) {
         << "sun_rays=" << v.sun_rays << "\n"
         << "bloom=" << v.bloom << "\n"
         << "antialiasing=" << v.antialiasing << "\n"
+        << "aa_mode=" << kAAModeNames[v.aa_mode] << "\n"
+        << "upscaler=" << kUpscalerNames[v.upscaler] << "\n"
+        << "upscaler_sharpness=" << v.upscaler_sharpness << "\n"
         << "motion_blur=" << v.motion_blur << "\n"
         << "depth_of_field=" << v.depth_of_field << "\n"
         << "anisotropic_filtering=" << v.anisotropic_filtering << "\n"
@@ -375,6 +404,7 @@ void load() {
     std::lock_guard lock(s_lock);
     Values v;
     bool saw_frame_rate = false;
+    bool saw_aa_mode = false;
     int bindings_version = 1;
     std::ifstream in(file_path());
     for (std::string line; in && std::getline(in, line);) {
@@ -433,6 +463,15 @@ void load() {
             v.bloom = number;
         else if (key == "antialiasing")
             v.antialiasing = number != 0;
+        else if (key == "aa_mode") {
+            if (const int parsed = parse_aa_mode(value); parsed >= 0) {
+                v.aa_mode = parsed;
+                saw_aa_mode = true;
+            }
+        } else if (key == "upscaler") {
+            if (const int parsed = parse_upscaler(value); parsed >= 0) v.upscaler = parsed;
+        } else if (key == "upscaler_sharpness")
+            v.upscaler_sharpness = number;
         else if (key == "motion_blur")
             v.motion_blur = number != 0;
         else if (key == "depth_of_field")
@@ -506,6 +545,10 @@ void load() {
             }
     }
     if (!saw_frame_rate && v.fps120) v.frame_rate = 120;
+    if (!saw_aa_mode)
+        v.aa_mode = v.antialiasing ? kAAFXAA : kAAOff;
+    else
+        v.antialiasing = v.aa_mode != kAAOff;
     // Settings from before every input had a key (special weapon, D-pad):
     // the new default keys fill the inputs left unbound, once, where no other
     // input uses that key.
@@ -529,7 +572,25 @@ void load() {
             if (!std::strcmp(q, names[i])) v.shader_quality = i;
     }
     if (env_set("RBREW_WEATHER")) v.weather = std::atoi(std::getenv("RBREW_WEATHER"));
-    if (env_set("RBREW_ANTIALIASING")) v.antialiasing = !env_off("RBREW_ANTIALIASING");
+    if (env_set("RBREW_AA_MODE")) {
+        if (const int parsed = parse_aa_mode(std::getenv("RBREW_AA_MODE")); parsed >= 0) {
+            v.aa_mode = parsed;
+            v.antialiasing = v.aa_mode != kAAOff;
+        }
+    }
+    if (env_set("RBREW_ANTIALIASING")) {
+        if (env_off("RBREW_ANTIALIASING")) {
+            v.aa_mode = kAAOff;
+            v.antialiasing = false;
+        } else if (v.aa_mode == kAAOff) {
+            v.aa_mode = kAAFXAA;
+            v.antialiasing = true;
+        }
+    }
+    if (env_set("RBREW_UPSCALER")) {
+        if (const int parsed = parse_upscaler(std::getenv("RBREW_UPSCALER")); parsed >= 0) v.upscaler = parsed;
+    }
+    if (env_set("RBREW_UPSCALER_SHARPNESS")) v.upscaler_sharpness = std::atoi(std::getenv("RBREW_UPSCALER_SHARPNESS"));
     if (env_set("RBREW_MOTION_BLUR")) v.motion_blur = !env_off("RBREW_MOTION_BLUR");
     if (env_set("RBREW_DOF")) v.depth_of_field = !env_off("RBREW_DOF");
     if (env_set("RBREW_ANISOTROPIC_FILTERING"))

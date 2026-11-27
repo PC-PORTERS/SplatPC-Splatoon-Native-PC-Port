@@ -26,6 +26,7 @@
 #include "gx2_perf.h"
 #include "gx2_write_watch.h"
 #include "gx2_native_context.h"
+#include "vk/gx2_present_fx.h"
 #include "vk/gx2_render_vk_state.h"
 #include "vk/gx2_vk_shader.h"
 #include "gx2_host_memory.h"
@@ -764,6 +765,7 @@ void gx2_render_shutdown() {
     if (!gx2vk::ready()) return;
     end_rendering();
     gx2vk::finish();
+    gx2_present_fx::shutdown();
     gx2weather::shutdown();
     gx2_mod_capture::shutdown();
     g_scan_drc_source_id = 0;
@@ -2894,7 +2896,7 @@ void gx2_render_copy_to_scan(uint32_t cb_addr, uint32_t scan_target, uint8_t* me
             desc.width = scan.image.desc.width;
             desc.height = scan.image.desc.height;
             desc.format = VK_FORMAT_R8G8B8A8_SRGB;
-            desc.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+            desc.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
             gx2vk::create_image(encoded.srgb, desc);
             desc.format = VK_FORMAT_R8G8B8A8_UNORM;
             gx2vk::create_image(encoded.raw, desc);
@@ -2929,7 +2931,7 @@ void gx2_render_copy_to_scan(uint32_t cb_addr, uint32_t scan_target, uint8_t* me
             desc.width = scan.image.desc.width;
             desc.height = scan.image.desc.height;
             desc.format = scan.image.desc.format;
-            desc.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+            desc.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
             gx2vk::create_image(copy, desc);
         }
         end_rendering();
@@ -3145,7 +3147,7 @@ static void interp_copy(gx2vk::Image& source, gx2vk::Image& target) {
         desc.width = source.desc.width;
         desc.height = source.desc.height;
         desc.format = format;
-        desc.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        desc.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
         if (!gx2vk::create_image(target, desc)) return;
     }
     VkCommandBuffer cb = gx2vk::cmd();
@@ -3248,7 +3250,7 @@ void gx2_render_present(void* sdl_window, bool gamepad_mode) {
             desc.width = image->desc.width;
             desc.height = image->desc.height;
             desc.format = VK_FORMAT_R8G8B8A8_UNORM;
-            desc.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+            desc.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
             gx2vk::create_image(s_present_raw, desc);
         }
         VkCommandBuffer cb = gx2vk::cmd();

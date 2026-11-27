@@ -293,7 +293,13 @@ func TestGraphicsAndCameraQoLSettingsRoundTrip(t *testing.T) {
 		cfg.Resolution = res
 		cfg.AnisotropicFiltering = 16
 		cfg.DepthOfField = false
-		cfg.AntiAliasing = false
+		cfg.AntiAliasing = true
+		cfg.AAMode = "smaa"
+		cfg.Upscaler = "fsr"
+		if res == "8k" {
+			cfg.Upscaler = "anime4k"
+		}
+		cfg.UpscalerSharpness = 85
 		cfg.MotionBlur = false
 		cfg.DisableAutoPitch = true
 
@@ -310,7 +316,10 @@ func TestGraphicsAndCameraQoLSettingsRoundTrip(t *testing.T) {
 			"resolution=" + res,
 			"anisotropic_filtering=16",
 			"depth_of_field=0",
-			"antialiasing=0",
+			"antialiasing=1",
+			"aa_mode=smaa",
+			"upscaler=" + cfg.Upscaler,
+			"upscaler_sharpness=85",
 			"motion_blur=0",
 			"disable_auto_pitch=1",
 		} {
@@ -324,7 +333,8 @@ func TestGraphicsAndCameraQoLSettingsRoundTrip(t *testing.T) {
 			t.Fatalf("LoadSettingsIni(%s) failed: %v", res, err)
 		}
 		if loaded.Resolution != res || loaded.AnisotropicFiltering != 16 || loaded.DepthOfField ||
-			loaded.AntiAliasing || loaded.MotionBlur || !loaded.DisableAutoPitch {
+			!loaded.AntiAliasing || loaded.AAMode != "smaa" || loaded.Upscaler != cfg.Upscaler ||
+			loaded.UpscalerSharpness != 85 || loaded.MotionBlur || !loaded.DisableAutoPitch {
 			t.Errorf("Round-trip mismatch for %s: %+v", res, loaded)
 		}
 	}

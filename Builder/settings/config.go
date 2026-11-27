@@ -51,10 +51,13 @@ type Configuration struct {
 	FrameRate            int    // 30, 60, 120, 180
 	Plaza60FPS           bool
 	ShaderQuality        int  // 0: Off, 1: Low, 2: Balanced, 3: High
-	AnisotropicFiltering int  // 0: Auto, 2, 4, 8, 16
-	DepthOfField         bool // Background DOF blur
-	AntiAliasing         bool // FXAA + TAA edge smoothing
-	MotionBlur           bool // Camera motion blur
+	AnisotropicFiltering int    // 0: Auto, 2, 4, 8, 16
+	DepthOfField         bool   // Background DOF blur
+	AntiAliasing         bool   // FXAA + TAA edge smoothing
+	AAMode               string // "off", "fxaa", "smaa"
+	Upscaler             string // "off", "fsr", "anime4k"
+	UpscalerSharpness    int    // 0..100
+	MotionBlur           bool   // Camera motion blur
 	Fullscreen           bool // default true
 	GSync                bool // default false
 	FPSOverlay           bool
@@ -125,6 +128,9 @@ func DefaultConfiguration(repoRoot string) Configuration {
 		AnisotropicFiltering: 0, // Auto (game default)
 		DepthOfField:         true,
 		AntiAliasing:         true,
+		AAMode:               "fxaa",
+		Upscaler:             "off",
+		UpscalerSharpness:    70,
 		MotionBlur:           true,
 		Fullscreen:           true,
 		GSync:                false,

@@ -37,6 +37,7 @@ void apply_preset(rs::Values& v, int preset) {
     v.shader_quality = preset == kBalanced ? rs::kShadersBalanced : rs::kShadersHigh;
     v.clouds = v.big_cloud = v.sun_rays = v.realistic_look = v.antialiasing = v.film_look = v.motion_blur =
         v.depth_of_field = true;
+    v.aa_mode = rs::kAAFXAA;
     v.bloom = preset == kCinematic ? 35 : 25;
     v.cinema_mode = v.camera_motion = preset == kCinematic;
     v.focus_blur = preset == kCinematic ? 40 : 0;
@@ -49,8 +50,9 @@ int preset_of(const rs::Values& v) {
         apply_preset(t, preset);
         if (t.shader_quality == v.shader_quality && t.clouds == v.clouds && t.big_cloud == v.big_cloud &&
             t.sun_rays == v.sun_rays && t.realistic_look == v.realistic_look && t.antialiasing == v.antialiasing &&
-            t.film_look == v.film_look && t.motion_blur == v.motion_blur && t.depth_of_field == v.depth_of_field &&
-            t.bloom == v.bloom && t.cinema_mode == v.cinema_mode && t.camera_motion == v.camera_motion &&
+            (preset == kOriginal || t.aa_mode == v.aa_mode) && t.film_look == v.film_look &&
+            t.motion_blur == v.motion_blur && t.depth_of_field == v.depth_of_field && t.bloom == v.bloom &&
+            t.cinema_mode == v.cinema_mode && t.camera_motion == v.camera_motion &&
             (preset == kOriginal || t.focus_blur == v.focus_blur))
             return preset;
     }
@@ -120,7 +122,7 @@ bool build_graphics(rs::Values& v) {
     dirty |= combo("Shader quality", v.shader_quality, kQualities, rs::kShaderQualityCount,
                    "Higher: finer clouds and light. Off: the original game, unlocks 30/120/180 FPS.");
     if (quality_before == rs::kShadersOff && v.shader_quality != rs::kShadersOff) day_defaults(v);
-    section("Texture filtering");
+    section("Texture filtering & scaling");
     static const char* const kAnisoLabels[] = {"Auto (game)", "2x", "4x", "8x", "16x"};
     static const int kAnisoValues[] = {0, 2, 4, 8, 16};
     int aniso_idx = 0;
@@ -131,6 +133,20 @@ bool build_graphics(rs::Values& v) {
         v.anisotropic_filtering = kAnisoValues[aniso_idx];
         dirty = true;
     }
+    static const char* const kAALabels[] = {"Off", "FXAA", "SMAA"};
+    if (combo(
+            "Anti-aliasing", v.aa_mode, kAALabels, rs::kAACount,
+            "Off: raw pixels. FXAA: fast smoothing (pairs with TAA with shaders on). SMAA: crisp subpixel edge AA.")) {
+        v.antialiasing = v.aa_mode != rs::kAAOff;
+        dirty = true;
+    }
+    static const char* const kUpscalerLabels[] = {"Off (Bilinear)", "FSR 1.0 (EASU + RCAS)", "Anime4K"};
+    dirty |= combo("Upscaler", v.upscaler, kUpscalerLabels, rs::kUpscalerCount,
+                   "Spatial upscaling from internal render resolution to your display.");
+    ImGui::BeginDisabled(v.upscaler == rs::kUpscalerOff);
+    dirty |= slider("Upscaler sharpness", v.upscaler_sharpness, 0, 100, "%d %%",
+                    "Sharpening strength for FSR 1.0 RCAS or Anime4K.");
+    ImGui::EndDisabled();
     section("Sky and light");
     dirty |= check("Realistic colours", v.realistic_look, "Colours and contrast of a modern game.");
     dirty |= check("Volumetric clouds", v.clouds, "Real 3D clouds that drift with the wind.");
@@ -140,9 +156,7 @@ bool build_graphics(rs::Values& v) {
     dirty |= slider("Ground fog", v.fog, 0, 100, "%d %%", "Fog over the ground. 0 % = clear air.");
     dirty |=
         check("Depth of field", v.depth_of_field, "Background blur (depth of field) in the plaza and cinema mode.");
-    dirty |= check("Anti-aliasing (FXAA + TAA)", v.antialiasing,
-                   "Built-in edge smoothing (FXAA + TAA). Turn off to remove smoothing/blur.");
-    dirty |= check("Motion blur", v.motion_blur, "Slight blur as the camera turns (requires anti-aliasing).");
+    dirty |= check("Motion blur", v.motion_blur, "Slight blur as the camera turns (active with shaders + AA on).");
     dirty |= check("Film look", v.film_look, "Fine film grain and lens effects at the picture edges.");
     section("Picture");
     dirty |= slider("Saturation", v.saturation, 0, 200, "%d %%", "Colour strength. 100 % = normal.");

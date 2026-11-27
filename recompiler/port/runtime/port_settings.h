@@ -25,6 +25,8 @@ inline int sanitize_anisotropy(int value) {
 }
 enum ShaderQuality : int { kShadersOff, kShadersLow, kShadersBalanced, kShadersHigh, kShaderQualityCount };
 enum Weather : int { kClear, kCloudy, kRain, kStorm, kAfterRain, kLiveWeather, kWeatherCount };
+enum AntiAliasingMode : int { kAAOff, kAAFXAA, kAASMAA, kAACount };
+enum UpscalerMode : int { kUpscalerOff, kUpscalerFSR, kUpscalerAnime4K, kUpscalerCount };
 
 // GamePad inputs that keyboard/mouse and controller buttons can be bound to.
 enum Action : int {
@@ -104,7 +106,10 @@ struct Values {
     std::array<PictureLook, 3> looks{};
     bool sun_rays = true;
     int bloom = 25;                  // percent
-    bool antialiasing = true;        // FXAA + TAA edge smoothing
+    bool antialiasing = true;        // FXAA + TAA / SMAA edge smoothing
+    int aa_mode = kAAFXAA;           // 0 = Off, 1 = FXAA (+ TAA), 2 = SMAA (+ TAA)
+    int upscaler = kUpscalerOff;     // 0 = Off (Bilinear), 1 = FSR 1.0, 2 = Anime4K
+    int upscaler_sharpness = 70;     // percent, 0..100
     bool motion_blur = true;         // camera motion blur (with TAA)
     bool depth_of_field = true;      // background depth-of-field blur
     int anisotropic_filtering = 0;   // 0 = auto (game default), 2, 4, 8, 16
@@ -156,6 +161,9 @@ inline std::atomic<float> g_volume{1.0f};
 inline std::atomic<bool> g_confirm_quit{true};
 inline std::atomic<int> g_shader_quality{kShadersOff}; // load() publishes the player's selection
 inline std::atomic<int> g_anisotropic_filtering{0};
+inline std::atomic<int> g_aa_mode{kAAFXAA};
+inline std::atomic<int> g_upscaler{kUpscalerOff};
+inline std::atomic<int> g_upscaler_sharpness{70};
 inline std::atomic<bool> g_disable_auto_pitch{false};
 inline std::atomic<int> g_keys[kActionCount];
 inline std::atomic<int> g_pad[kActionCount];

@@ -448,7 +448,7 @@ void fill(Params& p, const Frame& f, uint32_t w, uint32_t h) {
         return v && v[0] == '0';
     }();
     p.taa[2] = haze_off ? 1.f : 0.f; // RBREW_HAZE=0: no aerial perspective
-    p.post[0] = f.settings.antialiasing ? 1.f : 0.f;
+    p.post[0] = f.settings.aa_mode == rbrew_settings::kAAFXAA ? 1.f : 0.f;
     p.post[1] = f.settings.film_look ? 0.015f : 0.f;
     p.post[2] = f.settings.film_look ? 2.f / float(std::max(w, 1u)) : 0.f; // subpixel fringes at every resolution
     p.post[3] = float(s_frame_index % 997);

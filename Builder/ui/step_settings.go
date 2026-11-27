@@ -40,7 +40,8 @@ type StepSettingsView struct {
 	shaderSelect          *widget.Select
 	anisoSelect           *widget.Select
 	dofCheck              *widget.Check
-	aaCheck               *widget.Check
+	aaSelect              *widget.Select
+	upscalerSelect        *widget.Select
 	motionBlurCheck       *widget.Check
 	fullscreenCheck       *widget.Check
 	gsyncCheck            *widget.Check
@@ -330,10 +331,46 @@ func (v *StepSettingsView) initUI() {
 	})
 	v.dofCheck.SetChecked(cfg.DepthOfField)
 
-	v.aaCheck = widget.NewCheck("Anti-Aliasing (FXAA + TAA)", func(b bool) {
-		cfg.AntiAliasing = b
+	v.aaSelect = widget.NewSelect([]string{"Off", "FXAA", "SMAA"}, func(s string) {
+		switch s {
+		case "Off":
+			cfg.AAMode = "off"
+			cfg.AntiAliasing = false
+		case "SMAA":
+			cfg.AAMode = "smaa"
+			cfg.AntiAliasing = true
+		default:
+			cfg.AAMode = "fxaa"
+			cfg.AntiAliasing = true
+		}
 	})
-	v.aaCheck.SetChecked(cfg.AntiAliasing)
+	switch strings.ToLower(cfg.AAMode) {
+	case "off":
+		v.aaSelect.SetSelected("Off")
+	case "smaa":
+		v.aaSelect.SetSelected("SMAA")
+	default:
+		v.aaSelect.SetSelected("FXAA")
+	}
+
+	v.upscalerSelect = widget.NewSelect([]string{"Off (Bilinear)", "FSR 1.0 (EASU + RCAS)", "Anime4K"}, func(s string) {
+		switch s {
+		case "FSR 1.0 (EASU + RCAS)":
+			cfg.Upscaler = "fsr"
+		case "Anime4K":
+			cfg.Upscaler = "anime4k"
+		default:
+			cfg.Upscaler = "off"
+		}
+	})
+	switch strings.ToLower(cfg.Upscaler) {
+	case "fsr":
+		v.upscalerSelect.SetSelected("FSR 1.0 (EASU + RCAS)")
+	case "anime4k":
+		v.upscalerSelect.SetSelected("Anime4K")
+	default:
+		v.upscalerSelect.SetSelected("Off (Bilinear)")
+	}
 
 	v.motionBlurCheck = widget.NewCheck("Motion Blur", func(b bool) {
 		cfg.MotionBlur = b
@@ -367,9 +404,12 @@ func (v *StepSettingsView) initUI() {
 			v.shaderSelect,
 			widget.NewLabelWithStyle("Anisotropic Filtering (Texture Sharpness):", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 			v.anisoSelect,
-			container.NewGridWithColumns(3,
+			container.NewGridWithColumns(2,
+				container.NewVBox(widget.NewLabelWithStyle("Anti-Aliasing:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), v.aaSelect),
+				container.NewVBox(widget.NewLabelWithStyle("Spatial Upscaler:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), v.upscalerSelect),
+			),
+			container.NewGridWithColumns(2,
 				v.dofCheck,
-				v.aaCheck,
 				v.motionBlurCheck,
 			),
 			widget.NewSeparator(),
@@ -554,7 +594,26 @@ func (v *StepSettingsView) SyncUIFromConfig() {
 		v.anisoSelect.SetSelectedIndex(0)
 	}
 	v.dofCheck.SetChecked(cfg.DepthOfField)
-	v.aaCheck.SetChecked(cfg.AntiAliasing)
+	switch strings.ToLower(cfg.AAMode) {
+	case "off":
+		v.aaSelect.SetSelected("Off")
+	case "smaa":
+		v.aaSelect.SetSelected("SMAA")
+	default:
+		if cfg.AntiAliasing {
+			v.aaSelect.SetSelected("FXAA")
+		} else {
+			v.aaSelect.SetSelected("Off")
+		}
+	}
+	switch strings.ToLower(cfg.Upscaler) {
+	case "fsr":
+		v.upscalerSelect.SetSelected("FSR 1.0 (EASU + RCAS)")
+	case "anime4k":
+		v.upscalerSelect.SetSelected("Anime4K")
+	default:
+		v.upscalerSelect.SetSelected("Off (Bilinear)")
+	}
 	v.motionBlurCheck.SetChecked(cfg.MotionBlur)
 
 	v.hdTexturesCheck.SetChecked(cfg.UpscaleTextures)
