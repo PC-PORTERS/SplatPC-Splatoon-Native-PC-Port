@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -39,14 +40,58 @@ func unpackedGameDir(dir, old string) string {
 	if filepath.Clean(dir) == filepath.Clean(old) {
 		return dir
 	}
-	state := os.Getenv("RECOMPLAUNCHER_DATA")
-	if state == "" {
-		state = dir
-	}
-	if copyFromProgramFolder(old, dir, state) {
+	if copyFromProgramFolder(old, dir, stateDir(dir)) {
 		return dir
 	}
 	return old
+}
+
+func stateDir(dir string) string {
+	if state := os.Getenv("RECOMPLAUNCHER_DATA"); state != "" {
+		return state
+	}
+	return dir
+}
+
+// RemoveOldBuild deletes the built game left in the old folder once the
+// player's items were copied and a build into dir has finished. The player's
+// items stay there as they are.
+func RemoveOldBuild(repoRoot, dir string, log func(string, ...interface{})) {
+	appDir := os.Getenv("APPDIR")
+	if runtime.GOOS != "linux" || os.Getenv("APPIMAGE") != "" || appDir == "" {
+		return
+	}
+	if filepath.Clean(dir) != filepath.Clean(filepath.Join(appDir, "Game")) {
+		return
+	}
+	removeOldBuild(besideProgram(repoRoot), dir, stateDir(dir), log)
+}
+
+func removeOldBuild(old, dir, state string, log func(string, ...interface{})) {
+	if filepath.Clean(dir) == filepath.Clean(old) {
+		return
+	}
+	if _, err := os.Stat(filepath.Join(state, copiedMarker)); err != nil {
+		return
+	}
+	if _, err := os.Stat(filepath.Join(dir, "Splatoon")); err != nil {
+		return
+	}
+	// The build also left its AppImage beside the old folder.
+	paths := []string{filepath.Join(filepath.Dir(old), "Splatoon-x86_64.AppImage")}
+	for name := range builtItems {
+		paths = append(paths, filepath.Join(old, name))
+	}
+	for _, p := range paths {
+		if _, err := os.Lstat(p); err != nil {
+			continue
+		}
+		if err := os.RemoveAll(p); err != nil {
+			log("Could not remove the old build's %s: %v", p, err)
+			continue
+		}
+		log("Removed the old build's %s", p)
+	}
 }
 
 // copyFromProgramFolder copies old into dir once and reports whether the

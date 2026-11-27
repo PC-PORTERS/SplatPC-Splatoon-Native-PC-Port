@@ -203,6 +203,41 @@ func TestInterruptedCopyFinishesOnTheNextStart(t *testing.T) {
 	}
 }
 
+func TestOldBuildIsRemovedOnlyAfterTheCopyAndANewBuild(t *testing.T) {
+	u := newUnpacked(t)
+	image := filepath.Join(filepath.Dir(u.old), "Splatoon-x86_64.AppImage")
+	write(t, image, "old image")
+	quiet := func(string, ...interface{}) {}
+
+	removeOldBuild(u.old, u.dir, u.state, quiet)
+	if !exists(filepath.Join(u.old, "content")) {
+		t.Fatal("removed before the copy finished")
+	}
+	if !copyFromProgramFolder(u.old, u.dir, u.state) {
+		t.Fatal("copy failed")
+	}
+	removeOldBuild(u.old, u.dir, u.state, quiet)
+	if !exists(filepath.Join(u.old, "content")) {
+		t.Fatal("removed before a build into the new folder finished")
+	}
+
+	write(t, filepath.Join(u.dir, "Splatoon"), "new game")
+	removeOldBuild(u.old, u.dir, u.state, quiet)
+	for name := range builtItems {
+		if exists(filepath.Join(u.old, name)) {
+			t.Errorf("old %s still there", name)
+		}
+	}
+	if exists(image) {
+		t.Error("old AppImage beside the folder still there")
+	}
+	for _, name := range []string{"save/common/save.dat", "settings.ini", "friends/list.txt", "online_session.ini"} {
+		if !exists(filepath.Join(u.old, name)) {
+			t.Errorf("player's %s was removed", name)
+		}
+	}
+}
+
 func (u unpacked) start(t *testing.T) string {
 	t.Setenv("RECOMPLAUNCHER_DATA", u.state)
 	return unpackedGameDir(u.dir, u.old)
