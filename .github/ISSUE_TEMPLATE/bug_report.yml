@@ -8,7 +8,7 @@ body:
       value: |
         Thanks for taking the time to report this bug.
 
-        > **Important:** Do not include screenshots with a game background (the game is theoretically under copyright).
+        > **Important:** Do not include screenshots with a game background (Images from the game is theoretically under copyright).
 
   - type: textarea
     id: description
@@ -44,8 +44,8 @@ body:
     id: platform
     attributes:
       label: Platform
-      description: Enter your operating system, GPU, and version details.
-      placeholder: "[Linux / Windows] ; [GPU] ; [Version]"
+      description: Enter your operating system, GPU, and version details. Add your distro details on linux.
+      placeholder: "[Linux / Windows] ; [GPU] ; [Version] ; [Game version + Region]"
     validations:
       required: true
 
@@ -69,6 +69,8 @@ body:
         - label: "I’ve looked everywhere, and the bug hasn’t been reported or identified yet."
           required: true
         - label: "I have provided as much detail as possible."
+          required: true
+        - label: "This issue IS related to this repo (not a mod or something else)"
           required: true
         - label: "I am working on / intend to work on a PR to fix this bug (note: after 1 week of inactivity / without a PR, we will assume that you do not intend to submit one)."
           required: false
