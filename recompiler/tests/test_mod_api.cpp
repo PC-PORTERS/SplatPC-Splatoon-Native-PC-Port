@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -582,6 +583,121 @@ void test_guest_hook_priorities(const SplatModHost* host, CPUState* cpu, std::ve
     CHECK(g_prio_trace == (std::vector<int>{3}));
 }
 
+void test_mod_enable_disable_and_persistence(const char* plugin_path, const SplatModHost* host, CPUState* cpu,
+                                             uint8_t* arena, std::vector<HostFunc>& dispatch) {
+    namespace fs = std::filesystem;
+    constexpr uint32_t kPluginAddr = 0x00010000u;
+    rbrew_register_guest_body(kPluginAddr, reinterpret_cast<void*>(&plugin_target_body), false);
+    dispatch[kPluginAddr >> 2] = &plugin_target_entry;
+
+    const fs::path src_path(plugin_path);
+    const fs::path tmp_dir = fs::temp_directory_path() / "splatpc_mod_toggle_test";
+    std::error_code ec;
+    fs::remove_all(tmp_dir, ec);
+    fs::create_directories(tmp_dir, ec);
+    CHECK(fs::copy_file(src_path, tmp_dir / src_path.filename(), fs::copy_options::overwrite_existing));
+
+    const std::string tmp_dir_str = tmp_dir.string();
+    rbrew_mod::set_mods_dir_for_test(tmp_dir_str.c_str());
+
+    const char* argv_exit[] = {"test", "--test-mod-early-exit"};
+    CHECK(rbrew_mod::load_and_early_init(2, const_cast<char**>(argv_exit), 16u) == 42);
+    rbrew_mod::init_mods(cpu);
+
+    CHECK(rbrew_mod::has_mods());
+    CHECK(rbrew_mod::is_mod_enabled("splatpc.test_mod"));
+    {
+        const auto mods = rbrew_mod::list_mods();
+        CHECK(mods.size() == 1 && mods[0].enabled && mods[0].initialized);
+    }
+
+    const uint32_t args[1] = {10u};
+    uint32_t r3_out = 0u;
+    CHECK(host->call_guest(cpu, kPluginAddr, args, 1u, &r3_out));
+    CHECK(r3_out == 117u);
+    CHECK(rbrew_mod::list_menu_pages().size() == 1);
+    CHECK(rbrew_mod::has_vpad_hooks());
+    CHECK(rbrew_mod::has_kpad_providers());
+
+    std::string toggle_err;
+    CHECK(rbrew_mod::set_mod_enabled("splatpc.test_mod", false, &toggle_err));
+    CHECK(rbrew_mod::has_mods());
+    CHECK(!rbrew_mod::is_mod_enabled("splatpc.test_mod"));
+    {
+        const auto mods = rbrew_mod::list_mods();
+        CHECK(mods.size() == 1 && !mods[0].enabled && !mods[0].initialized);
+    }
+    CHECK(rbrew_mod::list_menu_pages().empty());
+    CHECK(!rbrew_mod::has_vpad_hooks());
+    CHECK(!rbrew_mod::has_kpad_providers());
+    CHECK(host->call_guest(cpu, kPluginAddr, args, 1u, &r3_out));
+    CHECK(r3_out == 17u);
+    CHECK(fs::exists(tmp_dir / "mods_state.ini"));
+
+    std::memset(arena + 0x00001000u, 0, 4);
+    rbrew_mod::on_vpad_read(arena);
+    CHECK(splatmod_read32(arena, 0x00001000u) == 0u);
+
+    // Live re-enable restores hooks, menu page, VPAD/KPAD, and guest hook.
+    CHECK(rbrew_mod::set_mod_enabled("splatpc.test_mod", true, &toggle_err));
+    CHECK(rbrew_mod::is_mod_enabled("splatpc.test_mod"));
+    {
+        const auto mods = rbrew_mod::list_mods();
+        CHECK(mods.size() == 1 && mods[0].enabled && mods[0].initialized);
+    }
+    CHECK(rbrew_mod::list_menu_pages().size() == 1);
+    CHECK(rbrew_mod::has_vpad_hooks());
+    CHECK(rbrew_mod::has_kpad_providers());
+    CHECK(host->call_guest(cpu, kPluginAddr, args, 1u, &r3_out));
+    CHECK(r3_out == 117u);
+
+    // Disable again, restart loader, verify persisted disabled state skips early_init and init.
+    CHECK(rbrew_mod::set_mod_enabled("splatpc.test_mod", false, &toggle_err));
+    rbrew_mod::unload_mods_for_test();
+    rbrew_mod::set_dispatch_cpu_for_test(cpu);
+    rbrew_mod::set_mods_dir_for_test(tmp_dir_str.c_str());
+
+    CHECK(rbrew_mod::load_and_early_init(2, const_cast<char**>(argv_exit), 16u) == -1);
+    rbrew_mod::init_mods(cpu);
+    CHECK(rbrew_mod::has_mods());
+    CHECK(!rbrew_mod::is_mod_enabled("splatpc.test_mod"));
+    {
+        const auto mods = rbrew_mod::list_mods();
+        CHECK(mods.size() == 1 && !mods[0].enabled && !mods[0].initialized);
+    }
+    CHECK(host->call_guest(cpu, kPluginAddr, args, 1u, &r3_out));
+    CHECK(r3_out == 17u);
+
+    // Re-enabling after disabled boot succeeds live.
+    CHECK(rbrew_mod::set_mod_enabled("splatpc.test_mod", true, &toggle_err));
+    CHECK(host->call_guest(cpu, kPluginAddr, args, 1u, &r3_out));
+    CHECK(r3_out == 117u);
+
+    // Deleting a mod live shuts down hooks/extensions, unloads the library, and deletes the file.
+    const fs::path installed_dll = tmp_dir / src_path.filename();
+    CHECK(fs::exists(installed_dll));
+    CHECK(rbrew_mod::delete_mod("splatpc.test_mod", &toggle_err));
+    CHECK(!fs::exists(installed_dll));
+    CHECK(!rbrew_mod::has_mods());
+    CHECK(rbrew_mod::list_mods().empty());
+    CHECK(rbrew_mod::list_menu_pages().empty());
+    CHECK(!rbrew_mod::has_vpad_hooks());
+    CHECK(!rbrew_mod::has_kpad_providers());
+    CHECK(host->call_guest(cpu, kPluginAddr, args, 1u, &r3_out));
+    CHECK(r3_out == 17u);
+
+    // Re-adding the DLL and calling rescan_mods loads and initializes it live.
+    CHECK(fs::copy_file(src_path, installed_dll, fs::copy_options::overwrite_existing));
+    CHECK(rbrew_mod::rescan_mods() == 1u);
+    CHECK(rbrew_mod::has_mods());
+    CHECK(rbrew_mod::list_mods().size() == 1u && rbrew_mod::list_mods()[0].initialized);
+    CHECK(host->call_guest(cpu, kPluginAddr, args, 1u, &r3_out));
+    CHECK(r3_out == 117u);
+
+    rbrew_mod::unload_mods_for_test();
+    fs::remove_all(tmp_dir, ec);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -607,6 +723,8 @@ int main(int argc, char** argv) {
 
     if (argc >= 2 && argv[1] && *argv[1]) {
         test_plugin_load_and_unload(argv[1], host, &cpu, arena.data(), dispatch);
+        rbrew_mod::set_dispatch_cpu_for_test(&cpu);
+        test_mod_enable_disable_and_persistence(argv[1], host, &cpu, arena.data(), dispatch);
     }
 
     rbrew_mod::unload_mods_for_test();

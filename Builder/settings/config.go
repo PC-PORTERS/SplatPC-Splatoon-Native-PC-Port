@@ -70,10 +70,11 @@ type Configuration struct {
 	HasNvidiaGPU     bool
 	DetectedGPUName  string
 
-	// Step 3: Build jobs
+	// Step 3: Build jobs & optional mods
 	ParallelJobs          int
 	CleanBuild            bool
 	CleanupDepsAfterBuild bool
+	SelectedModIDs        []string
 }
 
 const FallbackOnlineServer = "173.249.46.125:60000"

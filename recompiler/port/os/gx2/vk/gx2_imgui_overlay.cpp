@@ -11,6 +11,7 @@
 #include "rebrewu/logger.hpp"
 #include "gx2_vk.h"
 #include "gx2_vk_shader.h"
+#include "../gx2_detile.h"
 
 #include "../../runtime/port_settings.h"
 #include "../../runtime/splatoon_diagnostics.h"
@@ -31,13 +32,16 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <map>
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace gx2_imgui {
@@ -71,6 +75,7 @@ std::atomic<bool> s_quit_opened_from_gameplay{false};
 std::atomic<bool> s_cancel_quit_confirm{false};
 std::atomic<bool> s_capture_active{false};     // render thread waits for a rebinding input
 std::atomic<bool> s_amiibo_requested{false};   // open the menu on the amiibo picker
+std::atomic<uint64_t> s_mod_page_requested{0}; // open the menu directly on a mod page
 std::atomic<bool> s_startup_login_open{false}; // startup ImGui Online Account Login modal
 
 std::mutex s_event_lock;
@@ -109,6 +114,30 @@ std::atomic<bool> s_friends_request{false};
 std::atomic<int> s_friends_toggle{0};
 MenuPage s_menu_page = MenuPage::Main;
 uint64_t s_selected_mod_page = 0;
+bool s_mod_page_direct = false;
+bool s_mod_back_pressed = false;
+bool s_focus_direct_canvas = false;
+std::string s_mod_toggle_error;
+std::string s_confirm_delete_mod_id;
+uint64_t s_texture_epoch = 1;
+ImFont* s_display_font = nullptr;
+float s_menu_anim = 0.0f;
+std::unordered_map<ImGuiID, float> s_nav_hover;
+
+struct ModTextureEntry {
+    gx2vk::Image image;
+    VkDescriptorSet descriptor = VK_NULL_HANDLE;
+};
+std::unordered_map<uint64_t, ModTextureEntry> s_mod_textures;
+
+void clear_mod_textures() {
+    for (auto& [id, entry] : s_mod_textures) {
+        if (s_ready && entry.descriptor) ImGui_ImplVulkan_RemoveTexture(entry.descriptor);
+        if (entry.image) gx2vk::destroy_image(entry.image);
+    }
+    s_mod_textures.clear();
+    ++s_texture_epoch;
+}
 gx2_graphics_menu::Page s_graphics_page = gx2_graphics_menu::Page::None; // graphics/weather/camera/cinema page
 bool s_prev_menu_open = false;
 bool s_capture = false; // waiting for the key/button of the selected action
@@ -180,20 +209,26 @@ std::string pad_name(int binding) {
     }
 }
 
+static Uint32 s_sdl_window_id = 0;
+
 void check_vk_result(VkResult result) {
     if (result != VK_SUCCESS) RBREW_LOG_ERROR("imgui", "Vulkan error %d\n", int(result));
 }
 
 bool backend_init(SDL_Window* window, VkInstance instance, VkPhysicalDevice physical, VkDevice device,
                   uint32_t queue_family, VkQueue queue, VkFormat format, uint32_t image_count) {
+    s_sdl_window_id = window ? SDL_GetWindowID(window) : 0;
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     // Keyboard too: arrows/Tab move through the menu, Enter/Space change.
     io.ConfigFlags |=
         ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad | ImGuiConfigFlags_DockingEnable;
+    io.ConfigNavCursorVisibleAlways = true;
     io.IniFilename = nullptr; // no imgui.ini next to the game; layout lives for the session
     ImGui::StyleColorsDark();
+    io.Fonts->AddFontDefault();
+    s_display_font = nullptr;
 
     if (!ImGui_ImplSDL2_InitForVulkan(window)) {
         RBREW_LOG_ERROR("imgui", "ImGui_ImplSDL2_InitForVulkan failed\n");
@@ -208,7 +243,7 @@ bool backend_init(SDL_Window* window, VkInstance instance, VkPhysicalDevice phys
     info.Device = device;
     info.QueueFamily = queue_family;
     info.Queue = queue;
-    info.DescriptorPoolSize = 64; // font atlas plus headroom; the backend creates the pool
+    info.DescriptorPoolSize = 128; // font atlas + mod textures + headroom
     info.MinImageCount = 2;
     info.ImageCount = std::max<uint32_t>(image_count, 2);
     info.UseDynamicRendering = true;
@@ -232,6 +267,7 @@ bool backend_init(SDL_Window* window, VkInstance instance, VkPhysicalDevice phys
 
 void backend_shutdown() {
     if (!s_ready) return;
+    clear_mod_textures();
     ImGui_ImplVulkan_Shutdown();
     ImGui_ImplSDL2_Shutdown();
     ImGui::DestroyContext();
@@ -247,6 +283,8 @@ void backend_shutdown() {
     s_graphics_page = gx2_graphics_menu::Page::None;
     s_capture = false;
     s_focused_action = -1;
+    s_menu_anim = 0.0f;
+    s_nav_hover.clear();
     s_quit_confirm_requested.store(false);
     s_quit_confirm_open.store(false);
     s_quit_opened_from_gameplay.store(false);
@@ -322,6 +360,8 @@ void process_nav_event(const SDL_Event& e) {
         }
         if (s_menu_page == MenuPage::Amiibo)
             set_menu_open(false); // back to the game's own "touch amiibo" screen
+        else if (s_menu_page == MenuPage::ModPage && s_mod_page_direct)
+            s_mod_back_pressed = true; // delegate screen-level back to direct custom mod UI
         else if (s_graphics_page != gx2_graphics_menu::Page::None)
             s_graphics_page = gx2_graphics_menu::Page::None;
         else if (s_menu_page != MenuPage::Main)
@@ -534,48 +574,92 @@ void build_debug_window() {
 }
 
 void build_controls_page(MenuPage page) {
-    const bool keyboard = page == MenuPage::Keyboard;
+    (void)page;
+    static int s_last_controls_frame = -10;
+    const int frame = ImGui::GetFrameCount();
+    const bool force_select = (frame - s_last_controls_frame) > 1;
+    s_last_controls_frame = frame;
+
+    if (ImGui::BeginTabBar("##controls_tabs")) {
+        const ImGuiTabItemFlags kb_flags =
+            (force_select && s_menu_page == MenuPage::Keyboard) ? ImGuiTabItemFlags_SetSelected : 0;
+        const ImGuiTabItemFlags pad_flags =
+            (force_select && s_menu_page == MenuPage::Controller) ? ImGuiTabItemFlags_SetSelected : 0;
+        if (ImGui::BeginTabItem("Mouse & keyboard", nullptr, kb_flags)) {
+            if (!force_select && s_menu_page != MenuPage::Keyboard) {
+                s_menu_page = MenuPage::Keyboard;
+                s_capture = false;
+            }
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Controller", nullptr, pad_flags)) {
+            if (!force_select && s_menu_page != MenuPage::Controller) {
+                s_menu_page = MenuPage::Controller;
+                s_capture = false;
+            }
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
+    }
+    ImGui::Spacing();
+
+    const bool keyboard = s_menu_page == MenuPage::Keyboard;
     ImGui::SeparatorText(keyboard ? "Mouse" : "Gyro");
     if (keyboard)
         gx2_graphics_menu::build_mouse_rows();
     else
         gx2_graphics_menu::build_gyro_rows();
-    ImGui::SeparatorText(keyboard ? "Keys" : "Buttons");
+    ImGui::Spacing();
+    ImGui::SeparatorText(keyboard ? "Key bindings" : "Button bindings");
     const auto v = rs::get();
     const int count = keyboard ? rs::kActionCount : rs::kFirstMoveAction;
+    const float avail_w = ImGui::GetContentRegionAvail().x;
+    const float spacing_x = ImGui::GetStyle().ItemSpacing.x;
+    const float clear_w = ImGui::CalcTextSize("Clear").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+    float max_label_w = 0.0f;
+    for (int action = 0; action < count; ++action) {
+        max_label_w = std::max(max_label_w, ImGui::CalcTextSize(kActionLabels[action]).x);
+    }
+    const float btn_w =
+        std::clamp(avail_w - max_label_w - clear_w - spacing_x * 3.0f, 110.0f, std::max(120.0f, avail_w * 0.36f));
+    const float btn_col_x = std::max(max_label_w + spacing_x * 2.0f, avail_w - btn_w - clear_w - spacing_x);
+
     for (int action = 0; action < count; ++action) {
         ImGui::PushID(action);
         ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted(kActionLabels[action]);
-        ImGui::SameLine(220);
+        ImGui::SameLine(btn_col_x);
         const int binding = keyboard ? v.keys[action] : v.pad[action];
-        const bool capturing = s_capture && s_capture_page == page && s_capture_action == action;
-        const std::string label = capturing ? "press ..." : keyboard ? key_name(binding) : pad_name(binding);
-        if (ImGui::Button(label.c_str(), ImVec2(180, 0))) {
+        const bool capturing = s_capture && s_capture_page == s_menu_page && s_capture_action == action;
+        const std::string label = capturing ? "Press key..." : keyboard ? key_name(binding) : pad_name(binding);
+        if (capturing) {
+            const ImVec4 active_col = ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive);
+            const ImVec4 hover_col = ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered);
+            ImGui::PushStyleColor(ImGuiCol_Button, active_col);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hover_col);
+        }
+        if (ImGui::Button(label.c_str(), ImVec2(btn_w, 0))) {
             s_capture = true;
-            s_capture_page = page;
+            s_capture_page = s_menu_page;
             s_capture_action = action;
         }
+        if (capturing) ImGui::PopStyleColor(2);
         if (ImGui::IsItemFocused()) {
-            s_focused_page = page;
+            s_focused_page = s_menu_page;
             s_focused_action = action;
         }
         ImGui::SameLine();
-        if (ImGui::SmallButton("x")) bind_action(page, action, rs::kUnbound);
+        if (ImGui::Button("Clear", ImVec2(clear_w, 0))) bind_action(s_menu_page, action, rs::kUnbound);
         ImGui::PopID();
     }
+    ImGui::Spacing();
     if (ImGui::Button("Reset to defaults")) {
         auto defaults = rs::get();
         rs::default_bindings(defaults.keys, defaults.pad);
         rs::set(defaults);
     }
-    ImGui::SameLine();
-    if (ImGui::Button("Back")) {
-        s_menu_page = MenuPage::Main;
-        s_capture = false;
-    }
-    ImGui::TextDisabled("%s", keyboard ? "Enter: change    Delete: clear    Esc: close"
-                                       : "Cross: change    Square: clear    Circle: back");
+    ImGui::TextDisabled("%s", keyboard ? "Enter: change   Delete: clear   Esc: resume"
+                                       : "Cross: change   Square: clear   Circle: back");
 }
 
 // ---- Friends page (F4) ----
@@ -672,8 +756,6 @@ void build_page() {
     if (!online_cfg.online || dir().empty()) {
         ImGui::TextWrapped("Online mode is off. Log in to an online account or enable Online in SplatPC Builder.");
         if (ImGui::Button("Online Login / Account")) s_menu_page = MenuPage::OnlineLogin;
-        ImGui::SameLine();
-        if (ImGui::Button("Back")) s_menu_page = MenuPage::Main;
         return;
     }
     refresh();
@@ -687,6 +769,9 @@ void build_page() {
         ImGui::SetKeyboardFocusHere();
         s_focus_input = false;
     }
+    const float add_w = ImGui::CalcTextSize("Add").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+    ImGui::SetNextItemWidth(
+        std::max(120.0f, ImGui::GetContentRegionAvail().x - add_w - ImGui::GetStyle().ItemSpacing.x));
     const bool entered =
         ImGui::InputText("##friend_pseudo", s_input, sizeof s_input, ImGuiInputTextFlags_EnterReturnsTrue);
     ImGui::SameLine();
@@ -706,37 +791,51 @@ void build_page() {
     if (!s_requests.empty()) {
         ImGui::Separator();
         ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "Friend requests (%zu)", s_requests.size());
-        for (size_t i = 0; i < s_requests.size(); ++i) {
-            const Request request = s_requests[i];
-            ImGui::PushID(("request_" + request.pid).c_str());
-            ImGui::TextUnformatted(request.name.c_str());
-            ImGui::SameLine(ImGui::GetWindowWidth() - 190.0f);
-            const bool accepted = ImGui::SmallButton("Accept##request_accept");
-            ImGui::SameLine();
-            const bool declined = ImGui::SmallButton("Decline##request_decline");
-            ImGui::PopID();
-            if (accepted || declined) {
-                send(accepted ? "accept.cmd" : "decline.cmd", request.pid);
-                s_answered[request.pid] = ImGui::GetTime();
-                s_result = request.name + (accepted ? ": accepting..." : ": declining...");
-                s_requests.erase(s_requests.begin() + long(i));
-                break;
+        if (ImGui::BeginTable("##requests_tbl", 2, ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupColumn("name", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("actions", ImGuiTableColumnFlags_WidthFixed);
+            for (size_t i = 0; i < s_requests.size(); ++i) {
+                const Request request = s_requests[i];
+                ImGui::TableNextRow();
+                ImGui::PushID(("request_" + request.pid).c_str());
+                ImGui::TableSetColumnIndex(0);
+                ImGui::TextUnformatted(request.name.c_str());
+                ImGui::TableSetColumnIndex(1);
+                const bool accepted = ImGui::SmallButton("Accept##request_accept");
+                ImGui::SameLine();
+                const bool declined = ImGui::SmallButton("Decline##request_decline");
+                ImGui::PopID();
+                if (accepted || declined) {
+                    send(accepted ? "accept.cmd" : "decline.cmd", request.pid);
+                    s_answered[request.pid] = ImGui::GetTime();
+                    s_result = request.name + (accepted ? ": accepting..." : ": declining...");
+                    s_requests.erase(s_requests.begin() + long(i));
+                    break;
+                }
             }
+            ImGui::EndTable();
         }
     }
     ImGui::Separator();
-    if (s_rows.empty()) ImGui::TextDisabled("No friends yet.");
-    for (size_t i = 0; i < s_rows.size(); ++i) {
-        ImGui::PushID(int(i));
-        ImGui::TextColored(s_rows[i].online ? ImVec4(0.4f, 1.0f, 0.5f, 1.0f) : ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "%s %s",
-                           s_rows[i].online ? "(online)" : "(offline or has not added you)", s_rows[i].name.c_str());
-        ImGui::SameLine(ImGui::GetWindowWidth() - 90.0f);
-        if (ImGui::SmallButton("Remove")) send("remove.cmd", s_rows[i].name);
-        ImGui::PopID();
+    if (s_rows.empty()) {
+        ImGui::TextDisabled("No friends yet.");
+    } else if (ImGui::BeginTable("##friends_tbl", 2, ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("friend", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("action", ImGuiTableColumnFlags_WidthFixed);
+        for (size_t i = 0; i < s_rows.size(); ++i) {
+            ImGui::TableNextRow();
+            ImGui::PushID(int(i));
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextColored(s_rows[i].online ? ImVec4(0.4f, 1.0f, 0.5f, 1.0f) : ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
+                               "%s %s", s_rows[i].online ? "(online)" : "(offline or has not added you)",
+                               s_rows[i].name.c_str());
+            ImGui::TableSetColumnIndex(1);
+            if (ImGui::SmallButton("Remove")) send("remove.cmd", s_rows[i].name);
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
     }
     ImGui::Separator();
-    if (ImGui::Button("Back")) s_menu_page = MenuPage::Main;
-    ImGui::SameLine();
     if (ImGui::Button("Account / Tokens")) s_menu_page = MenuPage::OnlineLogin;
     ImGui::SameLine();
     ImGui::TextDisabled("F4 / Esc: close");
@@ -814,17 +913,19 @@ void draw_form_body(bool startup_mode) {
         s_login_submitted = true;
         rbrew_native::start_interactive_login({s_pseudo, s_server, s_register_url, s_nncs1, s_nncs2});
     }
-    ImGui::SameLine();
     if (startup_mode) {
+        ImGui::SameLine();
         if (ImGui::Button("Play Offline")) {
             rbrew_online::set_session_offline(true);
             s_startup_login_open.store(false, std::memory_order_relaxed);
         }
-    } else {
-        if (ImGui::Button("Back")) s_menu_page = MenuPage::Main;
     }
     if (st.has_saved_token || st.has_registered) {
-        ImGui::SameLine();
+        const float clear_w = ImGui::CalcTextSize("Clear Saved Tokens").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+        const float right_edge = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
+        if ((ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x + clear_w) <= right_edge) {
+            ImGui::SameLine();
+        }
         if (ImGui::Button("Clear Saved Tokens")) rbrew_native::clear_saved_tokens();
     }
     ImGui::EndDisabled();
@@ -937,6 +1038,337 @@ void build_amiibo_page() {
 
 namespace {
 
+ImGuiCol map_mod_col(int col_id) {
+    switch (col_id) {
+    case SPLATMOD_COL_TEXT: return ImGuiCol_Text;
+    case SPLATMOD_COL_TEXT_DISABLED: return ImGuiCol_TextDisabled;
+    case SPLATMOD_COL_WINDOW_BG: return ImGuiCol_WindowBg;
+    case SPLATMOD_COL_CHILD_BG: return ImGuiCol_ChildBg;
+    case SPLATMOD_COL_BORDER: return ImGuiCol_Border;
+    case SPLATMOD_COL_FRAME_BG: return ImGuiCol_FrameBg;
+    case SPLATMOD_COL_BUTTON: return ImGuiCol_Button;
+    case SPLATMOD_COL_BUTTON_HOVERED: return ImGuiCol_ButtonHovered;
+    case SPLATMOD_COL_BUTTON_ACTIVE: return ImGuiCol_ButtonActive;
+    case SPLATMOD_COL_SCROLLBAR_BG: return ImGuiCol_ScrollbarBg;
+    case SPLATMOD_COL_SCROLLBAR_GRAB: return ImGuiCol_ScrollbarGrab;
+    case SPLATMOD_COL_SCROLLBAR_GRAB_HOVERED: return ImGuiCol_ScrollbarGrabHovered;
+    default: return ImGuiCol_Text;
+    }
+}
+
+ImGuiStyleVar map_mod_var(int var_id) {
+    switch (var_id) {
+    case SPLATMOD_VAR_WINDOW_PADDING: return ImGuiStyleVar_WindowPadding;
+    case SPLATMOD_VAR_WINDOW_ROUNDING: return ImGuiStyleVar_WindowRounding;
+    case SPLATMOD_VAR_WINDOW_BORDER_SIZE: return ImGuiStyleVar_WindowBorderSize;
+    case SPLATMOD_VAR_CHILD_ROUNDING: return ImGuiStyleVar_ChildRounding;
+    case SPLATMOD_VAR_FRAME_PADDING: return ImGuiStyleVar_FramePadding;
+    case SPLATMOD_VAR_FRAME_ROUNDING: return ImGuiStyleVar_FrameRounding;
+    case SPLATMOD_VAR_FRAME_BORDER_SIZE: return ImGuiStyleVar_FrameBorderSize;
+    case SPLATMOD_VAR_ITEM_SPACING: return ImGuiStyleVar_ItemSpacing;
+    case SPLATMOD_VAR_SCROLLBAR_ROUNDING: return ImGuiStyleVar_ScrollbarRounding;
+    default: return ImGuiStyleVar_FrameRounding;
+    }
+}
+
+ImU32 rgba_u32(float r, float g, float b, float a) {
+    return ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, a));
+}
+
+uint64_t mod_create_rgba_texture(void*, const uint8_t* rgba, uint32_t w, uint32_t h) {
+    if (!s_ready || !rgba || w == 0 || h == 0 || !gx2vk::ready()) return 0;
+    if (s_mod_textures.size() >= 64) return 0;
+    const VkDeviceSize bytes = VkDeviceSize(w) * VkDeviceSize(h) * 4u;
+
+    gx2vk::ImageDesc desc{};
+    desc.type = VK_IMAGE_TYPE_2D;
+    desc.format = VK_FORMAT_R8G8B8A8_UNORM;
+    desc.width = w;
+    desc.height = h;
+    desc.depth = 1;
+    desc.levels = 1;
+    desc.layers = 1;
+    desc.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+
+    ModTextureEntry entry{};
+    if (!gx2vk::create_image(entry.image, desc)) return 0;
+
+    const gx2vk::Span span = gx2vk::upload(bytes, 16);
+    if (!span.buffer || !span.data) {
+        gx2vk::destroy_image(entry.image);
+        return 0;
+    }
+    std::memcpy(span.data, rgba, size_t(bytes));
+
+    VkCommandBuffer cb = gx2vk::cmd();
+    VkBufferImageCopy region{};
+    region.bufferOffset = span.offset;
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.imageExtent = {w, h, 1};
+    vkCmdCopyBufferToImage(cb, span.buffer, entry.image.image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+    gx2vk::note_gpu_write(entry.image);
+    gx2vk::barrier_if_dirty();
+
+    gx2vk::ViewDesc vdesc{};
+    vdesc.type = VK_IMAGE_VIEW_TYPE_2D;
+    vdesc.format = VK_FORMAT_R8G8B8A8_UNORM;
+    VkImageView view = gx2vk::image_view(entry.image, vdesc);
+    if (!view) {
+        gx2vk::destroy_image(entry.image);
+        return 0;
+    }
+
+    VkSamplerCreateInfo sinfo{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+    sinfo.magFilter = VK_FILTER_LINEAR;
+    sinfo.minFilter = VK_FILTER_LINEAR;
+    sinfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    sinfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sinfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sinfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sinfo.maxLod = 1.0f;
+    (void)gx2vk::sampler(sinfo);
+
+    entry.descriptor = ImGui_ImplVulkan_AddTexture(view, VK_IMAGE_LAYOUT_GENERAL);
+    if (!entry.descriptor) {
+        gx2vk::destroy_image(entry.image);
+        return 0;
+    }
+
+    const uint64_t handle = reinterpret_cast<uint64_t>(entry.descriptor);
+    s_mod_textures.emplace(handle, std::move(entry));
+    return handle;
+}
+
+void mod_destroy_texture(void*, uint64_t tex_id) {
+    if (!tex_id) return;
+    auto it = s_mod_textures.find(tex_id);
+    if (it == s_mod_textures.end()) return;
+    VkDescriptorSet ds = it->second.descriptor;
+    gx2vk::Image img = std::move(it->second.image);
+    s_mod_textures.erase(it);
+    gx2vk::defer([ds, img = std::move(img)]() mutable {
+        if (s_ready && ds) ImGui_ImplVulkan_RemoveTexture(ds);
+        if (img) gx2vk::destroy_image(img);
+    });
+}
+
+bool mod_detile_gx2_mip0(void*, uint32_t w_elem, uint32_t h_elem, uint32_t pitch_elem, uint32_t bpe, uint32_t tile_mode,
+                         uint32_t swizzle, const uint8_t* tiled, size_t tiled_size, uint8_t* out) {
+    Gx2DetileDesc d{};
+    d.width = w_elem;
+    d.height = h_elem;
+    d.pitch = pitch_elem;
+    d.bits_per_element = bpe;
+    d.tile_mode = tile_mode;
+    d.swizzle = swizzle;
+    return gx2_detile_mip0(d, tiled, tiled_size, out);
+}
+
+void mod_image_rounded(void*, uint64_t tex_id, float w, float h, float rounding, float border_r, float border_g,
+                       float border_b, float border_a) {
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    const ImVec2 p1(p0.x + w, p0.y + h);
+    ImGui::Dummy(ImVec2(w, h));
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    if (tex_id != 0) {
+        dl->AddImageRounded(static_cast<ImTextureID>(tex_id), p0, p1, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE,
+                            rounding);
+    } else {
+        dl->AddRectFilled(p0, p1, IM_COL32(34, 38, 56, 255), rounding);
+    }
+    if (border_a > 0.01f) {
+        dl->AddRect(p0, p1, rgba_u32(border_r, border_g, border_b, border_a), rounding, 0, 2.0f);
+    }
+}
+
+bool mod_stage_card(void*, const char* id, uint64_t tex_id, const char* title, const char* badge, bool selected,
+                    float w, float h, float accent_r, float accent_g, float accent_b) {
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    const ImVec2 p1(p0.x + w, p0.y + h);
+    const bool clicked = ImGui::InvisibleButton(id ? id : "##card", ImVec2(w, h), ImGuiButtonFlags_EnableNav);
+    const bool hovered = ImGui::IsItemHovered();
+    const bool focused = ImGui::IsItemFocused();
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float rounding = 10.0f;
+
+    // Background plate
+    dl->AddRectFilled(p0, p1, IM_COL32(22, 26, 40, 255), rounding);
+
+    // Stage preview art inside upper portion / full bleed with bottom caption scrim
+    if (tex_id != 0) {
+        dl->AddImageRounded(static_cast<ImTextureID>(tex_id), p0, p1, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE,
+                            rounding);
+    } else {
+        dl->AddRectFilledMultiColor(p0, p1, IM_COL32(36, 44, 68, 255), IM_COL32(48, 32, 68, 255),
+                                    IM_COL32(24, 28, 44, 255), IM_COL32(20, 24, 38, 255));
+    }
+
+    // Bottom dark gradient scrim for crisp stage name readability
+    const float scrim_top = p0.y + h * 0.56f;
+    dl->AddRectFilledMultiColor(ImVec2(p0.x, scrim_top), p1, IM_COL32(10, 12, 20, 20), IM_COL32(10, 12, 20, 20),
+                                IM_COL32(8, 10, 16, 238), IM_COL32(8, 10, 16, 238));
+    // Re-mask bottom corners cleanly
+    dl->AddRectFilled(ImVec2(p0.x, p1.y - 30.0f), p1, IM_COL32(10, 12, 18, 225), rounding,
+                      ImDrawFlags_RoundCornersBottom);
+
+    if (hovered || focused) {
+        dl->AddRectFilled(p0, p1, rgba_u32(accent_r, accent_g, accent_b, 0.14f), rounding);
+    }
+
+    // Crisp stage title centered in bottom strip
+    if (title && *title) {
+        ImFont* tfont = s_display_font ? s_display_font : ImGui::GetFont();
+        const float tsize = s_display_font ? 20.0f : ImGui::GetFontSize();
+        const ImVec2 tsz = tfont->CalcTextSizeA(tsize, FLT_MAX, w - 14.0f, title);
+        const float tx = p0.x + std::max(7.0f, (w - tsz.x) * 0.5f);
+        const float ty = p1.y - std::max(26.0f, tsz.y + 6.0f);
+        dl->AddText(tfont, tsize, ImVec2(tx + 1.5f, ty + 1.5f), IM_COL32(0, 0, 0, 230), title, nullptr, w - 14.0f);
+        dl->AddText(tfont, tsize, ImVec2(tx, ty), IM_COL32(255, 255, 255, 255), title, nullptr, w - 14.0f);
+    }
+
+    // Badge pill (top-left) if provided
+    if (badge && *badge) {
+        const ImVec2 bsz = ImGui::CalcTextSize(badge);
+        const ImVec2 bp0(p0.x + 8.0f, p0.y + 8.0f);
+        const ImVec2 bp1(bp0.x + bsz.x + 14.0f, bp0.y + bsz.y + 6.0f);
+        dl->AddRectFilled(bp0, bp1, rgba_u32(accent_r, accent_g, accent_b, 0.95f), 6.0f);
+        dl->AddText(ImVec2(bp0.x + 7.0f, bp0.y + 3.0f), IM_COL32(12, 16, 24, 255), badge);
+    }
+
+    // Border highlight (selected accent + distinct crisp white focus/hover halo)
+    if (selected) {
+        dl->AddRect(p0, p1, rgba_u32(accent_r, accent_g, accent_b, 1.0f), rounding, 0, 3.5f);
+    } else {
+        dl->AddRect(p0, p1, IM_COL32(255, 255, 255, 42), rounding, 0, 1.2f);
+    }
+    if (focused || hovered) {
+        dl->AddRect(ImVec2(p0.x - 2.0f, p0.y - 2.0f), ImVec2(p1.x + 2.0f, p1.y + 2.0f), IM_COL32(255, 255, 255, 245),
+                    rounding + 2.0f, 0, 2.8f);
+    }
+    return clicked;
+}
+
+bool mod_option_card(void*, const char* id, const char* title, const char* subtitle, const char* badge, bool selected,
+                     float w, float h, float accent_r, float accent_g, float accent_b) {
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    const ImVec2 p1(p0.x + w, p0.y + h);
+    const bool clicked = ImGui::InvisibleButton(id ? id : "##opt", ImVec2(w, h), ImGuiButtonFlags_EnableNav);
+    const bool hovered = ImGui::IsItemHovered();
+    const bool focused = ImGui::IsItemFocused();
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float rounding = 11.0f;
+
+    ImU32 bg = IM_COL32(28, 32, 48, 240);
+    if (selected) {
+        bg = IM_COL32(int(24 + accent_r * 34), int(28 + accent_g * 34), int(42 + accent_b * 34), 245);
+    } else if (hovered || focused) {
+        bg = IM_COL32(40, 46, 68, 250);
+    }
+    dl->AddRectFilled(p0, p1, bg, rounding);
+
+    // Left ink accent stripe
+    dl->AddRectFilled(p0, ImVec2(p0.x + 8.0f, p1.y), rgba_u32(accent_r, accent_g, accent_b, 0.95f), rounding,
+                      ImDrawFlags_RoundCornersLeft);
+
+    const float text_left = p0.x + 20.0f;
+    float wrap_w = w - 34.0f;
+    if (badge && *badge) {
+        const ImVec2 bsz = ImGui::CalcTextSize(badge);
+        const float bw = bsz.x + 18.0f;
+        const ImVec2 bp1(p1.x - 14.0f, p0.y + 14.0f + bsz.y + 8.0f);
+        const ImVec2 bp0(bp1.x - bw, p0.y + 14.0f);
+        dl->AddRectFilled(bp0, bp1, rgba_u32(accent_r, accent_g, accent_b, 0.95f), 7.0f);
+        dl->AddText(ImVec2(bp0.x + 9.0f, bp0.y + 4.0f), IM_COL32(12, 16, 24, 255), badge);
+        wrap_w = std::max(120.0f, bp0.x - text_left - 10.0f);
+    }
+
+    if (title && *title) {
+        ImFont* tfont = s_display_font ? s_display_font : ImGui::GetFont();
+        const float tsize = s_display_font ? 23.0f : (ImGui::GetFontSize() * 1.12f);
+        dl->AddText(tfont, tsize, ImVec2(text_left + 1.0f, p0.y + 11.0f), IM_COL32(0, 0, 0, 180), title);
+        dl->AddText(tfont, tsize, ImVec2(text_left, p0.y + 10.0f), IM_COL32(255, 255, 255, 255), title);
+    }
+    if (subtitle && *subtitle) {
+        dl->AddText(ImGui::GetFont(), ImGui::GetFontSize() * 0.88f, ImVec2(text_left, p0.y + 38.0f),
+                    IM_COL32(192, 204, 226, 245), subtitle, nullptr, wrap_w);
+    }
+
+    if (selected) {
+        dl->AddRect(p0, p1, rgba_u32(accent_r, accent_g, accent_b, 1.0f), rounding, 0, 3.0f);
+    } else {
+        dl->AddRect(p0, p1, IM_COL32(255, 255, 255, 45), rounding, 0, 1.2f);
+    }
+    if (focused || hovered) {
+        dl->AddRect(ImVec2(p0.x - 2.0f, p0.y - 2.0f), ImVec2(p1.x + 2.0f, p1.y + 2.0f), IM_COL32(255, 255, 255, 245),
+                    rounding + 2.0f, 0, 2.8f);
+    }
+    return clicked;
+}
+
+const SplatModUiEx kModUiEx = {
+    sizeof(SplatModUiEx),
+    [](void*) { return s_texture_epoch; },
+    &mod_create_rgba_texture,
+    &mod_destroy_texture,
+    &mod_detile_gx2_mip0,
+    [](void*, float* out_w, float* out_h) {
+        const ImGuiViewport* vp = ImGui::GetMainViewport();
+        if (out_w) *out_w = vp ? vp->WorkSize.x : 1280.0f;
+        if (out_h) *out_h = vp ? vp->WorkSize.y : 720.0f;
+    },
+    [](void*, float* out_w, float* out_h) {
+        const ImVec2 av = ImGui::GetContentRegionAvail();
+        if (out_w) *out_w = av.x;
+        if (out_h) *out_h = av.y;
+    },
+    [](void*) { return ImGui::GetTime(); },
+    [](void*) {
+        const bool p = s_mod_back_pressed;
+        s_mod_back_pressed = false;
+        return p;
+    },
+    [](void*, float scale) { ImGui::SetWindowFontScale(scale); },
+    [](void*, int col_id, float r, float g, float b, float a) {
+        ImGui::PushStyleColor(map_mod_col(col_id), ImVec4(r, g, b, a));
+    },
+    [](void*, int count) { ImGui::PopStyleColor(count); },
+    [](void*, int var_id, float val) { ImGui::PushStyleVar(map_mod_var(var_id), val); },
+    [](void*, int var_id, float x, float y) { ImGui::PushStyleVar(map_mod_var(var_id), ImVec2(x, y)); },
+    [](void*, int count) { ImGui::PopStyleVar(count); },
+    [](void*, const char* id, float w, float h, bool border) {
+        return ImGui::BeginChild(id ? id : "##child", ImVec2(w, h), border ? ImGuiChildFlags_Borders : 0);
+    },
+    [](void*) { ImGui::EndChild(); },
+    [](void*, float offset_x, float spacing) { ImGui::SameLine(offset_x, spacing); },
+    [](void*, float w, float h) { ImGui::Dummy(ImVec2(w, h)); },
+    [](void*, float x) { ImGui::SetCursorPosX(x); },
+    [](void*, float y) { ImGui::SetCursorPosY(y); },
+    [](void*) { return ImGui::GetCursorPosX(); },
+    [](void*) { return ImGui::GetCursorPosY(); },
+    [](void*) {
+        ImGui::SetWindowFocus();
+        ImGui::SetKeyboardFocusHere();
+    },
+    [](void*, const char* label, float w, float h) { return ImGui::Button(label ? label : "", ImVec2(w, h)); },
+    &mod_image_rounded,
+    [](void*, float x, float y, float w, float h, float r, float g, float b, float a, float rounding) {
+        const ImVec2 wp = ImGui::GetWindowPos();
+        ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(wp.x + x, wp.y + y), ImVec2(wp.x + x + w, wp.y + y + h),
+                                                  rgba_u32(r, g, b, a), rounding);
+    },
+    &mod_stage_card,
+    &mod_option_card,
+    [](void*, float width, float r, float g, float b, float a, const char* text) {
+        if (!text) return;
+        const ImVec2 tsz = ImGui::CalcTextSize(text);
+        const float cx = ImGui::GetCursorPosX();
+        if (width > tsz.x) ImGui::SetCursorPosX(cx + (width - tsz.x) * 0.5f);
+        ImGui::TextColored(ImVec4(r, g, b, a), "%s", text);
+    },
+};
+
 const SplatModUi kModUi = {
     nullptr,
     [](void*, const char* text) { ImGui::TextUnformatted(text ? text : ""); },
@@ -961,32 +1393,124 @@ const SplatModUi kModUi = {
     [](void*, bool disabled) { ImGui::BeginDisabled(disabled); },
     [](void*) { ImGui::EndDisabled(); },
     [](void*, const char* text) { ImGui::SetClipboardText(text ? text : ""); },
+    &kModUiEx,
 };
 
 } // namespace
 
 void build_mods_page() {
     const auto mods = rbrew_mod::list_mods();
-    const auto pages = rbrew_mod::list_menu_pages();
-    const float width = ImGui::GetContentRegionAvail().x;
-
-    ImGui::TextDisabled("Loaded mods (%zu):", mods.size());
-    ImGui::Separator();
-    for (const auto& mod : mods) {
-        ImGui::Text("%s %s", mod.name.c_str(), mod.version.c_str());
-        if (!mod.author.empty()) {
-            ImGui::SameLine();
-            ImGui::TextDisabled("by %s", mod.author.c_str());
-        }
-        ImGui::TextDisabled("  id: %s%s", mod.id.c_str(), mod.initialized ? "" : " (inactive)");
+    size_t enabled_count = 0;
+    for (const auto& m : mods) {
+        if (m.enabled) ++enabled_count;
     }
 
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextDisabled("Mods (%zu/%zu enabled)", enabled_count, mods.size());
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Rescan")) {
+        s_mod_toggle_error.clear();
+        s_confirm_delete_mod_id.clear();
+        rbrew_mod::rescan_mods();
+    }
+    ImGui::Separator();
+
+    if (mods.empty()) {
+        ImGui::TextDisabled("No mods installed.");
+    } else if (ImGui::BeginTable("##mods_table", 2,
+                                 ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg |
+                                     ImGuiTableFlags_BordersInnerH)) {
+        ImGui::TableSetupColumn("mod", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("actions", ImGuiTableColumnFlags_WidthFixed);
+
+        for (const auto& mod : mods) {
+            ImGui::TableNextRow();
+            ImGui::PushID(mod.id.c_str());
+
+            ImGui::TableSetColumnIndex(0);
+            bool enabled = mod.enabled;
+            if (ImGui::Checkbox("##enabled", &enabled)) {
+                s_mod_toggle_error.clear();
+                s_confirm_delete_mod_id.clear();
+                std::string err;
+                if (!rbrew_mod::set_mod_enabled(mod.id, enabled, &err)) {
+                    s_mod_toggle_error = err.empty() ? (mod.name + ": toggle failed") : (mod.name + ": " + err);
+                } else if (!enabled && s_selected_mod_page != 0) {
+                    bool still_present = false;
+                    for (const auto& p : rbrew_mod::list_menu_pages()) {
+                        if (p.handle == s_selected_mod_page) {
+                            still_present = true;
+                            break;
+                        }
+                    }
+                    if (!still_present) {
+                        s_selected_mod_page = 0;
+                        s_mod_page_direct = false;
+                    }
+                }
+            }
+            ImGui::SameLine();
+            ImGui::BeginGroup();
+            if (mod.enabled) {
+                ImGui::TextWrapped("%s %s", mod.name.c_str(), mod.version.c_str());
+            } else {
+                ImGui::TextDisabled("%s %s (Disabled)", mod.name.c_str(), mod.version.c_str());
+            }
+            if (!mod.author.empty()) {
+                ImGui::TextDisabled("by %s", mod.author.c_str());
+            }
+            ImGui::EndGroup();
+
+            ImGui::TableSetColumnIndex(1);
+            if (s_confirm_delete_mod_id == mod.id) {
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.65f, 0.16f, 0.16f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.80f, 0.22f, 0.22f, 1.0f));
+                if (ImGui::SmallButton("Confirm Delete")) {
+                    s_mod_toggle_error.clear();
+                    std::string err;
+                    if (!rbrew_mod::delete_mod(mod.id, &err)) {
+                        s_mod_toggle_error = err.empty() ? (mod.name + ": delete failed") : (mod.name + ": " + err);
+                    } else if (s_selected_mod_page != 0) {
+                        bool still_present = false;
+                        for (const auto& p : rbrew_mod::list_menu_pages()) {
+                            if (p.handle == s_selected_mod_page) {
+                                still_present = true;
+                                break;
+                            }
+                        }
+                        if (!still_present) {
+                            s_selected_mod_page = 0;
+                            s_mod_page_direct = false;
+                        }
+                    }
+                    s_confirm_delete_mod_id.clear();
+                }
+                ImGui::PopStyleColor(2);
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Cancel")) {
+                    s_confirm_delete_mod_id.clear();
+                }
+            } else if (ImGui::SmallButton("Delete")) {
+                s_confirm_delete_mod_id = mod.id;
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+
+    if (!s_mod_toggle_error.empty()) {
+        ImGui::Spacing();
+        ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.45f, 1.0f), "%s", s_mod_toggle_error.c_str());
+    }
+
+    const auto pages = rbrew_mod::list_menu_pages();
     if (!pages.empty()) {
         ImGui::Spacing();
         ImGui::SeparatorText("Mod Menus");
         for (const auto& page : pages) {
             if (ImGui::Button(page.title.c_str())) {
                 s_selected_mod_page = page.handle;
+                s_mod_page_direct = false;
                 s_menu_page = MenuPage::ModPage;
             }
             if (page.status) {
@@ -997,9 +1521,6 @@ void build_mods_page() {
             }
         }
     }
-
-    ImGui::Spacing();
-    if (ImGui::Button("Back", ImVec2(width, 0))) s_menu_page = MenuPage::Main;
 }
 
 void build_mod_custom_page() {
@@ -1013,6 +1534,7 @@ void build_mod_custom_page() {
     }
     if (!active || !active->draw) {
         s_selected_mod_page = 0;
+        s_mod_page_direct = false;
         s_menu_page = MenuPage::Mods;
         return;
     }
@@ -1020,29 +1542,112 @@ void build_mod_custom_page() {
     const int result = active->draw(&kModUi, active->user);
     if (result == SPLATMOD_MENU_QUIT) {
         open_quit_confirmation();
+    } else if (result == SPLATMOD_MENU_CLOSE) {
+        s_selected_mod_page = 0;
+        s_mod_page_direct = false;
+        s_mod_back_pressed = false;
+        set_menu_open(false);
+        return;
     } else if (result == SPLATMOD_MENU_BACK) {
         s_selected_mod_page = 0;
-        s_menu_page = MenuPage::Mods;
+        const bool direct = s_mod_page_direct;
+        s_mod_page_direct = false;
+        s_mod_back_pressed = false;
+        if (direct) {
+            set_menu_open(false);
+        } else {
+            s_menu_page = MenuPage::Mods;
+        }
         return;
     }
 
-    ImGui::Separator();
-    if (ImGui::Button("Back", ImVec2(ImGui::GetContentRegionAvail().x, 0))) {
-        s_selected_mod_page = 0;
-        s_menu_page = MenuPage::Mods;
+    if (!s_mod_page_direct) {
+        ImGui::Separator();
+        if (ImGui::Button("Back", ImVec2(ImGui::GetContentRegionAvail().x, 0))) {
+            s_selected_mod_page = 0;
+            s_mod_page_direct = false;
+            s_menu_page = MenuPage::Mods;
+        }
     }
 }
 const char* menu_title(MenuPage page) {
     switch (page) {
     case MenuPage::Display: return "Display";
-    case MenuPage::Keyboard: return "Mouse & keyboard";
-    case MenuPage::Controller: return "Controller";
+    case MenuPage::Keyboard:
+    case MenuPage::Controller: return "Controls";
     case MenuPage::Friends: return "Friends";
-    case MenuPage::OnlineLogin: return "Online Account";
+    case MenuPage::OnlineLogin: return "Account";
     case MenuPage::Amiibo: return "amiibo";
     case MenuPage::Mods: return "Mods";
-    default: return "Settings";
+    default: return "General";
     }
+}
+
+struct ScopedPauseStyle {
+    ScopedPauseStyle() {
+        const float s = std::max(1.0f, ImGui::GetIO().FontGlobalScale);
+        // Keep the built-in StyleColorsDark() palette and apply cleaner spacing/rounding.
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14.0f * s, 12.0f * s));
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f * s, 5.0f * s));
+        ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(6.0f * s, 4.0f * s));
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f * s, 6.0f * s));
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemInnerSpacing, ImVec2(6.0f * s, 4.0f * s));
+        ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, 12.0f * s);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 4.0f * s);
+        ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 4.0f * s);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 2.0f * s);
+        ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, 4.0f * s);
+        ImGui::PushStyleVar(ImGuiStyleVar_GrabRounding, 2.0f * s);
+        ImGui::PushStyleVar(ImGuiStyleVar_TabRounding, 3.0f * s);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 1.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_GrabMinSize, 12.0f * s);
+    }
+    ~ScopedPauseStyle() { ImGui::PopStyleVar(16); }
+};
+
+bool nav_item(const char* id, const char* label, bool active, float width) {
+    const float h = ImGui::GetFrameHeight() + 4.0f;
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    const ImVec2 p1(p0.x + width, p0.y + h);
+    const bool clicked = ImGui::InvisibleButton(id, ImVec2(width, h), ImGuiButtonFlags_EnableNav);
+    const bool hovered = ImGui::IsItemHovered();
+    const bool focused = ImGui::IsItemFocused();
+
+    const ImGuiID key = ImGui::GetID(id);
+    const float dt = std::clamp(ImGui::GetIO().DeltaTime, 0.001f, 0.05f);
+    float& ht = s_nav_hover[key];
+    const float goal = (active || hovered || focused) ? 1.0f : 0.0f;
+    ht += (goal - ht) * std::min(1.0f, dt * 14.0f);
+
+    const ImVec4 btn_col = ImGui::GetStyleColorVec4(ImGuiCol_Button);
+    const ImVec4 accent_col = ImGui::GetStyleColorVec4(ImGuiCol_CheckMark);
+    const ImVec4 text_col = ImGui::GetStyleColorVec4(ImGuiCol_Text);
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    if (active || ht > 0.02f) {
+        const float bg_alpha = active ? 0.55f : 0.35f * ht;
+        dl->AddRectFilled(p0, p1, ImGui::GetColorU32(ImVec4(btn_col.x, btn_col.y, btn_col.z, bg_alpha)), 3.0f);
+    }
+
+    if (active || ht > 0.05f) {
+        const float bar_h = h * (active ? 0.62f : 0.42f * ht);
+        const float by0 = p0.y + (h - bar_h) * 0.5f;
+        const float bar_alpha = active ? 1.0f : 0.78f * ht;
+        dl->AddRectFilled(ImVec2(p0.x + 2.0f, by0), ImVec2(p0.x + 5.0f, by0 + bar_h),
+                          ImGui::GetColorU32(ImVec4(accent_col.x, accent_col.y, accent_col.z, bar_alpha)), 1.5f);
+    }
+    if (focused) {
+        dl->AddRect(p0, p1, ImGui::GetColorU32(ImVec4(accent_col.x, accent_col.y, accent_col.z, 0.90f)), 3.0f, 0, 1.5f);
+    }
+
+    const ImVec2 tsz = ImGui::CalcTextSize(label);
+    const float ty = p0.y + (h - tsz.y) * 0.5f;
+    const float text_alpha = (active || hovered) ? 1.0f : 0.80f;
+    dl->AddText(ImVec2(p0.x + 12.0f, ty), ImGui::GetColorU32(ImVec4(text_col.x, text_col.y, text_col.z, text_alpha)),
+                label);
+    return clicked;
 }
 
 // Display page: the window, the frame rate and the FPS counters.
@@ -1079,12 +1684,13 @@ void build_display_page() {
         dirty = true;
     }
     if (v.resolution != rs::active_resolution()) {
-        ImGui::SameLine();
-        ImGui::TextDisabled("(after restart)");
+        ImGui::TextDisabled("Render resolution applies after restart.");
     }
+    ImGui::Spacing();
     ImGui::SeparatorText("Frame rate");
     dirty |= gx2_graphics_menu::build_frame_rows(v);
     dirty |= ImGui::Checkbox("Plaza 60 FPS", &v.plaza_60fps);
+    ImGui::Spacing();
     ImGui::SeparatorText("FPS counter");
     bool overlay = visible();
     if (ImGui::Checkbox("Performance overlay (F3)", &overlay)) {
@@ -1099,128 +1705,210 @@ void build_display_page() {
         dirty = true;
     }
     if (dirty) rs::set(v);
-    ImGui::Spacing();
-    if (ImGui::Button("Back")) s_menu_page = MenuPage::Main;
 }
-void build_settings_window() {
-    const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    const ImVec2 center(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
-                        viewport->WorkPos.y + viewport->WorkSize.y * 0.5f);
-    ImGui::SetNextWindowPos(center, ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(560, 640), ImGuiCond_FirstUseEver);
-    bool open = true;
-    // One window ID for every page (the title shows the page).
-    std::string page_title = s_graphics_page != gx2_graphics_menu::Page::None
-                                 ? gx2_graphics_menu::title(s_graphics_page)
-                                 : menu_title(s_menu_page);
-    if (s_graphics_page == gx2_graphics_menu::Page::None && s_menu_page == MenuPage::ModPage) {
-        page_title = "Mod";
-        for (const auto& p : rbrew_mod::list_menu_pages()) {
-            if (p.handle == s_selected_mod_page) {
-                page_title = p.title;
-                break;
-            }
-        }
-    }
-    const std::string window = page_title + "###settings";
-    if (!ImGui::Begin(window.c_str(), &open)) {
-        ImGui::End();
-        return;
-    }
-    if (s_graphics_page != gx2_graphics_menu::Page::None) {
-        if (gx2_graphics_menu::build_page(s_graphics_page)) s_graphics_page = gx2_graphics_menu::Page::None;
-        ImGui::End();
-        if (!open) set_menu_open(false);
-        return;
-    }
-    if (s_menu_page == MenuPage::Friends) {
-        friends_ui::build_page();
-        ImGui::End();
-        if (!open) set_menu_open(false);
-        return;
-    }
-    if (s_menu_page == MenuPage::OnlineLogin) {
-        online_login_ui::draw_form_body(false);
-        ImGui::End();
-        if (!open) set_menu_open(false);
-        return;
-    }
-    if (s_menu_page == MenuPage::Amiibo) {
-        build_amiibo_page();
-        ImGui::End();
-        if (!open) set_menu_open(false);
-        return;
-    }
-    if (s_menu_page == MenuPage::Display) {
-        build_display_page();
-        ImGui::End();
-        if (!open) set_menu_open(false);
-        return;
-    }
-    if (s_menu_page == MenuPage::Mods) {
-        build_mods_page();
-        ImGui::End();
-        if (!open) set_menu_open(false);
-        return;
-    }
-    if (s_menu_page == MenuPage::ModPage) {
-        build_mod_custom_page();
-        ImGui::End();
-        if (!open) set_menu_open(false);
-        return;
-    }
-    if (s_menu_page != MenuPage::Main) {
-        build_controls_page(s_menu_page);
-        ImGui::End();
-        if (!open) set_menu_open(false);
-        return;
-    }
+
+void build_general_page() {
     auto v = rs::get();
     bool dirty = false;
-    if (ImGui::Button("Resume")) set_menu_open(false);
+    ImGui::SeparatorText("Audio");
+    dirty |= ImGui::SliderInt("Volume", &v.volume, 0, 100, "%d %%");
+    ImGui::Spacing();
+    ImGui::SeparatorText("Session");
+    dirty |= ImGui::Checkbox("Confirm before quitting", &v.confirm_quit);
+    if (dirty) rs::set(v);
+
+    ImGui::Spacing();
+    ImGui::SeparatorText("Quick access");
+    const float pad_x = ImGui::GetStyle().FramePadding.x * 2.0f;
+    const float sp_x = ImGui::GetStyle().ItemSpacing.x;
+    const float right_edge = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
+    bool same_row = false;
+    const auto place_quick = [&](const char* label) -> bool {
+        const float w = ImGui::CalcTextSize(label).x + pad_x;
+        if (same_row && (ImGui::GetItemRectMax().x + sp_x + w) <= right_edge) {
+            ImGui::SameLine();
+        }
+        same_row = true;
+        return ImGui::Button(label);
+    };
     if (rbrew_online::config().online) {
-        ImGui::SameLine();
-        if (ImGui::Button("Friends (F4)")) {
+        if (place_quick("Friends (F4)")) {
             s_menu_page = MenuPage::Friends;
             friends_ui::s_focus_input = true;
         }
     }
-    ImGui::SameLine();
-    if (ImGui::Button("Online Account")) s_menu_page = MenuPage::OnlineLogin;
+    if (place_quick("Online Account")) s_menu_page = MenuPage::OnlineLogin;
     if (rbrew_nfp::searching()) {
-        ImGui::SameLine();
-        if (ImGui::Button("Scan amiibo")) s_menu_page = MenuPage::Amiibo;
+        if (place_quick("Scan amiibo")) s_menu_page = MenuPage::Amiibo;
     }
-    // One button per page, two per row.
-    ImGui::SeparatorText("Settings");
-    const float tile_width = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
-    int tiles = 0;
-    const auto tile = [&](const char* label) {
-        if (tiles++ % 2) ImGui::SameLine();
-        return ImGui::Button(label, ImVec2(tile_width, 0));
-    };
-    const auto menu_tile = [&](MenuPage page) {
-        if (tile(menu_title(page))) s_menu_page = page;
-    };
-    const auto graphics_tile = [&](gx2_graphics_menu::Page page) {
-        if (tile(gx2_graphics_menu::title(page))) s_graphics_page = page;
-    };
-    menu_tile(MenuPage::Display);
-    graphics_tile(gx2_graphics_menu::Page::Graphics);
-    menu_tile(MenuPage::Keyboard);
-    menu_tile(MenuPage::Controller);
-    if (!gx2env::online_mode()) graphics_tile(gx2_graphics_menu::Page::Camera);
-    graphics_tile(gx2_graphics_menu::Page::Weather);
-    if (!gx2env::online_mode()) graphics_tile(gx2_graphics_menu::Page::Cinema);
-    if (rbrew_mod::has_mods()) menu_tile(MenuPage::Mods);
-    ImGui::SeparatorText("General");
-    dirty |= ImGui::SliderInt("Volume", &v.volume, 0, 100, "%d %%");
-    dirty |= ImGui::Checkbox("Confirm before quitting", &v.confirm_quit);
-    ImGui::Spacing();
-    if (ImGui::Button("Quit game")) {
-        open_quit_confirmation();
+}
+
+void build_settings_window() {
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const ImVec2 center(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
+                        viewport->WorkPos.y + viewport->WorkSize.y * 0.5f);
+
+    if (s_graphics_page == gx2_graphics_menu::Page::None && s_menu_page == MenuPage::ModPage && s_mod_page_direct) {
+        ImGui::GetBackgroundDrawList()->AddRectFilled(
+            viewport->Pos, ImVec2(viewport->Pos.x + viewport->Size.x, viewport->Pos.y + viewport->Size.y),
+            IM_COL32(6, 8, 16, 185));
+        const ImVec2 win_sz(std::min(viewport->WorkSize.x * 0.90f, 1120.0f),
+                            std::min(viewport->WorkSize.y * 0.88f, 700.0f));
+        ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowSize(win_sz, ImGuiCond_Always);
+        if (s_focus_direct_canvas) {
+            ImGui::SetNextWindowFocus();
+            s_focus_direct_canvas = false;
+        }
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.07f, 0.08f, 0.13f, 0.96f));
+        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.66f, 0.94f, 0.12f, 0.90f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 16.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 2.5f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(24.0f, 20.0f));
+        if (ImGui::Begin("##mod_direct_canvas", nullptr,
+                         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                             ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings)) {
+            build_mod_custom_page();
+        }
+        ImGui::End();
+        ImGui::PopStyleVar(3);
+        ImGui::PopStyleColor(2);
+        return;
     }
-    if (dirty) rs::set(v);
+
+    const float dt = std::clamp(ImGui::GetIO().DeltaTime, 0.001f, 0.05f);
+    s_menu_anim = std::min(1.0f, s_menu_anim + dt * 12.0f);
+    const float ease = 1.0f - (1.0f - s_menu_anim) * (1.0f - s_menu_anim);
+
+    ImGui::GetBackgroundDrawList()->AddRectFilled(
+        viewport->Pos, ImVec2(viewport->Pos.x + viewport->Size.x, viewport->Pos.y + viewport->Size.y),
+        IM_COL32(0, 0, 0, int(135.0f * ease)));
+
+    ScopedPauseStyle pause_style;
+
+    const float ui_scale = std::max(1.0f, ImGui::GetIO().FontGlobalScale);
+    const float win_w =
+        std::clamp(viewport->WorkSize.x * 0.74f, std::min(680.0f * ui_scale, viewport->WorkSize.x - 20.0f),
+                   std::min(1040.0f * ui_scale, viewport->WorkSize.x - 20.0f));
+    const float win_h =
+        std::clamp(viewport->WorkSize.y * 0.78f, std::min(460.0f * ui_scale, viewport->WorkSize.y - 20.0f),
+                   std::min(680.0f * ui_scale, viewport->WorkSize.y - 20.0f));
+    ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(win_w, win_h), ImGuiCond_Always);
+
+    bool open = true;
+    constexpr ImGuiWindowFlags win_flags = ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar |
+                                           ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                                           ImGuiWindowFlags_NoSavedSettings;
+    if (!ImGui::Begin("###settings", &open, win_flags)) {
+        ImGui::End();
+        return;
+    }
+
+    const float avail_w = ImGui::GetContentRegionAvail().x;
+    const float rail_w = std::clamp(avail_w * 0.22f, 130.0f * ui_scale, 185.0f * ui_scale);
+
+    if (ImGui::BeginChild("##pause_nav", ImVec2(rail_w, 0), ImGuiChildFlags_Borders)) {
+        const float nav_avail = ImGui::GetContentRegionAvail().x;
+        ImGui::TextColored(ImGui::GetStyleColorVec4(ImGuiCol_CheckMark), "Pause");
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        const float bottom_h = (ImGui::GetFrameHeight() + 4.0f) * 2.0f + ImGui::GetStyle().ItemSpacing.y * 3.0f;
+        if (ImGui::BeginChild("##nav_scroll", ImVec2(0, -bottom_h), ImGuiChildFlags_None)) {
+            const float btn_w = ImGui::GetContentRegionAvail().x;
+            const auto select_menu = [&](const char* id, const char* label, MenuPage target, bool is_active) {
+                if (nav_item(id, label, is_active, btn_w)) {
+                    s_graphics_page = gx2_graphics_menu::Page::None;
+                    s_menu_page = target;
+                    s_capture = false;
+                    s_mod_toggle_error.clear();
+                    s_confirm_delete_mod_id.clear();
+                    if (target == MenuPage::Friends) friends_ui::s_focus_input = true;
+                }
+            };
+            const auto select_gfx = [&](const char* id, const char* label, gx2_graphics_menu::Page target) {
+                if (nav_item(id, label, s_graphics_page == target, btn_w)) {
+                    s_graphics_page = target;
+                    s_capture = false;
+                }
+            };
+
+            const bool no_gfx = s_graphics_page == gx2_graphics_menu::Page::None;
+            select_menu("##nav_general", "General", MenuPage::Main, no_gfx && s_menu_page == MenuPage::Main);
+            select_menu("##nav_display", "Display", MenuPage::Display, no_gfx && s_menu_page == MenuPage::Display);
+            select_gfx("##nav_graphics", "Graphics", gx2_graphics_menu::Page::Graphics);
+            select_menu("##nav_controls", "Controls",
+                        s_menu_page == MenuPage::Controller ? MenuPage::Controller : MenuPage::Keyboard,
+                        no_gfx && (s_menu_page == MenuPage::Keyboard || s_menu_page == MenuPage::Controller));
+            if (!gx2env::online_mode()) select_gfx("##nav_camera", "Camera", gx2_graphics_menu::Page::Camera);
+            select_gfx("##nav_weather", "Weather", gx2_graphics_menu::Page::Weather);
+            if (!gx2env::online_mode()) select_gfx("##nav_cinema", "Cinema", gx2_graphics_menu::Page::Cinema);
+            if (rbrew_mod::has_mods())
+                select_menu("##nav_mods", "Mods", MenuPage::Mods,
+                            no_gfx && (s_menu_page == MenuPage::Mods || s_menu_page == MenuPage::ModPage));
+            if (rbrew_online::config().online)
+                select_menu("##nav_friends", "Friends", MenuPage::Friends, no_gfx && s_menu_page == MenuPage::Friends);
+            select_menu("##nav_account", "Account", MenuPage::OnlineLogin,
+                        no_gfx && s_menu_page == MenuPage::OnlineLogin);
+            if (rbrew_nfp::searching())
+                select_menu("##nav_amiibo", "amiibo", MenuPage::Amiibo, no_gfx && s_menu_page == MenuPage::Amiibo);
+        }
+        ImGui::EndChild();
+
+        ImGui::Separator();
+        ImGui::Spacing();
+        const float cta_h = ImGui::GetFrameHeight() + 4.0f;
+        if (ImGui::Button("Resume", ImVec2(nav_avail, cta_h))) set_menu_open(false);
+        if (ImGui::Button("Quit game", ImVec2(nav_avail, cta_h))) open_quit_confirmation();
+    }
+    ImGui::EndChild();
+
+    ImGui::SameLine();
+
+    if (ImGui::BeginChild("##pause_content", ImVec2(0, 0), ImGuiChildFlags_Borders)) {
+        std::string page_title = s_graphics_page != gx2_graphics_menu::Page::None
+                                     ? gx2_graphics_menu::title(s_graphics_page)
+                                     : menu_title(s_menu_page);
+        if (s_graphics_page == gx2_graphics_menu::Page::None && s_menu_page == MenuPage::ModPage) {
+            page_title = "Mod";
+            for (const auto& p : rbrew_mod::list_menu_pages()) {
+                if (p.handle == s_selected_mod_page) {
+                    page_title = p.title;
+                    break;
+                }
+            }
+        }
+
+        if (s_display_font) ImGui::PushFont(s_display_font);
+        ImGui::TextUnformatted(page_title.c_str());
+        if (s_display_font) ImGui::PopFont();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        const float item_w = std::clamp(ImGui::GetContentRegionAvail().x * 0.44f, 120.0f * ui_scale, 280.0f * ui_scale);
+        ImGui::PushItemWidth(item_w);
+
+        if (s_graphics_page != gx2_graphics_menu::Page::None) {
+            gx2_graphics_menu::build_page_contents(s_graphics_page);
+        } else {
+            switch (s_menu_page) {
+            case MenuPage::Main: build_general_page(); break;
+            case MenuPage::Display: build_display_page(); break;
+            case MenuPage::Keyboard:
+            case MenuPage::Controller: build_controls_page(s_menu_page); break;
+            case MenuPage::Friends: friends_ui::build_page(); break;
+            case MenuPage::OnlineLogin: online_login_ui::draw_form_body(false); break;
+            case MenuPage::Amiibo: build_amiibo_page(); break;
+            case MenuPage::Mods: build_mods_page(); break;
+            case MenuPage::ModPage: build_mod_custom_page(); break;
+            }
+        }
+
+        ImGui::PopItemWidth();
+    }
+    ImGui::EndChild();
+
     ImGui::End();
     if (!open) set_menu_open(false);
 }
@@ -1236,6 +1924,7 @@ void build_quit_confirmation_popup() {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
 
+    ScopedPauseStyle pause_style;
     if (ImGui::BeginPopupModal("Quit Game?###quit_confirm", nullptr,
                                ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
         s_quit_confirm_open.store(true, std::memory_order_relaxed);
@@ -1289,6 +1978,55 @@ void process_event(const SDL_Event& event) {
     if (s_events.size() < 256) s_events.push_back(event);
 }
 
+void feed_replay_vpad(uint32_t buttons) {
+    static uint32_t s_prev_btns = 0;
+    static bool s_was_open = false;
+    if (!menu_open()) {
+        s_prev_btns = 0;
+        s_was_open = false;
+        return;
+    }
+    if (!s_was_open) {
+        // Latch whatever buttons were already held when the menu opened so they don't re-trigger inside Screen 1.
+        s_was_open = true;
+        s_prev_btns = buttons;
+        return;
+    }
+    struct BtnMap {
+        uint32_t mask;
+        SDL_Scancode scancode;
+        SDL_Keycode sym;
+    };
+    static constexpr BtnMap kMap[] = {
+        {0x8000u, SDL_SCANCODE_SPACE, SDLK_SPACE}, {0x4000u, SDL_SCANCODE_BACKSPACE, SDLK_BACKSPACE},
+        {0x0200u, SDL_SCANCODE_UP, SDLK_UP},       {0x0100u, SDL_SCANCODE_DOWN, SDLK_DOWN},
+        {0x0800u, SDL_SCANCODE_LEFT, SDLK_LEFT},   {0x0400u, SDL_SCANCODE_RIGHT, SDLK_RIGHT},
+    };
+    const uint32_t rising = buttons & ~s_prev_btns;
+    const uint32_t falling = ~buttons & s_prev_btns;
+    s_prev_btns = buttons;
+    for (const auto& m : kMap) {
+        if (rising & m.mask) {
+            SDL_Event ev{};
+            ev.type = SDL_KEYDOWN;
+            ev.key.windowID = s_sdl_window_id;
+            ev.key.state = SDL_PRESSED;
+            ev.key.keysym.scancode = m.scancode;
+            ev.key.keysym.sym = m.sym;
+            process_event(ev);
+        }
+        if (falling & m.mask) {
+            SDL_Event ev{};
+            ev.type = SDL_KEYUP;
+            ev.key.windowID = s_sdl_window_id;
+            ev.key.state = SDL_RELEASED;
+            ev.key.keysym.scancode = m.scancode;
+            ev.key.keysym.sym = m.sym;
+            process_event(ev);
+        }
+    }
+}
+
 bool menu_event(const SDL_Event& event) {
     if (event.type == SDL_CONTROLLERBUTTONDOWN && event.cbutton.button == SDL_CONTROLLER_BUTTON_TOUCHPAD) {
         if (s_quit_confirm_open.load(std::memory_order_relaxed)) {
@@ -1319,7 +2057,29 @@ bool menu_event(const SDL_Event& event) {
         if (!s_capture_active.load(std::memory_order_relaxed)) set_menu_open(!menu_open());
         return true;
     }
-    return menu_open() && (event.type == SDL_KEYDOWN || event.type == SDL_CONTROLLERBUTTONDOWN);
+    if (!menu_open() && !startup_login_active()) return false;
+
+    // Allow OS window lifecycle, controller hotplug, and non-capture F11 toggle through.
+    switch (event.type) {
+    case SDL_KEYDOWN:
+        if (!s_capture_active.load(std::memory_order_relaxed) && event.key.keysym.scancode == SDL_SCANCODE_F11)
+            return false;
+        return true;
+    case SDL_KEYUP:
+    case SDL_TEXTINPUT:
+    case SDL_TEXTEDITING:
+    case SDL_MOUSEMOTION:
+    case SDL_MOUSEBUTTONDOWN:
+    case SDL_MOUSEBUTTONUP:
+    case SDL_MOUSEWHEEL:
+    case SDL_CONTROLLERBUTTONDOWN:
+    case SDL_CONTROLLERBUTTONUP:
+    case SDL_CONTROLLERAXISMOTION:
+    case SDL_JOYBUTTONDOWN:
+    case SDL_JOYBUTTONUP:
+    case SDL_JOYAXISMOTION: return true;
+    default: return false;
+    }
 }
 
 void set_menu_open(bool open) {
@@ -1334,6 +2094,12 @@ bool menu_open() {
 
 void open_amiibo_picker() {
     s_amiibo_requested.store(true, std::memory_order_relaxed);
+    set_menu_open(true);
+}
+
+void open_mod_page(uint64_t page_handle) {
+    if (page_handle == 0) return;
+    s_mod_page_requested.store(page_handle, std::memory_order_relaxed);
     set_menu_open(true);
 }
 
@@ -1379,8 +2145,10 @@ bool menu_blocks_input(bool any_input_held) {
         was_open = false;
     }
     const bool blocked = s_block_until_released.load(std::memory_order_relaxed);
-    if (blocked && (!any_input_held || std::chrono::steady_clock::now() - closed_at > std::chrono::milliseconds(500)))
+    if (blocked && (!any_input_held || std::chrono::steady_clock::now() - closed_at > std::chrono::milliseconds(500))) {
         s_block_until_released.store(false, std::memory_order_relaxed);
+        return false;
+    }
     return blocked;
 }
 
@@ -1474,8 +2242,8 @@ ImDrawData* begin_frame(VkExtent2D extent) {
     ImGui_ImplSDL2_NewFrame();
     ImGui::NewFrame();
 
-    // Keep the interface readable from 720p to 4K.
-    ImGui::GetIO().FontGlobalScale = std::clamp(float(extent.height) / 1080.0f, 1.0f, 2.0f);
+    // Keep the default bitmap font crisp (1x up to 1080p, 2x at 1440p+/4K) with no fractional distortion.
+    ImGui::GetIO().FontGlobalScale = extent.height >= 1400 ? 2.0f : 1.0f;
 
     const bool fresh_menu = show_menu && !s_prev_menu_open;
     if (show_menu != s_prev_menu_open)
@@ -1487,9 +2255,14 @@ ImDrawData* begin_frame(VkExtent2D extent) {
         s_menu_page = friends_page ? MenuPage::Friends : MenuPage::Main;
         if (friends_page) friends_ui::s_focus_input = true;
         s_selected_mod_page = 0;
+        s_mod_back_pressed = false;
+        s_mod_toggle_error.clear();
+        s_confirm_delete_mod_id.clear();
         s_graphics_page = gx2_graphics_menu::Page::None;
         s_capture = false;
+        s_menu_anim = 0.0f;
     }
+    if (!show_menu) s_menu_anim = 0.0f;
     if (s_friends_toggle.exchange(0, std::memory_order_relaxed) > 0 && show_menu && !fresh_menu) {
         if (s_menu_page == MenuPage::Friends)
             set_menu_open(false);
@@ -1506,12 +2279,25 @@ ImDrawData* begin_frame(VkExtent2D extent) {
         s_graphics_page = gx2_graphics_menu::Page::None;
         s_capture = false;
     }
+    if (show_menu) {
+        const uint64_t req_page = s_mod_page_requested.exchange(0, std::memory_order_relaxed);
+        if (req_page != 0) {
+            s_selected_mod_page = req_page;
+            s_mod_page_direct = true;
+            s_focus_direct_canvas = true;
+            s_menu_page = MenuPage::ModPage;
+            s_graphics_page = gx2_graphics_menu::Page::None;
+            s_capture = false;
+        }
+    }
     update_shader_activity();
     s_focused_action = -1;
-    if (show_login)
+    if (show_login) {
+        ScopedPauseStyle login_style;
         online_login_ui::build_startup_window();
-    else if (show_menu && !s_quit_opened_from_gameplay.load(std::memory_order_relaxed))
+    } else if (show_menu && !s_quit_opened_from_gameplay.load(std::memory_order_relaxed)) {
         build_settings_window();
+    }
     build_quit_confirmation_popup();
     // Phase scopes (gx2_perf.h) record while this window is visible; off they
     // cost one relaxed load per scope. An RBREW_PERF file keeps them anyway.

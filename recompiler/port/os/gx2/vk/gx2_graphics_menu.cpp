@@ -88,6 +88,15 @@ bool button(const char* label, const char* text) {
     return pressed;
 }
 
+void same_line_if_fits(const char* next_label, bool is_button = true) {
+    const float pad = is_button ? ImGui::GetStyle().FramePadding.x * 2.0f : 0.0f;
+    const float w = ImGui::CalcTextSize(next_label).x + pad;
+    const float right_edge = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
+    if ((ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x + w) <= right_edge) {
+        ImGui::SameLine();
+    }
+}
+
 void section(const char* name) {
     ImGui::Spacing();
     ImGui::SeparatorText(name);
@@ -149,13 +158,16 @@ bool build_graphics(rs::Values& v) {
     section("Saved looks");
     static const char* const kSlots[] = {"Slot 1", "Slot 2", "Slot 3"};
     combo("Look slot", s_look_slot, kSlots, 3, "Three personal picture presets.");
-    ImGui::SameLine();
-    ImGui::TextDisabled("%s", v.looks[s_look_slot].saved ? "(saved)" : "(empty)");
+    {
+        const char* slot_status = v.looks[s_look_slot].saved ? "(saved)" : "(empty)";
+        same_line_if_fits(slot_status, false);
+        ImGui::TextDisabled("%s", slot_status);
+    }
     if (button("Save current look", "Save these picture controls in the selected slot.")) {
         rs::save_look(v, s_look_slot);
         dirty = true;
     }
-    ImGui::SameLine();
+    same_line_if_fits("Load look");
     if (button("Load look", "Recall the selected picture preset.") && v.looks[s_look_slot].saved) {
         rs::load_look(v, s_look_slot);
         dirty = true;
@@ -258,22 +270,28 @@ bool build_cinema(rs::Values& v) {
     help("Zoom of the free camera. Also the mouse wheel or Q/E while flying.");
     static const char* const kSpots[] = {"Spot 1", "Spot 2", "Spot 3"};
     combo("Fly spot", s_fly_spot, kSpots, 3, "Three camera places to remember.");
-    ImGui::SameLine();
-    ImGui::TextDisabled("%s", gx2env::fly_spot_saved(s_fly_spot) ? "(saved)" : "(empty)");
+    {
+        const char* fly_status = gx2env::fly_spot_saved(s_fly_spot) ? "(saved)" : "(empty)";
+        same_line_if_fits(fly_status, false);
+        ImGui::TextDisabled("%s", fly_status);
+    }
     if (button("Save this view", "Remembers where the camera is now."))
         gx2env::request(gx2env::Request::SaveFlySpot, s_fly_spot);
-    ImGui::SameLine();
+    same_line_if_fits("Fly there");
     if (button("Fly there", "Turns the fly camera on at the saved place. F7 returns to the game camera."))
         gx2env::request(gx2env::Request::GoFlySpot, s_fly_spot);
     section("Spawn (hack)");
     combo("Spawn spot", s_spawn_spot, kSpots, 3, "Three places for your character.");
-    ImGui::SameLine();
-    ImGui::TextDisabled("%s", gx2env::spawn_saved(s_spawn_spot) ? "(saved)" : "(empty)");
+    {
+        const char* spawn_status = gx2env::spawn_saved(s_spawn_spot) ? "(saved)" : "(empty)";
+        same_line_if_fits(spawn_status, false);
+        ImGui::TextDisabled("%s", spawn_status);
+    }
     if (button("Save where the character stands", "Remembers your character's position."))
         gx2env::request(gx2env::Request::SaveSpawn, s_spawn_spot);
     if (button("Spawn at the spot", "Puts your character at the saved place."))
         gx2env::request(gx2env::Request::SpawnAt, s_spawn_spot);
-    ImGui::SameLine();
+    same_line_if_fits("Spawn at the camera");
     if (button("Spawn at the camera", "Puts your character in front of the (free) camera; it drops to the ground."))
         gx2env::request(gx2env::Request::SpawnAtCamera, 0);
     return dirty;
@@ -330,7 +348,7 @@ void build_gyro_rows() {
     if (dirty) rs::set(v);
 }
 
-bool build_page(Page page) {
+void build_page_contents(Page page) {
     s_help = nullptr;
     auto v = rs::get();
     bool dirty = false;
@@ -342,10 +360,13 @@ bool build_page(Page page) {
     default: break;
     }
     if (dirty) rs::set(v);
-    ImGui::Spacing();
-    const bool back = ImGui::Button("Back");
     footer();
-    return back;
+}
+
+bool build_page(Page page) {
+    build_page_contents(page);
+    ImGui::Spacing();
+    return ImGui::Button("Back");
 }
 
 } // namespace gx2_graphics_menu

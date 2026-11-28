@@ -142,7 +142,7 @@ func (w *Wizard) initUI() {
 
 	header := container.NewVBox(
 		container.NewBorder(nil, nil, nil,
-			container.NewHBox(w.troubleshootingButton(), w.discordButton()), w.stepperBar),
+			container.NewHBox(w.modsButton(), w.troubleshootingButton(), w.discordButton()), w.stepperBar),
 		widget.NewSeparator(),
 	)
 

@@ -15,6 +15,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"splatpc-builder/engine"
+	"splatpc-builder/mods"
 	"splatpc-builder/settings"
 )
 
@@ -25,6 +26,7 @@ type StepDoneView struct {
 	title         *widget.Label
 	description   *widget.Label
 	summary       *fyne.Container
+	modsValue     *widget.Label
 	hdCard        *widget.Card
 	appImageCard  *widget.Card
 	appImageLabel *widget.Label
@@ -87,6 +89,9 @@ func (v *StepDoneView) initUI() {
 			dialog.ShowError(err, v.wizard.window)
 		}
 	})
+	modsBtn := widget.NewButtonWithIcon("Mods", theme.DownloadIcon(), func() {
+		v.wizard.showModsManager()
+	})
 	settingsBtn := widget.NewButtonWithIcon("Back to Settings / Recompile", theme.SettingsIcon(), func() {
 		v.wizard.GoToStep(StepSettings)
 	})
@@ -135,7 +140,7 @@ func (v *StepDoneView) initUI() {
 		container.NewPadded(container.NewVBox(
 			launchBtn,
 			v.launchAppImage,
-			container.NewGridWithColumns(2, openFolderBtn, settingsBtn),
+			container.NewGridWithColumns(3, openFolderBtn, modsBtn, settingsBtn),
 		)),
 	)
 
@@ -200,6 +205,9 @@ func (v *StepDoneView) show(title, description string, buildRow [2]string, appIm
 		v.summary.Add(widget.NewLabelWithStyle(row[0], fyne.TextAlignLeading, fyne.TextStyle{Bold: true}))
 		v.summary.Add(wrappedLabel(row[1]))
 	}
+	v.summary.Add(widget.NewLabelWithStyle("Mods", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}))
+	v.modsValue = wrappedLabel(mods.InstalledSummary(cfg.OutputDir, mods.CatalogWithExtras(mods.DefaultExtrasPath())))
+	v.summary.Add(v.modsValue)
 
 	if cfg.UpscaleTextures {
 		v.hdCard.Show()
@@ -218,6 +226,14 @@ func (v *StepDoneView) show(title, description string, buildRow [2]string, appIm
 
 	v.refreshCleanupCard()
 	v.container.Refresh()
+}
+
+// RefreshModsSummary updates the Installed Mods row after a mod is installed or removed.
+func (v *StepDoneView) RefreshModsSummary() {
+	if v.modsValue == nil {
+		return
+	}
+	v.modsValue.SetText(mods.InstalledSummary(v.wizard.config.OutputDir, mods.CatalogWithExtras(mods.DefaultExtrasPath())))
 }
 
 func (v *StepDoneView) refreshCleanupCard() {

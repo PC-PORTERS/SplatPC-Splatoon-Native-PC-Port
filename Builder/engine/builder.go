@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"splatpc-builder/mods"
 	"splatpc-builder/prereq"
 	"splatpc-builder/proc"
 	"splatpc-builder/roms"
@@ -361,6 +362,21 @@ func RunBuild(ctx context.Context, repoRoot string, cfg settings.Configuration, 
 	}
 	if err := settings.WriteSettingsIni(cfg, cfg.OutputDir); err != nil {
 		log("Warning: Failed to write settings.ini: %v", err)
+	}
+	if len(cfg.SelectedModIDs) > 0 {
+		catalog := mods.CatalogWithExtras(mods.DefaultExtrasPath())
+		for _, modID := range cfg.SelectedModIDs {
+			entry, ok := mods.FindByIDInCatalog(catalog, modID)
+			if !ok {
+				continue
+			}
+			log("Installing mod %s (%s)...", entry.Name, entry.Version)
+			if err := mods.Install(ctx, cfg.OutputDir, entry, nil); err != nil {
+				log("Warning: Failed to install mod %s: %v", entry.Name, err)
+			} else {
+				log("Installed mod: %s (%s)", entry.Name, entry.Version)
+			}
+		}
 	}
 	// Remove legacy launcher scripts if present from earlier builds
 	_ = os.Remove(filepath.Join(cfg.OutputDir, "Splatoon.sh"))

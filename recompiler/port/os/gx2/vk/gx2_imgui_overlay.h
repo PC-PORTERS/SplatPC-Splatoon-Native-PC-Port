@@ -24,6 +24,8 @@ namespace gx2_imgui {
 
 // Queues one SDL event for the render thread (any thread, non-blocking).
 void process_event(const SDL_Event& event);
+// Translates replayed VPAD button edges (A/B/D-Pad) into SDL keyboard nav events while a menu is open.
+void feed_replay_vpad(uint32_t buttons);
 
 // Settings menu (Esc / controller touchpad). GX2 thread: toggles the menu
 // and consumes every key/button press while it is open (the game keeps
@@ -34,6 +36,8 @@ bool menu_open();
 // Opens the menu on the amiibo picker (GX2 thread, when the game starts NFC
 // detection). Esc/B/Back returns to the game's own "touch amiibo" screen.
 void open_amiibo_picker();
+// Opens the menu directly on a specific registered mod menu page (GX2 thread).
+void open_mod_page(uint64_t page_handle);
 // Startup / in-game Online Account Login dialog (ImGui).
 void open_startup_login();
 bool startup_login_active();

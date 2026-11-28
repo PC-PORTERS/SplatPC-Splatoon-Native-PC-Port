@@ -463,42 +463,56 @@ static void VPADRead(CPUState* cpu) {
         // mouse up looks up.
         int mdx = 0, mdy = 0;
         SDL_GetRelativeMouseState(&mdx, &mdy);
-        // Free fly camera (cinema / hacks page, F7): mouse looks, WASD
-        // moves, Space up, Ctrl down, Shift fast; the game gets a neutral pad.
-        if (gx2env::fly_camera()) {
-            const bool ctrl = keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_RCTRL];
-            // lx/ly: WASD or the controller's left stick; the right stick looks too.
-            gx2env::fly_input(mdx + int(rx * 14.f), mdy - int(ry * 14.f), ly, lx,
-                              (keys[SDL_SCANCODE_SPACE] ? 1.f : 0.f) - (ctrl ? 1.f : 0.f),
-                              keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT]);
+        const bool mouse_for_ui =
+            gx2_imgui::menu_open() || gx2_imgui::startup_login_active() || gx2_imgui::menu_blocks_input(false);
+        if (mouse_for_ui) {
+            // Keep SDL's relative counter drained above while discarding cursor movement
+            // so moving the UI cursor (or closing the menu) never rotates the camera.
             mdx = mdy = 0;
-        }
-        const float mouse_scale = rbrew_settings::g_mouse_scale.load(std::memory_order_relaxed); // ESC menu
-        rbrew_camtrace::add_input(mdx, mdy);
-        if (mdx || mdy)
-            s_mouse_aims = true;
-        else if (std::fabs(rx) > 0.25f || std::fabs(ry) > 0.25f)
             s_mouse_aims = false;
-        float mrx = (float)mdx * KBM_MOUSE_SENSITIVITY * mouse_scale;
-        float mry = -(float)mdy * KBM_MOUSE_SENSITIVITY * mouse_scale;
-        if (mrx < -1.0f) mrx = -1.0f;
-        if (mrx > 1.0f) mrx = 1.0f;
-        if (mry < -1.0f) mry = -1.0f;
-        if (mry > 1.0f) mry = 1.0f;
-        if (rbrew_settings::g_mouse_direct.load(std::memory_order_relaxed)) {
-            // PC aiming: straight to the motion aiming, not the stick.
             std::lock_guard lock(s_motion_lock);
-            s_mouse_yaw += -float(mdx) * kMouseDegreesPerCount * mouse_scale;
-            // Negative pitch looks up: mouse up (mdy < 0) must look up.
-            s_mouse_pitch += float(mdy) * kMouseDegreesPerCount * mouse_scale;
+            s_mouse_yaw = 0.0f;
+            s_mouse_pitch = 0.0f;
+            rbrew_mouse_camera::yaw_queue().take();
+            rbrew_mouse_camera::pitch_queue().take();
         } else {
-            // Blend: mouse delta is added to controller stick, clamped
-            rx += mrx;
-            if (rx < -1.0f) rx = -1.0f;
-            if (rx > 1.0f) rx = 1.0f;
-            ry += mry;
-            if (ry < -1.0f) ry = -1.0f;
-            if (ry > 1.0f) ry = 1.0f;
+            // Free fly camera (cinema / hacks page, F7): mouse looks, WASD
+            // moves, Space up, Ctrl down, Shift fast; the game gets a neutral pad.
+            if (gx2env::fly_camera()) {
+                const bool ctrl = keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_RCTRL];
+                // lx/ly: WASD or the controller's left stick; the right stick looks too.
+                gx2env::fly_input(mdx + int(rx * 14.f), mdy - int(ry * 14.f), ly, lx,
+                                  (keys[SDL_SCANCODE_SPACE] ? 1.f : 0.f) - (ctrl ? 1.f : 0.f),
+                                  keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT]);
+                mdx = mdy = 0;
+            }
+            const float mouse_scale = rbrew_settings::g_mouse_scale.load(std::memory_order_relaxed); // ESC menu
+            rbrew_camtrace::add_input(mdx, mdy);
+            if (mdx || mdy)
+                s_mouse_aims = true;
+            else if (std::fabs(rx) > 0.25f || std::fabs(ry) > 0.25f)
+                s_mouse_aims = false;
+            float mrx = (float)mdx * KBM_MOUSE_SENSITIVITY * mouse_scale;
+            float mry = -(float)mdy * KBM_MOUSE_SENSITIVITY * mouse_scale;
+            if (mrx < -1.0f) mrx = -1.0f;
+            if (mrx > 1.0f) mrx = 1.0f;
+            if (mry < -1.0f) mry = -1.0f;
+            if (mry > 1.0f) mry = 1.0f;
+            if (rbrew_settings::g_mouse_direct.load(std::memory_order_relaxed)) {
+                // PC aiming: straight to the motion aiming, not the stick.
+                std::lock_guard lock(s_motion_lock);
+                s_mouse_yaw += -float(mdx) * kMouseDegreesPerCount * mouse_scale;
+                // Negative pitch looks up: mouse up (mdy < 0) must look up.
+                s_mouse_pitch += float(mdy) * kMouseDegreesPerCount * mouse_scale;
+            } else {
+                // Blend: mouse delta is added to controller stick, clamped
+                rx += mrx;
+                if (rx < -1.0f) rx = -1.0f;
+                if (rx > 1.0f) rx = 1.0f;
+                ry += mry;
+                if (ry < -1.0f) ry = -1.0f;
+                if (ry > 1.0f) ry = 1.0f;
+            }
         }
 
         // Buttons (defaults: left click ZR = fire, right click ZL = squid,
@@ -570,12 +584,23 @@ static void VPADRead(CPUState* cpu) {
     // neutral pad. Mouse motion accumulated meanwhile is dropped too.
     {
         // Only buttons keep the block after closing (a drifting stick kept it).
+        // Defer blocking while replaying until replay_input populates the frame's buttons.
         const bool held = buttons != 0;
-        if (gx2_imgui::menu_blocks_input(held) || gx2env::fly_camera()) {
+        const bool menu_blocked = (!rbrew_benchmark::replaying() && gx2_imgui::menu_blocks_input(held));
+        if (menu_blocked || gx2env::fly_camera()) {
             buttons = 0;
             lx = ly = rx = ry = 0.0f;
             has_phys_gyro = has_phys_accel = false;
             player_input = false;
+        }
+        if (menu_blocked) {
+            g_touch_state.touched = false;
+            s_mouse_aims = false;
+            std::lock_guard lock(s_motion_lock);
+            s_mouse_yaw = 0.0f;
+            s_mouse_pitch = 0.0f;
+            rbrew_mouse_camera::yaw_queue().take();
+            rbrew_mouse_camera::pitch_queue().take();
         }
     }
 
@@ -639,6 +664,20 @@ static void VPADRead(CPUState* cpu) {
             auto_touched = pad.touched != 0;
             auto_tx = vpad_touch_raw_x(uint16_t(pad.x));
             auto_ty = vpad_touch_raw_y(uint16_t(pad.y));
+        }
+        if (replayed && gx2_imgui::menu_open()) {
+            gx2_imgui::feed_replay_vpad(buttons);
+            gx2_imgui::menu_blocks_input(buttons != 0);
+            buttons = 0;
+            lx = ly = rx = ry = 0.0f;
+            player_input = false;
+        } else {
+            gx2_imgui::feed_replay_vpad(0u);
+            if (replayed && gx2_imgui::menu_blocks_input(buttons != 0)) {
+                buttons = 0;
+                lx = ly = rx = ry = 0.0f;
+                player_input = false;
+            }
         }
     }
 

@@ -2,6 +2,7 @@
 // KPADInitEx, KPADReadEx, WPADProbe, etc. for Local Multiplayer / Battle Dojo
 
 #include "../os_common.h"
+#include "../gx2/vk/gx2_imgui_overlay.h"
 #include "../vpad/game_controllers.h"
 #include "../../runtime/mod_loader.h"
 #include <algorithm>
@@ -164,6 +165,10 @@ static void KPADReadEx(CPUState* cpu) {
         shape_stick(rx, ry);
 
         static uint32_t s_p2_prev_hold = 0;
+        if (gx2_imgui::menu_open() || gx2_imgui::startup_login_active()) {
+            pro_hold = 0;
+            lx = ly = rx = ry = 0.0f;
+        }
         write_kpad_pro_status(MEM, buf, pro_hold, lx, ly, rx, ry, s_p2_prev_hold);
 
         set_error(kKpadOk);
