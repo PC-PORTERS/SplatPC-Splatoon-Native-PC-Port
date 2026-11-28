@@ -442,13 +442,13 @@ void fill(Params& p, const Frame& f, uint32_t w, uint32_t h) {
         const char* v = std::getenv("RBREW_DOF");
         return v && v[0] == '0';
     }();
-    p.look[3] = dof_off || !s.plaza ? 0.f : 2.5f * float(h) / 1440.f;
+    p.look[3] = (!f.settings.depth_of_field || dof_off || !s.plaza) ? 0.f : 2.5f * float(h) / 1440.f;
     static const bool haze_off = [] {
         const char* v = std::getenv("RBREW_HAZE");
         return v && v[0] == '0';
     }();
     p.taa[2] = haze_off ? 1.f : 0.f; // RBREW_HAZE=0: no aerial perspective
-    p.post[0] = f.settings.antialiasing ? 1.f : 0.f;
+    p.post[0] = f.settings.aa_mode == rbrew_settings::kAAFXAA ? 1.f : 0.f;
     p.post[1] = f.settings.film_look ? 0.015f : 0.f;
     p.post[2] = f.settings.film_look ? 2.f / float(std::max(w, 1u)) : 0.f; // subpixel fringes at every resolution
     p.post[3] = float(s_frame_index % 997);
@@ -502,7 +502,8 @@ void fill(Params& p, const Frame& f, uint32_t w, uint32_t h) {
         p.extra[2] = -dz * 18.f + along2 * 0.35f;
         p.extra[3] = coverage > .3f ? clear * life2 : 0.f;
     }
-    p.cinema[0] = f.settings.focus_blur / 100.f * 9.f * float(h) / 1440.f; // up to 9 px at 1440p
+    p.cinema[0] = f.settings.depth_of_field ? f.settings.focus_blur / 100.f * 9.f * float(h) / 1440.f
+                                            : 0.f; // up to 9 px at 1440p
     p.cinema[1] = f.settings.vignette / 100.f;
     p.cinema[2] = f.settings.white_balance / 50.f;
     p.picture[0] = f.settings.saturation / 100.f;

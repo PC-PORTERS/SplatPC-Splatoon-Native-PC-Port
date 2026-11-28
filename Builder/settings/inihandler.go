@@ -63,6 +63,8 @@ func LoadSettingsIni(filePath string, cfg *Configuration) error {
 			}
 		case "mouse_direct":
 			cfg.MouseDirect = (val != "0")
+		case "disable_auto_pitch":
+			cfg.DisableAutoPitch = (val != "0")
 		case "volume":
 			if n, err := strconv.Atoi(val); err == nil {
 				cfg.Volume = n
@@ -71,6 +73,46 @@ func LoadSettingsIni(filePath string, cfg *Configuration) error {
 			if n, err := strconv.Atoi(val); err == nil {
 				cfg.ShaderQuality = n
 			}
+		case "anisotropic_filtering":
+			if n, err := strconv.Atoi(val); err == nil {
+				cfg.AnisotropicFiltering = n
+			}
+		case "depth_of_field":
+			cfg.DepthOfField = (val != "0")
+		case "antialiasing":
+			cfg.AntiAliasing = (val != "0")
+			if !cfg.AntiAliasing {
+				cfg.AAMode = "off"
+			} else if cfg.AAMode == "off" || cfg.AAMode == "" {
+				cfg.AAMode = "fxaa"
+			}
+		case "aa_mode":
+			switch strings.ToLower(val) {
+			case "0", "off":
+				cfg.AAMode = "off"
+				cfg.AntiAliasing = false
+			case "2", "smaa":
+				cfg.AAMode = "smaa"
+				cfg.AntiAliasing = true
+			case "1", "fxaa":
+				cfg.AAMode = "fxaa"
+				cfg.AntiAliasing = true
+			}
+		case "upscaler":
+			switch strings.ToLower(val) {
+			case "1", "fsr", "fsr1":
+				cfg.Upscaler = "fsr"
+			case "2", "anime4k":
+				cfg.Upscaler = "anime4k"
+			default:
+				cfg.Upscaler = "off"
+			}
+		case "upscaler_sharpness":
+			if n, err := strconv.Atoi(val); err == nil {
+				cfg.UpscalerSharpness = n
+			}
+		case "motion_blur":
+			cfg.MotionBlur = (val != "0")
 		case "camera_fov":
 			if n, err := strconv.Atoi(val); err == nil {
 				cfg.CameraFOV = n
@@ -134,6 +176,19 @@ func WriteSettingsIni(cfg Configuration, outFolder string) error {
 		online["online_nncs2"] = strings.TrimSpace(cfg.OnlineNncs2)
 	}
 
+	aaMode := strings.ToLower(strings.TrimSpace(cfg.AAMode))
+	if aaMode != "off" && aaMode != "fxaa" && aaMode != "smaa" {
+		if cfg.AntiAliasing {
+			aaMode = "fxaa"
+		} else {
+			aaMode = "off"
+		}
+	}
+	upscaler := strings.ToLower(strings.TrimSpace(cfg.Upscaler))
+	if upscaler != "fsr" && upscaler != "anime4k" {
+		upscaler = "off"
+	}
+
 	managedValues := map[string]string{
 		"player_name":       cfg.PlayerName,
 		"pseudo":            cfg.PlayerName,
@@ -147,11 +202,19 @@ func WriteSettingsIni(cfg Configuration, outFolder string) error {
 		"gyro":              strconv.Itoa(boolToInt(cfg.Gyro)),
 		"gyro_sensitivity":  strconv.Itoa(cfg.GyroSensitivity),
 		"gyro_invert_pitch": strconv.Itoa(boolToInt(cfg.GyroInvertPitch)),
-		"mouse_sensitivity": strconv.Itoa(cfg.MouseSensitivity),
-		"mouse_direct":      strconv.Itoa(boolToInt(cfg.MouseDirect)),
-		"hd_textures":       strconv.Itoa(boolToInt(cfg.UpscaleTextures)),
-		"volume":            strconv.Itoa(cfg.Volume),
-		"shader_quality":    strconv.Itoa(cfg.ShaderQuality),
+		"mouse_sensitivity":     strconv.Itoa(cfg.MouseSensitivity),
+		"mouse_direct":          strconv.Itoa(boolToInt(cfg.MouseDirect)),
+		"disable_auto_pitch":    strconv.Itoa(boolToInt(cfg.DisableAutoPitch)),
+		"hd_textures":           strconv.Itoa(boolToInt(cfg.UpscaleTextures)),
+		"volume":                strconv.Itoa(cfg.Volume),
+		"shader_quality":        strconv.Itoa(cfg.ShaderQuality),
+		"anisotropic_filtering": strconv.Itoa(cfg.AnisotropicFiltering),
+		"depth_of_field":        strconv.Itoa(boolToInt(cfg.DepthOfField)),
+		"antialiasing":          strconv.Itoa(boolToInt(aaMode != "off")),
+		"aa_mode":               aaMode,
+		"upscaler":              upscaler,
+		"upscaler_sharpness":    strconv.Itoa(cfg.UpscalerSharpness),
+		"motion_blur":           strconv.Itoa(boolToInt(cfg.MotionBlur)),
 		"day_cycle":         strconv.Itoa(boolToInt(cfg.DayCycle)),
 		"clouds":            strconv.Itoa(boolToInt(cfg.Clouds)),
 		"sun_rays":          strconv.Itoa(boolToInt(cfg.SunRays)),
@@ -233,8 +296,13 @@ day_length=24
 clouds=%d
 sun_rays=%d
 bloom=%d
-antialiasing=1
-motion_blur=1
+antialiasing=%d
+aa_mode=%s
+upscaler=%s
+upscaler_sharpness=%d
+motion_blur=%d
+depth_of_field=%d
+anisotropic_filtering=%d
 camera_fov=%d
 focus_blur=0
 vignette=0
@@ -243,6 +311,7 @@ sway_strength=100
 cloud_speed=100
 wind_direction=0
 mouse_direct=%d
+disable_auto_pitch=%d
 hd_textures=%d
 camera_distance=100
 camera_height=0
@@ -284,8 +353,16 @@ bindings=2
 		boolToInt(cfg.Clouds),
 		boolToInt(cfg.SunRays),
 		cfg.Bloom,
+		boolToInt(aaMode != "off"),
+		aaMode,
+		upscaler,
+		cfg.UpscalerSharpness,
+		boolToInt(cfg.MotionBlur),
+		boolToInt(cfg.DepthOfField),
+		cfg.AnisotropicFiltering,
 		cfg.CameraFOV,
 		boolToInt(cfg.MouseDirect),
+		boolToInt(cfg.DisableAutoPitch),
 		boolToInt(cfg.UpscaleTextures),
 	)
 

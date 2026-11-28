@@ -7,6 +7,7 @@
 #include "gx2_vk_memory.h"
 #include "gx2_vk_device.h"
 #include "gx2_imgui_overlay.h"
+#include "gx2_present_fx.h"
 #include "gx2_vk_shader.h"
 #define SDL_MAIN_HANDLED
 #include <SDL.h>
@@ -2603,6 +2604,10 @@ bool present(Image& source, uint32_t width, uint32_t height) {
     }
     if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) return false;
     VkCommandBuffer cb = cmd();
+    const gx2_present_fx::Output fx =
+        (source.image && width && height)
+            ? gx2_present_fx::apply(source, width, height, s_swapchain.extent.width, s_swapchain.extent.height)
+            : gx2_present_fx::Output{};
     barrier_if_dirty();
     VkImage target = s_swapchain.images[index];
     VkImageMemoryBarrier2 to_transfer{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
@@ -2621,16 +2626,22 @@ bool present(Image& source, uint32_t width, uint32_t height) {
     VkClearColorValue black{};
     VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     if (source.image && width && height) {
+        const VkImage blit_src = fx.image ? fx.image->image : source.image;
+        const uint32_t blit_w = fx.image ? fx.width : width;
+        const uint32_t blit_h = fx.image ? fx.height : height;
+        const VkFilter blit_filter = (blit_w == s_swapchain.extent.width && blit_h == s_swapchain.extent.height)
+                                         ? VK_FILTER_NEAREST
+                                         : VK_FILTER_LINEAR;
         // The scan image's row 0 is the top of the guest picture, matching
         // the swapchain's top row: no flip (the GPU path flips into its
         // bottom-up default framebuffer).
         VkImageBlit blit{};
         blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        blit.srcOffsets[1] = {int32_t(width), int32_t(height), 1};
+        blit.srcOffsets[1] = {int32_t(blit_w), int32_t(blit_h), 1};
         blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         blit.dstOffsets[1] = {int32_t(s_swapchain.extent.width), int32_t(s_swapchain.extent.height), 1};
-        vkCmdBlitImage(cb, source.image, VK_IMAGE_LAYOUT_GENERAL, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
-                       &blit, VK_FILTER_LINEAR);
+        vkCmdBlitImage(cb, blit_src, VK_IMAGE_LAYOUT_GENERAL, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
+                       blit_filter);
     } else {
         vkCmdClearColorImage(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &range);
     }

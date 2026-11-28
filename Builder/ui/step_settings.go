@@ -34,15 +34,21 @@ type StepSettingsView struct {
 	nncs2Entry        *widget.Entry
 	syncingServer     bool
 	onlineErrorLabel  *widget.Label
-	resSelect         *widget.Select
-	fpsSelect        *widget.Select
-	plaza60Check     *widget.Check
-	shaderSelect     *widget.Select
-	fullscreenCheck  *widget.Check
-	gsyncCheck       *widget.Check
-	gyroCheck        *widget.Check
-	mouseDirectCheck *widget.Check
-	fovSlider        *widget.Slider
+	resSelect             *widget.Select
+	fpsSelect             *widget.Select
+	plaza60Check          *widget.Check
+	shaderSelect          *widget.Select
+	anisoSelect           *widget.Select
+	dofCheck              *widget.Check
+	aaSelect              *widget.Select
+	upscalerSelect        *widget.Select
+	motionBlurCheck       *widget.Check
+	fullscreenCheck       *widget.Check
+	gsyncCheck            *widget.Check
+	gyroCheck             *widget.Check
+	mouseDirectCheck      *widget.Check
+	disableAutoPitchCheck *widget.Check
+	fovSlider             *widget.Slider
 	fovLabel         *widget.Label
 	volumeSlider     *widget.Slider
 	volumeLabel      *widget.Label
@@ -219,10 +225,27 @@ func (v *StepSettingsView) initUI() {
 	)
 
 	// 3. Display & Graphics
-	v.resSelect = widget.NewSelect([]string{"720p", "1080p", "1440p", "native"}, func(s string) {
-		cfg.Resolution = s
+	resToLabel := func(res string) string {
+		switch strings.ToLower(res) {
+		case "4k", "2160p", "3840x2160":
+			return "4K (3840x2160)"
+		case "8k", "4320p", "7680x4320":
+			return "8K (7680x4320)"
+		default:
+			return res
+		}
+	}
+	v.resSelect = widget.NewSelect([]string{"720p", "1080p", "1440p", "4K (3840x2160)", "8K (7680x4320)", "native"}, func(s string) {
+		switch s {
+		case "4K (3840x2160)":
+			cfg.Resolution = "4k"
+		case "8K (7680x4320)":
+			cfg.Resolution = "8k"
+		default:
+			cfg.Resolution = s
+		}
 	})
-	v.resSelect.SetSelected(cfg.Resolution)
+	v.resSelect.SetSelected(resToLabel(cfg.Resolution))
 
 	v.fpsSelect = widget.NewSelect([]string{"30 FPS", "60 FPS", "120 FPS", "180 FPS"}, func(s string) {
 		switch s {
@@ -272,6 +295,88 @@ func (v *StepSettingsView) initUI() {
 	})
 	v.shaderSelect.SetSelectedIndex(cfg.ShaderQuality)
 
+	anisoLabels := []string{"Auto (game)", "2x", "4x", "8x", "16x"}
+	anisoIndexFor := func(af int) int {
+		switch af {
+		case 2:
+			return 1
+		case 4:
+			return 2
+		case 8:
+			return 3
+		case 16:
+			return 4
+		default:
+			return 0
+		}
+	}
+	v.anisoSelect = widget.NewSelect(anisoLabels, func(s string) {
+		switch s {
+		case "2x":
+			cfg.AnisotropicFiltering = 2
+		case "4x":
+			cfg.AnisotropicFiltering = 4
+		case "8x":
+			cfg.AnisotropicFiltering = 8
+		case "16x":
+			cfg.AnisotropicFiltering = 16
+		default:
+			cfg.AnisotropicFiltering = 0
+		}
+	})
+	v.anisoSelect.SetSelectedIndex(anisoIndexFor(cfg.AnisotropicFiltering))
+
+	v.dofCheck = widget.NewCheck("Depth of Field (background blur)", func(b bool) {
+		cfg.DepthOfField = b
+	})
+	v.dofCheck.SetChecked(cfg.DepthOfField)
+
+	v.aaSelect = widget.NewSelect([]string{"Off", "FXAA", "SMAA"}, func(s string) {
+		switch s {
+		case "Off":
+			cfg.AAMode = "off"
+			cfg.AntiAliasing = false
+		case "SMAA":
+			cfg.AAMode = "smaa"
+			cfg.AntiAliasing = true
+		default:
+			cfg.AAMode = "fxaa"
+			cfg.AntiAliasing = true
+		}
+	})
+	switch strings.ToLower(cfg.AAMode) {
+	case "off":
+		v.aaSelect.SetSelected("Off")
+	case "smaa":
+		v.aaSelect.SetSelected("SMAA")
+	default:
+		v.aaSelect.SetSelected("FXAA")
+	}
+
+	v.upscalerSelect = widget.NewSelect([]string{"Off (Bilinear)", "FSR 1.0 (EASU + RCAS)", "Anime4K"}, func(s string) {
+		switch s {
+		case "FSR 1.0 (EASU + RCAS)":
+			cfg.Upscaler = "fsr"
+		case "Anime4K":
+			cfg.Upscaler = "anime4k"
+		default:
+			cfg.Upscaler = "off"
+		}
+	})
+	switch strings.ToLower(cfg.Upscaler) {
+	case "fsr":
+		v.upscalerSelect.SetSelected("FSR 1.0 (EASU + RCAS)")
+	case "anime4k":
+		v.upscalerSelect.SetSelected("Anime4K")
+	default:
+		v.upscalerSelect.SetSelected("Off (Bilinear)")
+	}
+
+	v.motionBlurCheck = widget.NewCheck("Motion Blur", func(b bool) {
+		cfg.MotionBlur = b
+	})
+	v.motionBlurCheck.SetChecked(cfg.MotionBlur)
+
 	v.hdTexturesCheck = widget.NewCheck("Enable HD Texturing (Real-ESRGAN AI Upscaling)", func(b bool) {
 		cfg.UpscaleTextures = b
 	})
@@ -297,6 +402,16 @@ func (v *StepSettingsView) initUI() {
 			widget.NewSeparator(),
 			widget.NewLabelWithStyle("Shader Graphics Preset:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 			v.shaderSelect,
+			widget.NewLabelWithStyle("Anisotropic Filtering (Texture Sharpness):", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+			v.anisoSelect,
+			container.NewGridWithColumns(2,
+				container.NewVBox(widget.NewLabelWithStyle("Anti-Aliasing:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), v.aaSelect),
+				container.NewVBox(widget.NewLabelWithStyle("Spatial Upscaler:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), v.upscalerSelect),
+			),
+			container.NewGridWithColumns(2,
+				v.dofCheck,
+				v.motionBlurCheck,
+			),
 			widget.NewSeparator(),
 			container.NewGridWithColumns(3,
 				v.plaza60Check,
@@ -321,6 +436,11 @@ func (v *StepSettingsView) initUI() {
 	})
 	v.mouseDirectCheck.SetChecked(cfg.MouseDirect)
 
+	v.disableAutoPitchCheck = widget.NewCheck("Disable Auto Downward Camera Tilt (stops camera pulling down while moving)", func(b bool) {
+		cfg.DisableAutoPitch = b
+	})
+	v.disableAutoPitchCheck.SetChecked(cfg.DisableAutoPitch)
+
 	v.fovLabel = widget.NewLabel(fmt.Sprintf("%d° (Default: 55°)", cfg.CameraFOV))
 	v.fovSlider = widget.NewSlider(40, 90)
 	v.fovSlider.Value = float64(cfg.CameraFOV)
@@ -343,6 +463,7 @@ func (v *StepSettingsView) initUI() {
 				v.gyroCheck,
 				v.mouseDirectCheck,
 			),
+			v.disableAutoPitchCheck,
 			widget.NewSeparator(),
 			container.NewGridWithColumns(2,
 				container.NewVBox(
@@ -447,12 +568,53 @@ func (v *StepSettingsView) SyncUIFromConfig() {
 		}
 	}
 
-	v.resSelect.SetSelected(cfg.Resolution)
+	resLabel := cfg.Resolution
+	switch strings.ToLower(cfg.Resolution) {
+	case "4k", "2160p", "3840x2160":
+		resLabel = "4K (3840x2160)"
+	case "8k", "4320p", "7680x4320":
+		resLabel = "8K (7680x4320)"
+	}
+	v.resSelect.SetSelected(resLabel)
 	v.fpsSelect.SetSelected(fmt.Sprintf("%d FPS", cfg.FrameRate))
 	v.plaza60Check.SetChecked(cfg.Plaza60FPS)
 	v.fullscreenCheck.SetChecked(cfg.Fullscreen)
 	v.gsyncCheck.SetChecked(cfg.GSync)
 	v.shaderSelect.SetSelectedIndex(cfg.ShaderQuality)
+	switch cfg.AnisotropicFiltering {
+	case 2:
+		v.anisoSelect.SetSelectedIndex(1)
+	case 4:
+		v.anisoSelect.SetSelectedIndex(2)
+	case 8:
+		v.anisoSelect.SetSelectedIndex(3)
+	case 16:
+		v.anisoSelect.SetSelectedIndex(4)
+	default:
+		v.anisoSelect.SetSelectedIndex(0)
+	}
+	v.dofCheck.SetChecked(cfg.DepthOfField)
+	switch strings.ToLower(cfg.AAMode) {
+	case "off":
+		v.aaSelect.SetSelected("Off")
+	case "smaa":
+		v.aaSelect.SetSelected("SMAA")
+	default:
+		if cfg.AntiAliasing {
+			v.aaSelect.SetSelected("FXAA")
+		} else {
+			v.aaSelect.SetSelected("Off")
+		}
+	}
+	switch strings.ToLower(cfg.Upscaler) {
+	case "fsr":
+		v.upscalerSelect.SetSelected("FSR 1.0 (EASU + RCAS)")
+	case "anime4k":
+		v.upscalerSelect.SetSelected("Anime4K")
+	default:
+		v.upscalerSelect.SetSelected("Off (Bilinear)")
+	}
+	v.motionBlurCheck.SetChecked(cfg.MotionBlur)
 
 	v.hdTexturesCheck.SetChecked(cfg.UpscaleTextures)
 	if cfg.HasNvidiaGPU {
@@ -466,6 +628,7 @@ func (v *StepSettingsView) SyncUIFromConfig() {
 	}
 	v.gyroCheck.SetChecked(cfg.Gyro)
 	v.mouseDirectCheck.SetChecked(cfg.MouseDirect)
+	v.disableAutoPitchCheck.SetChecked(cfg.DisableAutoPitch)
 	v.fovSlider.SetValue(float64(cfg.CameraFOV))
 	v.fovLabel.SetText(fmt.Sprintf("%d°", cfg.CameraFOV))
 	v.volumeSlider.SetValue(float64(cfg.Volume))

@@ -84,8 +84,31 @@ void math() {
         v.gamma = 0;
         v.sharpness = 999;
         v.shadow_lift = -500;
+        v.resolution = rs::k8K;
+        v.anisotropic_filtering = 12;
         rs::normalize(v);
         require(v.gamma == 50 && v.sharpness == 200 && v.shadow_lift == -25, "picture controls left their safe bounds");
+        require(v.resolution == rs::k8K && v.anisotropic_filtering == 16,
+                "8K resolution or anisotropic filtering normalization failed");
+        v.anisotropic_filtering = 1;
+        rs::normalize(v);
+        require(v.anisotropic_filtering == 0, "anisotropy <= 1 must normalize to 0 (auto)");
+        v.depth_of_field = false;
+        v.antialiasing = true;
+        v.aa_mode = rs::kAASMAA;
+        v.upscaler = rs::kUpscalerFSR;
+        v.upscaler_sharpness = 150;
+        v.motion_blur = false;
+        v.disable_auto_pitch = true;
+        rs::normalize(v);
+        require(v.upscaler_sharpness == 100 && v.antialiasing, "upscaler sharpness / aa_mode normalization failed");
+        rs::set(v);
+        rs::load();
+        const auto reloaded = rs::get();
+        require(reloaded.resolution == rs::k8K && reloaded.anisotropic_filtering == 0 && !reloaded.depth_of_field &&
+                    reloaded.antialiasing && reloaded.aa_mode == rs::kAASMAA && reloaded.upscaler == rs::kUpscalerFSR &&
+                    reloaded.upscaler_sharpness == 100 && !reloaded.motion_blur && reloaded.disable_auto_pitch,
+                "new graphics/camera settings did not round-trip through settings.ini");
     }
     require(scene_color_extent(848, 480, false) && scene_color_extent(960, 540, false) &&
                 scene_color_extent(1280, 720, true),

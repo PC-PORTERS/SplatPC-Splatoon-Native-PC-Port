@@ -26,6 +26,7 @@
 #include "gx2_perf.h"
 #include "gx2_write_watch.h"
 #include "gx2_native_context.h"
+#include "vk/gx2_present_fx.h"
 #include "vk/gx2_render_vk_state.h"
 #include "vk/gx2_vk_shader.h"
 #include "gx2_host_memory.h"
@@ -43,6 +44,7 @@
 #include <optional>
 #include <ranges>
 #include <type_traits>
+#include <utility>
 #include <utility>
 
 uint32_t g_scan_drc_source_id = 0;
@@ -576,9 +578,12 @@ void gx2r::clear_image_depth(gx2vk::Image& image, float depth, uint32_t stencil)
 // ---------------------------------------------------------------------------
 bool gx2_render_set_display_resolution(uint32_t width, uint32_t height) {
     if (!width || !height || !S.cb_map.empty() || !S.depth_map.empty()) return false;
-    if (gx2vk::ready() &&
-        (width > gx2vk::caps().limits.maxImageDimension2D || height > gx2vk::caps().limits.maxImageDimension2D))
-        return false;
+    if (gx2vk::ready()) {
+        const auto& lim = gx2vk::caps().limits;
+        if (width > lim.maxImageDimension2D || height > lim.maxImageDimension2D || width > lim.maxFramebufferWidth ||
+            height > lim.maxFramebufferHeight)
+            return false;
+    }
     S.display_extent = {width, height};
     return true;
 }
@@ -636,6 +641,14 @@ void gx2_render_init() {
             } else if (std::strcmp(res_override, "1440p") == 0 || std::strcmp(res_override, "2560x1440") == 0) {
                 target_w = 2560;
                 target_h = 1440;
+            } else if (std::strcmp(res_override, "4k") == 0 || std::strcmp(res_override, "4K") == 0 ||
+                       std::strcmp(res_override, "2160p") == 0 || std::strcmp(res_override, "3840x2160") == 0) {
+                target_w = 3840;
+                target_h = 2160;
+            } else if (std::strcmp(res_override, "8k") == 0 || std::strcmp(res_override, "8K") == 0 ||
+                       std::strcmp(res_override, "4320p") == 0 || std::strcmp(res_override, "7680x4320") == 0) {
+                target_w = 7680;
+                target_h = 4320;
             } else if (std::strcmp(res_override, "native") == 0) {
                 target_w = uint32_t(std::max(0, desktop.w));
                 target_h = uint32_t(std::max(0, desktop.h));
@@ -648,8 +661,29 @@ void gx2_render_init() {
             }
         }
         if (!gx2_render_set_display_resolution(target_w, target_h)) {
-            RBREW_LOG_ERROR("gx2_render", "cannot select the render resolution (%ux%u)\n", target_w, target_h);
-            std::exit(3);
+            const uint32_t max_dim =
+                gx2vk::ready()
+                    ? std::min({gx2vk::caps().limits.maxImageDimension2D, gx2vk::caps().limits.maxFramebufferWidth,
+                                gx2vk::caps().limits.maxFramebufferHeight})
+                    : 0u;
+            RBREW_LOG_WARN("gx2_render",
+                           "requested render resolution %ux%u exceeds GPU limits (max %u); falling back\n", target_w,
+                           target_h, max_dim);
+            bool selected = false;
+            constexpr std::pair<uint32_t, uint32_t> kFallbacks[] = {
+                {3840, 2160}, {2560, 1440}, {1920, 1080}, {1280, 720}};
+            for (const auto [fw, fh] : kFallbacks) {
+                if ((fw < target_w || fh < target_h) && gx2_render_set_display_resolution(fw, fh)) {
+                    target_w = fw;
+                    target_h = fh;
+                    selected = true;
+                    break;
+                }
+            }
+            if (!selected) {
+                RBREW_LOG_ERROR("gx2_render", "cannot select the render resolution (%ux%u)\n", target_w, target_h);
+                std::exit(3);
+            }
         }
         RBREW_LOG_INFO("gx2_render", "Internal render resolution: %ux%u (desktop display: %dx%d)\n", target_w, target_h,
                        desktop.w, desktop.h);
@@ -731,6 +765,7 @@ void gx2_render_shutdown() {
     if (!gx2vk::ready()) return;
     end_rendering();
     gx2vk::finish();
+    gx2_present_fx::shutdown();
     gx2weather::shutdown();
     gx2_mod_capture::shutdown();
     g_scan_drc_source_id = 0;
@@ -2861,7 +2896,7 @@ void gx2_render_copy_to_scan(uint32_t cb_addr, uint32_t scan_target, uint8_t* me
             desc.width = scan.image.desc.width;
             desc.height = scan.image.desc.height;
             desc.format = VK_FORMAT_R8G8B8A8_SRGB;
-            desc.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+            desc.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
             gx2vk::create_image(encoded.srgb, desc);
             desc.format = VK_FORMAT_R8G8B8A8_UNORM;
             gx2vk::create_image(encoded.raw, desc);
@@ -2896,7 +2931,7 @@ void gx2_render_copy_to_scan(uint32_t cb_addr, uint32_t scan_target, uint8_t* me
             desc.width = scan.image.desc.width;
             desc.height = scan.image.desc.height;
             desc.format = scan.image.desc.format;
-            desc.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+            desc.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
             gx2vk::create_image(copy, desc);
         }
         end_rendering();
@@ -3112,7 +3147,7 @@ static void interp_copy(gx2vk::Image& source, gx2vk::Image& target) {
         desc.width = source.desc.width;
         desc.height = source.desc.height;
         desc.format = format;
-        desc.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        desc.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
         if (!gx2vk::create_image(target, desc)) return;
     }
     VkCommandBuffer cb = gx2vk::cmd();
@@ -3215,7 +3250,7 @@ void gx2_render_present(void* sdl_window, bool gamepad_mode) {
             desc.width = image->desc.width;
             desc.height = image->desc.height;
             desc.format = VK_FORMAT_R8G8B8A8_UNORM;
-            desc.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+            desc.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
             gx2vk::create_image(s_present_raw, desc);
         }
         VkCommandBuffer cb = gx2vk::cmd();

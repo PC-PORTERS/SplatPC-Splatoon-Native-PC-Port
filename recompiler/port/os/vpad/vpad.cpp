@@ -33,6 +33,7 @@
 #include "../gx2/gx2_env_light.h"
 #include "../../runtime/port_settings.h"
 #include "../../runtime/mod_loader.h"
+#include "../../hooks/camera_auto_pitch.h"
 #include "../../hooks/camera_follow.h"
 #include "../../hooks/mouse_camera.h"
 #include <algorithm>
@@ -264,6 +265,8 @@ void vpad_update_motion(uint8_t* mem, uint32_t buf, float rx, float ry, float dt
         return v && v[0] == '1';
     }();
     const bool use_gyro = phys_gyro && physical_gyro_enabled();
+    if (s_mouse_pitch != 0.0f || std::fabs(ry) > 0.05f || (use_gyro && std::fabs(phys_gyro[0]) > 0.02f))
+        rbrew_camera_auto_pitch::note_vertical_input();
     float yaw_rate = stick_yaw ? -rx * std::fabs(rx) * kYawRate : 0.0f;
     float pitch_rate = use_gyro && !stick_pitch_with_gyro ? 0.0f : -ry * std::fabs(ry) * kPitchRate;
     const float traced_mouse_yaw = s_mouse_yaw, traced_mouse_pitch = s_mouse_pitch;
@@ -338,6 +341,7 @@ static void VPADSetGyroDirection(CPUState* cpu) {
     s_motion.yaw = 0;
     s_motion.pitch = rest_pitch();
     rbrew_mouse_camera::pitch_aim().reset();
+    rbrew_camera_auto_pitch::note_reset();
 }
 
 // Edge state for VPADStatus trigger/release (the console reports presses and
@@ -667,7 +671,9 @@ static void VPADRead(CPUState* cpu) {
     write_float(MEM, buf + 0x14, rx);
     write_float(MEM, buf + 0x18, ry);
 
-    rbrew_camera_follow::set(MEM, s_mouse_aims);
+    if (buttons & VPAD_BUTTON_Y) rbrew_camera_auto_pitch::note_reset();
+    if (std::fabs(ry) > 0.05f) rbrew_camera_auto_pitch::note_vertical_input();
+    rbrew_camera_follow::set(MEM, s_mouse_aims || rbrew_settings::g_disable_auto_pitch.load(std::memory_order_relaxed));
     vpad_update_motion(MEM, buf, rx, ry, motion_dt >= 0 ? motion_dt : motion_seconds(),
                        has_phys_gyro ? phys_gyro : nullptr, has_phys_accel ? phys_accel : nullptr);
     rbrew_write8(MEM, buf + kVpadSlideVolume, 0xFF);

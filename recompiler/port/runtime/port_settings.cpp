@@ -75,7 +75,34 @@ const char* const kActionKeys[kActionCount] = {
 std::mutex s_lock;
 Values s_values;
 int s_active_resolution = k720p;
-const char* const kResolutionNames[kResolutionCount] = {"720p", "1080p", "1440p", "native"};
+const char* const kResolutionNames[kResolutionCount] = {"720p", "1080p", "1440p", "4k", "8k", "native"};
+const char* const kAAModeNames[kAACount] = {"off", "fxaa", "smaa"};
+const char* const kUpscalerNames[kUpscalerCount] = {"off", "fsr", "anime4k"};
+
+int parse_aa_mode(std::string_view value) {
+    if (value == "0" || value == "off" || value == "Off") return kAAOff;
+    if (value == "1" || value == "fxaa" || value == "FXAA") return kAAFXAA;
+    if (value == "2" || value == "smaa" || value == "SMAA") return kAASMAA;
+    return -1;
+}
+
+int parse_upscaler(std::string_view value) {
+    if (value == "0" || value == "off" || value == "Off") return kUpscalerOff;
+    if (value == "1" || value == "fsr" || value == "FSR" || value == "fsr1") return kUpscalerFSR;
+    if (value == "2" || value == "anime4k" || value == "Anime4K") return kUpscalerAnime4K;
+    return -1;
+}
+
+int parse_resolution_name(std::string_view value) {
+    for (int i = 0; i < kResolutionCount; ++i)
+        if (value == kResolutionNames[i]) return i;
+    if (value == "1280x720") return k720p;
+    if (value == "1920x1080") return k1080p;
+    if (value == "2560x1440") return k1440p;
+    if (value == "2160p" || value == "3840x2160" || value == "4K") return k4K;
+    if (value == "4320p" || value == "7680x4320" || value == "8K") return k8K;
+    return -1;
+}
 
 std::filesystem::path file_path() {
 #if defined(_WIN32)
@@ -104,6 +131,11 @@ void publish(const Values& v) {
     g_fps180.store(v.frame_rate == 180, std::memory_order_relaxed);
     g_fps30.store(v.frame_rate == 30, std::memory_order_relaxed);
     g_shader_quality.store(v.shader_quality, std::memory_order_relaxed);
+    g_anisotropic_filtering.store(v.anisotropic_filtering, std::memory_order_relaxed);
+    g_aa_mode.store(v.aa_mode, std::memory_order_relaxed);
+    g_upscaler.store(v.upscaler, std::memory_order_relaxed);
+    g_upscaler_sharpness.store(v.upscaler_sharpness, std::memory_order_relaxed);
+    g_disable_auto_pitch.store(v.disable_auto_pitch, std::memory_order_relaxed);
     g_mouse_direct.store(v.mouse_direct, std::memory_order_relaxed);
     g_gsync.store(v.gsync, std::memory_order_relaxed);
     g_rumble.store(v.rumble, std::memory_order_relaxed);
@@ -150,6 +182,11 @@ void normalize(Values& v) {
         v.plaza_60fps = true;
     }
     v.resolution = std::clamp(v.resolution, 0, kResolutionCount - 1);
+    v.anisotropic_filtering = sanitize_anisotropy(v.anisotropic_filtering);
+    v.aa_mode = std::clamp(v.aa_mode, 0, kAACount - 1);
+    v.antialiasing = v.aa_mode != kAAOff;
+    v.upscaler = std::clamp(v.upscaler, 0, kUpscalerCount - 1);
+    v.upscaler_sharpness = std::clamp(v.upscaler_sharpness, 0, 100);
     v.gyro_sensitivity = std::clamp(v.gyro_sensitivity, 25, 300);
     v.mouse_sensitivity = std::clamp(v.mouse_sensitivity, 25, 400);
     v.volume = std::clamp(v.volume, 0, 100);
@@ -246,7 +283,12 @@ std::string foreign_lines() {
                                              "sun_rays",
                                              "bloom",
                                              "antialiasing",
+                                             "aa_mode",
+                                             "upscaler",
+                                             "upscaler_sharpness",
                                              "motion_blur",
+                                             "depth_of_field",
+                                             "anisotropic_filtering",
                                              "camera_fov",
                                              "focus_blur",
                                              "vignette",
@@ -257,6 +299,7 @@ std::string foreign_lines() {
                                              "mouse_direct",
                                              "camera_distance",
                                              "camera_height",
+                                             "disable_auto_pitch",
                                              "realistic_look",
                                              "cloud_amount",
                                              "big_cloud",
@@ -313,7 +356,12 @@ void write(const Values& v) {
         << "sun_rays=" << v.sun_rays << "\n"
         << "bloom=" << v.bloom << "\n"
         << "antialiasing=" << v.antialiasing << "\n"
+        << "aa_mode=" << kAAModeNames[v.aa_mode] << "\n"
+        << "upscaler=" << kUpscalerNames[v.upscaler] << "\n"
+        << "upscaler_sharpness=" << v.upscaler_sharpness << "\n"
         << "motion_blur=" << v.motion_blur << "\n"
+        << "depth_of_field=" << v.depth_of_field << "\n"
+        << "anisotropic_filtering=" << v.anisotropic_filtering << "\n"
         << "camera_fov=" << v.camera_fov << "\n"
         << "focus_blur=" << v.focus_blur << "\n"
         << "vignette=" << v.vignette << "\n"
@@ -324,6 +372,7 @@ void write(const Values& v) {
         << "mouse_direct=" << v.mouse_direct << "\n"
         << "camera_distance=" << v.camera_distance << "\n"
         << "camera_height=" << v.camera_height << "\n"
+        << "disable_auto_pitch=" << v.disable_auto_pitch << "\n"
         << "realistic_look=" << v.realistic_look << "\n"
         << "cloud_amount=" << v.cloud_amount << "\n"
         << "big_cloud=" << v.big_cloud << "\n"
@@ -355,6 +404,7 @@ void load() {
     std::lock_guard lock(s_lock);
     Values v;
     bool saw_frame_rate = false;
+    bool saw_aa_mode = false;
     int bindings_version = 1;
     std::ifstream in(file_path());
     for (std::string line; in && std::getline(in, line);) {
@@ -363,8 +413,7 @@ void load() {
         const std::string key = line.substr(0, eq), value = line.substr(eq + 1);
         const int number = std::atoi(value.c_str());
         if (key == "resolution") {
-            for (int i = 0; i < kResolutionCount; ++i)
-                if (value == kResolutionNames[i]) v.resolution = i;
+            if (const int parsed = parse_resolution_name(value); parsed >= 0) v.resolution = parsed;
         } else if (key == "plaza_60fps")
             v.plaza_60fps = number != 0;
         else if (key == "fps120")
@@ -414,8 +463,21 @@ void load() {
             v.bloom = number;
         else if (key == "antialiasing")
             v.antialiasing = number != 0;
+        else if (key == "aa_mode") {
+            if (const int parsed = parse_aa_mode(value); parsed >= 0) {
+                v.aa_mode = parsed;
+                saw_aa_mode = true;
+            }
+        } else if (key == "upscaler") {
+            if (const int parsed = parse_upscaler(value); parsed >= 0) v.upscaler = parsed;
+        } else if (key == "upscaler_sharpness")
+            v.upscaler_sharpness = number;
         else if (key == "motion_blur")
             v.motion_blur = number != 0;
+        else if (key == "depth_of_field")
+            v.depth_of_field = number != 0;
+        else if (key == "anisotropic_filtering")
+            v.anisotropic_filtering = number;
         else if (key == "camera_fov")
             v.camera_fov = number;
         else if (key == "focus_blur")
@@ -436,6 +498,8 @@ void load() {
             v.camera_distance = number;
         else if (key == "camera_height")
             v.camera_height = number;
+        else if (key == "disable_auto_pitch")
+            v.disable_auto_pitch = number != 0;
         else if (key == "realistic_look")
             v.realistic_look = number != 0;
         else if (key == "cloud_amount")
@@ -481,6 +545,10 @@ void load() {
             }
     }
     if (!saw_frame_rate && v.fps120) v.frame_rate = 120;
+    if (!saw_aa_mode)
+        v.aa_mode = v.antialiasing ? kAAFXAA : kAAOff;
+    else
+        v.antialiasing = v.aa_mode != kAAOff;
     // Settings from before every input had a key (special weapon, D-pad):
     // the new default keys fill the inputs left unbound, once, where no other
     // input uses that key.
@@ -504,7 +572,30 @@ void load() {
             if (!std::strcmp(q, names[i])) v.shader_quality = i;
     }
     if (env_set("RBREW_WEATHER")) v.weather = std::atoi(std::getenv("RBREW_WEATHER"));
-    if (env_set("RBREW_MOTION_BLUR")) v.motion_blur = std::getenv("RBREW_MOTION_BLUR")[0] == '1';
+    if (env_set("RBREW_AA_MODE")) {
+        if (const int parsed = parse_aa_mode(std::getenv("RBREW_AA_MODE")); parsed >= 0) {
+            v.aa_mode = parsed;
+            v.antialiasing = v.aa_mode != kAAOff;
+        }
+    }
+    if (env_set("RBREW_ANTIALIASING")) {
+        if (env_off("RBREW_ANTIALIASING")) {
+            v.aa_mode = kAAOff;
+            v.antialiasing = false;
+        } else if (v.aa_mode == kAAOff) {
+            v.aa_mode = kAAFXAA;
+            v.antialiasing = true;
+        }
+    }
+    if (env_set("RBREW_UPSCALER")) {
+        if (const int parsed = parse_upscaler(std::getenv("RBREW_UPSCALER")); parsed >= 0) v.upscaler = parsed;
+    }
+    if (env_set("RBREW_UPSCALER_SHARPNESS")) v.upscaler_sharpness = std::atoi(std::getenv("RBREW_UPSCALER_SHARPNESS"));
+    if (env_set("RBREW_MOTION_BLUR")) v.motion_blur = !env_off("RBREW_MOTION_BLUR");
+    if (env_set("RBREW_DOF")) v.depth_of_field = !env_off("RBREW_DOF");
+    if (env_set("RBREW_ANISOTROPIC_FILTERING"))
+        v.anisotropic_filtering = std::atoi(std::getenv("RBREW_ANISOTROPIC_FILTERING"));
+    if (env_set("RBREW_DISABLE_AUTO_PITCH")) v.disable_auto_pitch = env_on("RBREW_DISABLE_AUTO_PITCH");
     if (env_set("RBREW_CAMERA_DISTANCE")) v.camera_distance = std::atoi(std::getenv("RBREW_CAMERA_DISTANCE"));
     if (env_set("RBREW_CAMERA_HEIGHT")) v.camera_height = std::atoi(std::getenv("RBREW_CAMERA_HEIGHT"));
     if (env_set("RBREW_MOUSE_DIRECT")) v.mouse_direct = std::getenv("RBREW_MOUSE_DIRECT")[0] == '1';
@@ -532,12 +623,7 @@ void load() {
     if (env_set("RBREW_GYRO")) v.gyro = !env_off("RBREW_GYRO");
     if (env_set("RBREW_GYRO_INVERT_PITCH")) v.gyro_invert_pitch = env_on("RBREW_GYRO_INVERT_PITCH");
     if (const char* r = std::getenv("RBREW_RENDER_RESOLUTION"); r && *r) {
-        v.resolution = -1;
-        for (int i = 0; i < kResolutionCount; ++i)
-            if (!std::strcmp(r, kResolutionNames[i])) v.resolution = i;
-        if (!std::strcmp(r, "1280x720")) v.resolution = k720p;
-        if (!std::strcmp(r, "1920x1080")) v.resolution = k1080p;
-        if (!std::strcmp(r, "2560x1440")) v.resolution = k1440p;
+        v.resolution = parse_resolution_name(r);
         s_active_resolution = v.resolution < 0 ? k720p : v.resolution;
         if (v.resolution < 0) v.resolution = k720p; // custom WxH: the menu shows 720p
     } else {

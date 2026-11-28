@@ -21,6 +21,7 @@
 #include "gx2_host_memory.h"
 #include "gx2_attrib.h"
 #include "vk/gx2_render_vk_state.h"
+#include "vk/gx2_sampler_anisotropy.h"
 #include "vk/gx2_vk_shader.h"
 #include "vk/gx2_compile_queue.h"
 #include "vk/gx2_last_lookup.h"
@@ -629,7 +630,13 @@ void gx2r_sampler_info(const TexParams& p, bool shadow, bool integer, VkSamplerC
     info.magFilter = integer ? VK_FILTER_NEAREST : gl_filter(p.mag_filter);
     info.minFilter = integer ? VK_FILTER_NEAREST : gl_filter(p.min_filter);
     const bool mipmapped = p.min_filter >= wire::NEAREST_MIPMAP_NEAREST && p.min_filter <= wire::LINEAR_MIPMAP_LINEAR;
-    info.mipmapMode = (p.min_filter == wire::NEAREST_MIPMAP_LINEAR || p.min_filter == wire::LINEAR_MIPMAP_LINEAR)
+    const bool linear_filter = info.minFilter == VK_FILTER_LINEAR && info.magFilter == VK_FILTER_LINEAR;
+    const int forced_af = rbrew_settings::g_anisotropic_filtering.load(std::memory_order_relaxed);
+    const float aniso =
+        gx2_anisotropy::effective_anisotropy(p.anisotropy, mipmapped, linear_filter, shadow, integer, forced_af,
+                                             gx2vk::caps().anisotropy, gx2vk::caps().max_anisotropy);
+    info.mipmapMode = (p.min_filter == wire::NEAREST_MIPMAP_LINEAR || p.min_filter == wire::LINEAR_MIPMAP_LINEAR ||
+                       (forced_af > 1 && aniso > 1.0f))
                           ? VK_SAMPLER_MIPMAP_MODE_LINEAR
                           : VK_SAMPLER_MIPMAP_MODE_NEAREST;
     info.addressModeU = vk_wrap(p.wrap_s);
@@ -637,8 +644,8 @@ void gx2r_sampler_info(const TexParams& p, bool shadow, bool integer, VkSamplerC
     info.addressModeW = vk_wrap(p.wrap_r);
     const float max_bias = gx2vk::caps().limits.maxSamplerLodBias;
     info.mipLodBias = std::clamp(p.lod_bias, -max_bias, max_bias);
-    info.anisotropyEnable = p.anisotropy > 1.0f && gx2vk::caps().anisotropy && !integer;
-    info.maxAnisotropy = info.anisotropyEnable ? std::min(p.anisotropy, gx2vk::caps().max_anisotropy) : 1.0f;
+    info.anisotropyEnable = aniso > 1.0f ? VK_TRUE : VK_FALSE;
+    info.maxAnisotropy = aniso;
     info.compareEnable = shadow;
     info.compareOp = shadow ? gl_compare_to_vk(p.compare_func) : VK_COMPARE_OP_NEVER;
     if (mipmapped) {
@@ -667,19 +674,23 @@ struct LastSampler {
     TexParams params;
     VkSampler sampler = VK_NULL_HANDLE;
     bool shadow = false, integer = false;
+    int forced_af = 0;
 };
 std::array<LastSampler, 64> s_sampler_mru{};
 } // namespace
 VkSampler gx2r::tex_object_sampler(const TexParams& p, bool shadow, bool integer) {
+    const int forced_af = rbrew_settings::g_anisotropic_filtering.load(std::memory_order_relaxed);
     uint32_t bias_bits, min_bits;
     std::memcpy(&bias_bits, &p.lod_bias, 4);
     std::memcpy(&min_bits, &p.min_lod, 4);
     uint32_t h = p.min_filter * 2654435761u ^ p.mag_filter * 2246822519u ^ (p.wrap_s << 6) ^ (p.wrap_t << 12) ^
                  (p.max_level << 3) ^ bias_bits ^ (min_bits << 1) ^ (uint32_t(shadow) << 18) ^
-                 (uint32_t(integer) << 19);
+                 (uint32_t(integer) << 19) ^ (uint32_t(forced_af) << 20);
     h ^= h >> 16;
     auto& slot = s_sampler_mru[h & (s_sampler_mru.size() - 1)];
-    if (slot.sampler && slot.shadow == shadow && slot.integer == integer && slot.params == p) return slot.sampler;
+    if (slot.sampler && slot.shadow == shadow && slot.integer == integer && slot.forced_af == forced_af &&
+        slot.params == p)
+        return slot.sampler;
     VkSamplerCreateInfo info;
     gx2r_sampler_info(p, shadow, integer, info);
     VkSampler result = VK_NULL_HANDLE;
@@ -689,7 +700,7 @@ VkSampler gx2r::tex_object_sampler(const TexParams& p, bool shadow, bool integer
         result = gx2vk::sampler(info, &color);
     } else
         result = gx2vk::sampler(info);
-    slot = {p, result, shadow, integer};
+    slot = {p, result, shadow, integer, forced_af};
     return result;
 }
 

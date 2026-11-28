@@ -4,6 +4,7 @@
 #include "gx2_guest_memory.h"
 #include "../os/gx2/gx2_env_light.h" // online_mode()
 #include "../runtime/camtrace.h"
+#include "camera_auto_pitch.h"
 #include "camera_nan_guard.h"
 #include "player_nan_guard.h"
 #include "mouse_camera.h"
@@ -792,25 +793,44 @@ void report_bad_update(const UpdateEntry& entry, uint32_t camera, const std::vec
 
 void camera_update(CPUState* cpu, uint32_t, HostFunc original) {
     static rbrew_camera_nan_guard::Guard guard;
-    static const bool enabled = switch_on("RBREW_CAMERA_NAN_GUARD", true);
+    static rbrew_camera_auto_pitch::Guard auto_pitch;
+    static const bool nan_enabled = switch_on("RBREW_CAMERA_NAN_GUARD", true);
     static bool reported = false; // one report per session
-    if (!enabled) return original(cpu);
+    const bool disable_auto_pitch = rbrew_settings::g_disable_auto_pitch.load(std::memory_order_relaxed);
+    if (!nan_enabled && !disable_auto_pitch) return original(cpu);
     const uint32_t camera = cpu->r[3];
+    const float aim_before =
+        disable_auto_pitch ? float(rbrew_read_f32(cpu->mem, camera + rbrew_camera_auto_pitch::kCameraAim)) : 0.0f;
+    const float stick_before =
+        disable_auto_pitch ? float(rbrew_read_f32(cpu->mem, camera + rbrew_camera_auto_pitch::kCameraStickPitch))
+                           : 0.0f;
+    const bool allow_pitch_change = disable_auto_pitch ? rbrew_camera_auto_pitch::consume_frame_allow() : true;
     UpdateEntry entry{};
     std::vector<uint32_t> before, player;
-    if (!reported) {
+    if (nan_enabled && !reported) {
         entry = UpdateEntry::of(*cpu);
         before = read_words(cpu->mem, camera, kCameraBytes);
         if (before[0]) player = read_words(cpu->mem, before[0], kPlayerBytes);
     }
     original(cpu);
-    GuestWords words{cpu->mem};
-    if (const uint32_t repaired = guard.update(words, camera)) {
-        if (!reported && rbrew_camera_nan_guard::finite_fields(before)) {
-            report_bad_update(entry, camera, before, player, cpu->mem);
-            reported = true;
+    if (nan_enabled) {
+        GuestWords words{cpu->mem};
+        if (const uint32_t repaired = guard.update(words, camera)) {
+            if (!reported && rbrew_camera_nan_guard::finite_fields(before)) {
+                report_bad_update(entry, camera, before, player, cpu->mem);
+                reported = true;
+            }
+            RBREW_LOG_WARN("camera", "camera %08x: %u non-finite fields repaired\n", camera, repaired);
         }
-        RBREW_LOG_WARN("camera", "camera %08x: %u non-finite fields repaired\n", camera, repaired);
+    }
+    if (disable_auto_pitch) {
+        const float aim_after = float(rbrew_read_f32(cpu->mem, camera + rbrew_camera_auto_pitch::kCameraAim));
+        const float stick_after = float(rbrew_read_f32(cpu->mem, camera + rbrew_camera_auto_pitch::kCameraStickPitch));
+        const auto fix =
+            auto_pitch.post_update(camera, aim_before, aim_after, stick_before, stick_after, true, allow_pitch_change);
+        if (fix.restore_aim) rbrew_write_f32(cpu->mem, camera + rbrew_camera_auto_pitch::kCameraAim, fix.aim);
+        if (fix.restore_stick)
+            rbrew_write_f32(cpu->mem, camera + rbrew_camera_auto_pitch::kCameraStickPitch, fix.stick);
     }
 }
 
@@ -945,10 +965,17 @@ void gyro_pitch_rate(CPUState* cpu, uint32_t, HostFunc original) {
     // Negative pitch looks up; a higher aim looks up.
     const float moved = pitch_aim().move(target, -pitch_queue().take() * kAimPerMouseDegree);
     if (moved != 0.0f) {
+        rbrew_camera_auto_pitch::note_vertical_input();
         const float aim = float(rbrew_read_f32(cpu->mem, camera + kCameraAim));
         rbrew_write_f32(cpu->mem, camera + kCameraAim, std::clamp(aim + moved, -1.0f, 1.0f));
     }
-    cpu->f[1] = cpu->f[16] = target + pitch_aim().share();
+    float next_target = target + pitch_aim().share();
+    if (rbrew_settings::g_disable_auto_pitch.load(std::memory_order_relaxed)) {
+        const float current_aim = float(rbrew_read_f32(cpu->mem, camera + kCameraAim));
+        next_target = rbrew_camera_auto_pitch::filter_gyro_target(current_aim, next_target, true,
+                                                                  rbrew_camera_auto_pitch::input_or_reset_active());
+    }
+    cpu->f[1] = cpu->f[16] = next_target;
     original(cpu);
 }
 } // namespace
